@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -22,6 +23,14 @@ namespace DocHandler.ViewModels
         
         [ObservableProperty]
         private ObservableCollection<FileItem> _pendingFiles = new();
+
+        // Checkbox options - hardcoded for now
+        private bool _convertOfficeToPdf = true;
+        public bool ConvertOfficeToPdf 
+        { 
+            get => _convertOfficeToPdf;
+            set => SetProperty(ref _convertOfficeToPdf, value);
+        }
         
         [ObservableProperty]
         private bool _isProcessing;
@@ -99,72 +108,90 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private async Task ProcessFiles()
         {
-            if (PendingFiles.Count == 0) return;
-            
+            if (!PendingFiles.Any())
+            {
+                StatusMessage = "No files selected";
+                return;
+            }
+
+            IsProcessing = true;
+            StatusMessage = PendingFiles.Count > 1 ? "Merging and processing files..." : "Processing file...";
+
             try
             {
-                IsProcessing = true;
-                ProgressValue = 0;
-                StatusMessage = "Processing files...";
-                
-                // Get output folder
-                var outputPath = _fileProcessingService.CreateOutputFolder(_configService.Config.DefaultSaveLocation);
-                
-                // Process each file
-                var totalFiles = PendingFiles.Count;
-                var processedCount = 0;
-                
-                foreach (var fileItem in PendingFiles.ToList())
+                var filePaths = PendingFiles.Select(f => f.FilePath).ToList();
+                var outputDir = _configService.Config.DefaultSaveLocation;
+
+                // Create output folder with timestamp
+                outputDir = _fileProcessingService.CreateOutputFolder(outputDir);
+
+                var result = await _fileProcessingService.ProcessFiles(filePaths, outputDir, ConvertOfficeToPdf);
+
+                if (result.Success)
                 {
-                    StatusMessage = $"Processing {fileItem.FileName}...";
-                    
-                    // Check if conversion is needed
-                    var extension = Path.GetExtension(fileItem.FilePath).ToLowerInvariant();
-                    var outputFileName = Path.GetFileNameWithoutExtension(fileItem.FilePath) + ".pdf";
-                    var outputFilePath = Path.Combine(outputPath, outputFileName);
-                    
-                    if (extension == ".doc" || extension == ".docx")
+                    if (result.IsMerged)
                     {
-                        // Convert Word to PDF
-                        var result = await _officeConversionService.ConvertWordToPdf(fileItem.FilePath, outputFilePath);
-                        if (!result.Success)
-                        {
-                            _logger.Error("Failed to convert {File}: {Error}", fileItem.FileName, result.ErrorMessage);
-                            MessageBox.Show($"Failed to convert {fileItem.FileName}: {result.ErrorMessage}", 
-                                "Conversion Error", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        }
+                        StatusMessage = $"Successfully merged {filePaths.Count} files into {Path.GetFileName(result.SuccessfulFiles.First())}";
+                        _logger.Information("Files merged successfully");
                     }
                     else
                     {
-                        // Just copy PDFs and other files for now
-                        await Task.Run(() => 
+                        StatusMessage = $"Successfully processed {result.SuccessfulFiles.Count} file(s)";
+                        _logger.Information("Files processed successfully");
+                    }
+
+                    // Clear the file list after successful processing
+                    PendingFiles.Clear();
+
+                    // Update configuration with recent location
+                    _configService.AddRecentLocation(outputDir);
+
+                    // Open the output folder
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo
                         {
-                            var destPath = Path.Combine(outputPath, fileItem.FileName);
-                            File.Copy(fileItem.FilePath, destPath, overwrite: false);
+                            FileName = outputDir,
+                            UseShellExecute = true,
+                            Verb = "open"
                         });
                     }
-                    
-                    processedCount++;
-                    ProgressValue = (double)processedCount / totalFiles * 100;
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Failed to open output folder");
+                    }
                 }
-                
-                // Update configuration with recent location
-                _configService.AddRecentLocation(outputPath);
-                
-                StatusMessage = $"Completed! Files saved to: {outputPath}";
-                
-                // Open output folder
-                System.Diagnostics.Process.Start("explorer.exe", outputPath);
-                
-                // Clear the list after successful processing
-                PendingFiles.Clear();
+                else
+                {
+                    var errorMessage = !string.IsNullOrEmpty(result.ErrorMessage) 
+                        ? result.ErrorMessage 
+                        : "Processing failed";
+                    
+                    StatusMessage = $"Error: {errorMessage}";
+                    _logger.Error("File processing failed: {Error}", errorMessage);
+
+                    if (result.FailedFiles.Any())
+                    {
+                        var failedFilesList = string.Join("\n", result.FailedFiles.Select(f => 
+                            $"• {Path.GetFileName(f.FilePath)}: {f.Error}"));
+                        
+                        MessageBox.Show(
+                            $"The following files could not be processed:\n\n{failedFilesList}",
+                            "Processing Errors",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                    }
+                }
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Error processing files");
-                MessageBox.Show($"An error occurred: {ex.Message}", "Error", 
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-                StatusMessage = "Error occurred during processing";
+                StatusMessage = $"Error: {ex.Message}";
+                _logger.Error(ex, "Unexpected error during file processing");
+                MessageBox.Show(
+                    $"An unexpected error occurred:\n\n{ex.Message}",
+                    "Error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
             }
             finally
             {

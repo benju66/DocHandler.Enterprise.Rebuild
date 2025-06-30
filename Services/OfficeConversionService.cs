@@ -3,6 +3,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Microsoft.Office.Interop.Word;
+using Excel = Microsoft.Office.Interop.Excel;
 using Serilog;
 using Task = System.Threading.Tasks.Task;
 
@@ -12,6 +13,7 @@ namespace DocHandler.Services
     {
         private readonly ILogger _logger;
         private Application? _wordApp;
+        private Excel.Application? _excelApp;
         private bool _disposed;
         
         public OfficeConversionService()
@@ -89,15 +91,78 @@ namespace DocHandler.Services
         
         public async System.Threading.Tasks.Task<ConversionResult> ConvertExcelToPdf(string inputPath, string outputPath)
         {
-            // Placeholder for Excel conversion
-            // Will need Microsoft.Office.Interop.Excel package
-            var result = new ConversionResult
+            _logger.Information("Converting Excel to PDF: {ExcelPath} -> {PdfPath}", inputPath, outputPath);
+
+            return await Task.Run(() =>
             {
-                Success = false,
-                ErrorMessage = "Excel conversion not yet implemented"
-            };
-            
-            return await Task.FromResult(result);
+                Excel.Workbook? workbook = null;
+                var result = new ConversionResult();
+
+                try
+                {
+                    // Create Excel application if needed
+                    if (_excelApp == null)
+                    {
+                        try
+                        {
+                            _excelApp = new Excel.Application();
+                            _excelApp.Visible = false;
+                            _excelApp.DisplayAlerts = false;
+                        }
+                        catch (COMException ex)
+                        {
+                            _logger.Error(ex, "Microsoft Excel is not installed or accessible");
+                            result.Success = false;
+                            result.ErrorMessage = "Microsoft Excel is not installed. Please install Microsoft Office to convert Excel documents to PDF.";
+                            return result;
+                        }
+                    }
+
+                    // Open the workbook
+                    workbook = _excelApp.Workbooks.Open(
+                        inputPath,
+                        ReadOnly: true,
+                        IgnoreReadOnlyRecommended: true,
+                        Notify: false);
+
+                    // Export as PDF
+                    workbook.ExportAsFixedFormat(
+                        Excel.XlFixedFormatType.xlTypePDF,
+                        outputPath,
+                        Excel.XlFixedFormatQuality.xlQualityStandard,
+                        IncludeDocProperties: true,
+                        IgnorePrintAreas: false,
+                        OpenAfterPublish: false);
+
+                    _logger.Information("Successfully converted Excel to PDF");
+                    result.Success = true;
+                    result.OutputPath = outputPath;
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Failed to convert Excel to PDF");
+                    result.Success = false;
+                    result.ErrorMessage = $"Excel conversion failed: {ex.Message}";
+                }
+                finally
+                {
+                    // Clean up
+                    if (workbook != null)
+                    {
+                        try
+                        {
+                            workbook.Close(false);
+                            Marshal.ReleaseComObject(workbook);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Error closing Excel workbook");
+                        }
+                    }
+                }
+
+                return result;
+            });
         }
         
         public bool IsOfficeInstalled()
@@ -139,11 +204,6 @@ namespace DocHandler.Services
                         Marshal.ReleaseComObject(_wordApp);
                         _wordApp = null;
                         
-                        // Force garbage collection to release COM objects
-                        GC.Collect();
-                        GC.WaitForPendingFinalizers();
-                        GC.Collect();
-                        
                         _logger.Information("Word application closed");
                     }
                     catch (Exception ex)
@@ -151,6 +211,28 @@ namespace DocHandler.Services
                         _logger.Warning(ex, "Error closing Word application");
                     }
                 }
+                
+                // Clean up Excel application
+                if (_excelApp != null)
+                {
+                    try
+                    {
+                        _excelApp.Quit();
+                        Marshal.ReleaseComObject(_excelApp);
+                        _excelApp = null;
+                        
+                        _logger.Information("Excel application closed");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Error closing Excel application");
+                    }
+                }
+                
+                // Force garbage collection to release COM objects
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
                 
                 _disposed = true;
             }
