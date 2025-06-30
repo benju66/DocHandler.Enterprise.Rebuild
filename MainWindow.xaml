@@ -1,0 +1,167 @@
+﻿<Window x:Class="DocHandler.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:ui="http://schemas.modernwpf.com/2019"
+        xmlns:vm="clr-namespace:DocHandler.ViewModels"
+        mc:Ignorable="d"
+        Title="DocHandler - Document Processing Tool" 
+        Height="600" Width="900"
+        WindowStartupLocation="CenterScreen"
+        ui:WindowHelper.UseModernWindowStyle="True">
+    
+    <Window.DataContext>
+        <vm:MainViewModel/>
+    </Window.DataContext>
+    
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <!-- Header -->
+        <Border Grid.Row="0" Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}" 
+                Padding="20,15">
+            <TextBlock Text="Document Handler" FontSize="24" FontWeight="SemiBold"/>
+        </Border>
+        
+        <!-- Main Content -->
+        <Grid Grid.Row="1" Margin="20">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="350"/>
+            </Grid.ColumnDefinitions>
+            
+            <!-- Drop Area -->
+            <Border Grid.Column="0" 
+                    Name="DropBorder"
+                    BorderBrush="{DynamicResource SystemControlForegroundBaseMediumBrush}" 
+                    BorderThickness="2" 
+                    CornerRadius="8"
+                    Background="{DynamicResource SystemControlBackgroundAltHighBrush}"
+                    AllowDrop="True"
+                    Drop="Border_Drop"
+                    DragEnter="Border_DragEnter"
+                    DragLeave="Border_DragLeave"
+                    Margin="0,0,10,0">
+                <Grid>
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                                Visibility="{Binding Path=PendingFiles.Count, Converter={StaticResource IntToVisibilityConverter}, ConverterParameter=0}">
+                        <TextBlock Text="📄" FontSize="48" HorizontalAlignment="Center" Margin="0,0,0,10"/>
+                        <TextBlock Text="Drop files here" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                        <TextBlock Text="PDF, Word, and Excel files supported" FontSize="14" 
+                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                                   HorizontalAlignment="Center" Margin="0,5,0,0"/>
+                    </StackPanel>
+                    
+                    <!-- File List -->
+                    <ListBox ItemsSource="{Binding PendingFiles}" 
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             BorderThickness="0"
+                             Background="Transparent"
+                             Margin="10">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="{DynamicResource SystemControlBackgroundListLowBrush}"
+                                        CornerRadius="4" Padding="10" Margin="0,2">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        
+                                        <TextBlock Grid.Column="0" Text="📄" FontSize="24" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                        
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock FontSize="12" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}">
+                                                <TextBlock.Text>
+                                                    <MultiBinding StringFormat="{}{0} • {1}">
+                                                        <Binding Path="FileType"/>
+                                                        <Binding Path="FileSizeDisplay"/>
+                                                    </MultiBinding>
+                                                </TextBlock.Text>
+                                            </TextBlock>
+                                        </StackPanel>
+                                        
+                                        <Button Grid.Column="3" 
+                                                Content="✕" 
+                                                FontSize="16"
+                                                Width="30" Height="30"
+                                                Background="Transparent"
+                                                BorderThickness="0"
+                                                Command="{Binding DataContext.RemoveFileCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}"
+                                                ToolTip="Remove file"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+            </Border>
+            
+            <!-- Right Panel -->
+            <StackPanel Grid.Column="1">
+                <!-- Options Card -->
+                <Border Background="{DynamicResource SystemControlBackgroundListLowBrush}" 
+                        CornerRadius="8" Padding="15" Margin="0,0,0,10">
+                    <StackPanel>
+                        <TextBlock Text="Processing Options" FontWeight="SemiBold" FontSize="16" Margin="0,0,0,10"/>
+                        
+                        <CheckBox Content="Convert Office files to PDF" IsChecked="True" Margin="0,5"/>
+                        <CheckBox Content="Compress PDFs" IsEnabled="False" Margin="0,5"/>
+                        <CheckBox Content="Apply OCR to scanned PDFs" IsEnabled="False" Margin="0,5"/>
+                    </StackPanel>
+                </Border>
+                
+                <!-- Save Location Card -->
+                <Border Background="{DynamicResource SystemControlBackgroundListLowBrush}" 
+                        CornerRadius="8" Padding="15" Margin="0,0,0,10">
+                    <StackPanel>
+                        <TextBlock Text="Save Location" FontWeight="SemiBold" FontSize="16" Margin="0,0,0,10"/>
+                        <TextBlock Text="{Binding ConfigService.Config.DefaultSaveLocation}" 
+                                   TextWrapping="Wrap"
+                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                        <Button Content="Change Location" Margin="0,10,0,0" HorizontalAlignment="Left" IsEnabled="False"/>
+                    </StackPanel>
+                </Border>
+                
+                <!-- Action Buttons -->
+                <StackPanel Margin="0,10,0,0">
+                    <Button Content="{Binding ProcessButtonText}" 
+                            Command="{Binding ProcessFilesCommand}"
+                            IsEnabled="{Binding CanProcess}"
+                            FontSize="16" 
+                            Height="45"
+                            Style="{StaticResource AccentButtonStyle}"
+                            Margin="0,0,0,10"/>
+                    
+                    <Button Content="Clear All Files" 
+                            Command="{Binding ClearFilesCommand}"
+                            IsEnabled="{Binding Path=PendingFiles.Count, Converter={StaticResource IntToBoolConverter}}"
+                            Height="40"/>
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+        
+        <!-- Progress Bar -->
+        <ProgressBar Grid.Row="2" 
+                     Height="4" 
+                     Value="{Binding ProgressValue}"
+                     Visibility="{Binding IsProcessing, Converter={StaticResource BoolToVisibilityConverter}}"/>
+        
+        <!-- Status Bar -->
+        <Border Grid.Row="3" 
+                Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}" 
+                Padding="20,10">
+            <TextBlock Text="{Binding StatusMessage}" FontSize="14"/>
+        </Border>
+    </Grid>
+</Window>
