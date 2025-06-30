@@ -1,0 +1,138 @@
+02-9200 - Survey
+02-4100 - Demolition  
+02-9005 - Final Cleaning  
+02-9420 - Equipment Rental  
+02-9505 - Const Materials Testing  
+03-0000 - Concrete  
+03-3000 - Cast in Place Concrete  
+03-3543 - Polished Concrete  
+03-4100 - Precast Structural Concrete  
+03-4500 - Precast Architectural Concrete  
+03-5413 - Gypcrete  
+03-8000 - Concrete Cutting and Coring  
+04-0000 - Masonry  
+05-1200 - Structural Steel  
+05-5000 - Metal Fabrications  
+05-7210 - Aluminum Deck and Railings  
+06-1000 - Rough Carpentry Material  
+06-1010 - Rough Carpentry Installation  
+06-1710 - Manufactured Wall Panels  
+06-1753 - Wood Trusses  
+06-1800 - Glu-Laminated Construction  
+06-2000 - Finish Carpentry Installation  
+06-2200 - Millwork  
+06-4100 - Architectural Casework & Millwork  
+06-6113 - Cultured Marble Fabrication  
+06-6116 - Solid Surfacing and Ctops  
+06-7300 - Composite Decking  
+06-8316 - FRP Wall Paneling  
+06-8700 - Pergolas  
+07-1000 - Waterproofing  
+07-1413 - Hot Fluid Applied Waterproofing  
+07-1800 - Traffic Coatings  
+07-2100 - Thermal Insulation  
+07-2400 - Stucco, Plaster, EIFS  
+07-2500 - Weather Barriers  
+07-2700 - Spray-Applied Air Barriers  
+07-3113 - Asphalt Shingles  
+07-4213 - Metal Panel Siding  
+07-4600 - Siding  
+07-5000 - Membrane Roofing  
+07-6000 - Roof Pavers  
+07-6200 - Sheet Metal Flashing and Trim  
+07-8100 - Applied Fireproofing  
+07-8400 - Firestopping  
+07-9200 - Joint Sealants  
+07-9500 - Expansion Joints  
+08-1000 - Doors, Frames, Hardware  
+08-3000 - Specialty Doors and Frames  
+08-3113 - Access Doors and Panels  
+08-3613 - Overhead and Coiling Doors  
+08-4000 - Aluminum Entrances and Storefronts  
+08-4400 - Curtain Wall  
+08-5113 - Aluminum Windows and Patio Doors  
+08-5413 - Windows and Patio Doors  
+08-6000 - Roof Windows and Skylights  
+08-7000 - Hardware  
+08-8000 - Glazing  
+08-8330 - Mirrors  
+08-9000 - Louvers and Vents  
+09-2116 - Gypsum Board Assemblies  
+09-2216 - Steel Stud Metal Framing  
+09-3000 - Tile  
+09-5123 - Acoustical Tile Ceilings  
+09-6400 - Wood Flooring  
+09-6500 - Resilient Flooring  
+09-6600 - Terrazzo Flooring  
+09-6800 - Carpeting  
+09-7200 - Wall Coverings  
+09-9000 - Painting and Coating  
+09-9646 - Intumescent Painting  
+09-9656 - Epoxy Flooring  
+10-0000 - Specialties  
+10-1400 - Signage  
+10-1453 - Traffic Signage  
+10-2113 - Toilet Partitions  
+10-2213 - Wire Mesh Storage Cages  
+10-2226 - Operable Partitions  
+10-2600 - Wall and Door Protection  
+10-2800 - Toilet and Bath Accessories  
+10-2819 - Tub and Shower Doors  
+10-3100 - Manufactured Fireplaces  
+10-3110 - Outdoor Fire Pits  
+10-4413 - Fire Extinguishers and Cabinets  
+10-5100 - Lockers  
+10-5500 - Postal Specialties  
+10-5623 - Closet Shelving  
+10-7313 - Awnings and Canopies  
+10-7500 - Flagpoles  
+10-9000 - Golf Simulator  
+11-0000 - Equipment  
+11-1313 - Loading Dock Equipment  
+11-2423 - Window Washing System  
+11-3100 - Appliances  
+11-3110 - Outdoor Gas Grill  
+11-4000 - Food Service Equipment  
+11-6700 - Recreational Equipment  
+11-8216 - Trash Compactors  
+12-2000 - Window Treatments  
+12-3530 - Residential Casework  
+12-3640 - Residential Countertops  
+12-3663 - Window Sills  
+12-4000 - Furnishings and Accessories  
+12-4813 - Entrance Floor Mats and Frames  
+12-9313 - Bike Equipment and Racks  
+13-1100 - Swimming Pools and Spas  
+13-1900 - Pet Equipment  
+13-2416 - Saunas  
+14-0000 - Conveying Equipment  
+14-2000 - Elevators  
+14-4200 - Wheelchair Lifts  
+14-9182 - Trash Chutes  
+21-0000 - Fire Suppression  
+22-0000 - Plumbing  
+23-0000 - HVAC  
+26-0000 - Electrical  
+27-2000 - Data Communications  
+27-4000 - Audio Video Communications  
+28-1300 - Access Control  
+28-3000 - Video Surveillance  
+28-4600 - Fire Detection and Alarm  
+28-9010 - Radio Amplification System  
+31-0000 - Earthwork  
+31-2113 - Radon Mitigation  
+31-2316 - Excavation  
+31-4000 - Shoring  
+31-4300 - Concrete Raising  
+31-6000 - Piles, Piers and Caissons  
+32-1216 - Asphalt Paving  
+32-1313 - Concrete Paving  
+32-1316 - Decorative Concrete Paving  
+32-1343 - Pervious Concrete Paving  
+32-1400 - Unit Pavers  
+32-1613 - Site Concrete  
+32-1813 - Artificial Turf  
+32-3100 - Fences and Gates  
+32-3200 - Retaining Walls  
+32-9000 - Landscaping and Irrigation  
+33-0000 - Utilities  

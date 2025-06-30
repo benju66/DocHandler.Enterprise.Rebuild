@@ -1,0 +1,556 @@
+{
+  "Scopes": [
+    {
+      "Code": "02-9200",
+      "Description": "Survey"
+    },
+    {
+      "Code": "02-4100",
+      "Description": "Demolition"
+    },
+    {
+      "Code": "02-9005",
+      "Description": "Final Cleaning"
+    },
+    {
+      "Code": "02-9420",
+      "Description": "Equipment Rental"
+    },
+    {
+      "Code": "02-9505",
+      "Description": "Const Materials Testing"
+    },
+    {
+      "Code": "03-0000",
+      "Description": "Concrete"
+    },
+    {
+      "Code": "03-3000",
+      "Description": "Cast in Place Concrete"
+    },
+    {
+      "Code": "03-3543",
+      "Description": "Polished Concrete"
+    },
+    {
+      "Code": "03-4100",
+      "Description": "Precast Structural Concrete"
+    },
+    {
+      "Code": "03-4500",
+      "Description": "Precast Architectural Concrete"
+    },
+    {
+      "Code": "03-5413",
+      "Description": "Gypcrete"
+    },
+    {
+      "Code": "03-8000",
+      "Description": "Concrete Cutting and Coring"
+    },
+    {
+      "Code": "04-0000",
+      "Description": "Masonry"
+    },
+    {
+      "Code": "05-1200",
+      "Description": "Structural Steel"
+    },
+    {
+      "Code": "05-5000",
+      "Description": "Metal Fabrications"
+    },
+    {
+      "Code": "05-7210",
+      "Description": "Aluminum Deck and Railings"
+    },
+    {
+      "Code": "06-1000",
+      "Description": "Rough Carpentry Material"
+    },
+    {
+      "Code": "06-1010",
+      "Description": "Rough Carpentry Installation"
+    },
+    {
+      "Code": "06-1710",
+      "Description": "Manufactured Wall Panels"
+    },
+    {
+      "Code": "06-1753",
+      "Description": "Wood Trusses"
+    },
+    {
+      "Code": "06-1800",
+      "Description": "Glu-Laminated Construction"
+    },
+    {
+      "Code": "06-2000",
+      "Description": "Finish Carpentry Installation"
+    },
+    {
+      "Code": "06-2200",
+      "Description": "Millwork"
+    },
+    {
+      "Code": "06-4100",
+      "Description": "Architectural Casework & Millwork"
+    },
+    {
+      "Code": "06-6113",
+      "Description": "Cultured Marble Fabrication"
+    },
+    {
+      "Code": "06-6116",
+      "Description": "Solid Surfacing and Ctops"
+    },
+    {
+      "Code": "06-7300",
+      "Description": "Composite Decking"
+    },
+    {
+      "Code": "06-8316",
+      "Description": "FRP Wall Paneling"
+    },
+    {
+      "Code": "06-8700",
+      "Description": "Pergolas"
+    },
+    {
+      "Code": "07-1000",
+      "Description": "Waterproofing"
+    },
+    {
+      "Code": "07-1413",
+      "Description": "Hot Fluid Applied Waterproofing"
+    },
+    {
+      "Code": "07-1800",
+      "Description": "Traffic Coatings"
+    },
+    {
+      "Code": "07-2100",
+      "Description": "Thermal Insulation"
+    },
+    {
+      "Code": "07-2400",
+      "Description": "Stucco, Plaster, EIFS"
+    },
+    {
+      "Code": "07-2500",
+      "Description": "Weather Barriers"
+    },
+    {
+      "Code": "07-2700",
+      "Description": "Spray-Applied Air Barriers"
+    },
+    {
+      "Code": "07-3113",
+      "Description": "Asphalt Shingles"
+    },
+    {
+      "Code": "07-4213",
+      "Description": "Metal Panel Siding"
+    },
+    {
+      "Code": "07-4600",
+      "Description": "Siding"
+    },
+    {
+      "Code": "07-5000",
+      "Description": "Membrane Roofing"
+    },
+    {
+      "Code": "07-6000",
+      "Description": "Roof Pavers"
+    },
+    {
+      "Code": "07-6200",
+      "Description": "Sheet Metal Flashing and Trim"
+    },
+    {
+      "Code": "07-8100",
+      "Description": "Applied Fireproofing"
+    },
+    {
+      "Code": "07-8400",
+      "Description": "Firestopping"
+    },
+    {
+      "Code": "07-9200",
+      "Description": "Joint Sealants"
+    },
+    {
+      "Code": "07-9500",
+      "Description": "Expansion Joints"
+    },
+    {
+      "Code": "08-1000",
+      "Description": "Doors, Frames, Hardware"
+    },
+    {
+      "Code": "08-3000",
+      "Description": "Specialty Doors and Frames"
+    },
+    {
+      "Code": "08-3113",
+      "Description": "Access Doors and Panels"
+    },
+    {
+      "Code": "08-3613",
+      "Description": "Overhead and Coiling Doors"
+    },
+    {
+      "Code": "08-4000",
+      "Description": "Aluminum Entrances and Storefronts"
+    },
+    {
+      "Code": "08-4400",
+      "Description": "Curtain Wall"
+    },
+    {
+      "Code": "08-5113",
+      "Description": "Aluminum Windows and Patio Doors"
+    },
+    {
+      "Code": "08-5413",
+      "Description": "Windows and Patio Doors"
+    },
+    {
+      "Code": "08-6000",
+      "Description": "Roof Windows and Skylights"
+    },
+    {
+      "Code": "08-7000",
+      "Description": "Hardware"
+    },
+    {
+      "Code": "08-8000",
+      "Description": "Glazing"
+    },
+    {
+      "Code": "08-8330",
+      "Description": "Mirrors"
+    },
+    {
+      "Code": "08-9000",
+      "Description": "Louvers and Vents"
+    },
+    {
+      "Code": "09-2116",
+      "Description": "Gypsum Board Assemblies"
+    },
+    {
+      "Code": "09-2216",
+      "Description": "Steel Stud Metal Framing"
+    },
+    {
+      "Code": "09-3000",
+      "Description": "Tile"
+    },
+    {
+      "Code": "09-5123",
+      "Description": "Acoustical Tile Ceilings"
+    },
+    {
+      "Code": "09-6400",
+      "Description": "Wood Flooring"
+    },
+    {
+      "Code": "09-6500",
+      "Description": "Resilient Flooring"
+    },
+    {
+      "Code": "09-6600",
+      "Description": "Terrazzo Flooring"
+    },
+    {
+      "Code": "09-6800",
+      "Description": "Carpeting"
+    },
+    {
+      "Code": "09-7200",
+      "Description": "Wall Coverings"
+    },
+    {
+      "Code": "09-9000",
+      "Description": "Painting and Coating"
+    },
+    {
+      "Code": "09-9646",
+      "Description": "Intumescent Painting"
+    },
+    {
+      "Code": "09-9656",
+      "Description": "Epoxy Flooring"
+    },
+    {
+      "Code": "10-0000",
+      "Description": "Specialties"
+    },
+    {
+      "Code": "10-1400",
+      "Description": "Signage"
+    },
+    {
+      "Code": "10-1453",
+      "Description": "Traffic Signage"
+    },
+    {
+      "Code": "10-2113",
+      "Description": "Toilet Partitions"
+    },
+    {
+      "Code": "10-2213",
+      "Description": "Wire Mesh Storage Cages"
+    },
+    {
+      "Code": "10-2226",
+      "Description": "Operable Partitions"
+    },
+    {
+      "Code": "10-2600",
+      "Description": "Wall and Door Protection"
+    },
+    {
+      "Code": "10-2800",
+      "Description": "Toilet and Bath Accessories"
+    },
+    {
+      "Code": "10-2819",
+      "Description": "Tub and Shower Doors"
+    },
+    {
+      "Code": "10-3100",
+      "Description": "Manufactured Fireplaces"
+    },
+    {
+      "Code": "10-3110",
+      "Description": "Outdoor Fire Pits"
+    },
+    {
+      "Code": "10-4413",
+      "Description": "Fire Extinguishers and Cabinets"
+    },
+    {
+      "Code": "10-5100",
+      "Description": "Lockers"
+    },
+    {
+      "Code": "10-5500",
+      "Description": "Postal Specialties"
+    },
+    {
+      "Code": "10-5623",
+      "Description": "Closet Shelving"
+    },
+    {
+      "Code": "10-7313",
+      "Description": "Awnings and Canopies"
+    },
+    {
+      "Code": "10-7500",
+      "Description": "Flagpoles"
+    },
+    {
+      "Code": "10-9000",
+      "Description": "Golf Simulator"
+    },
+    {
+      "Code": "11-0000",
+      "Description": "Equipment"
+    },
+    {
+      "Code": "11-1313",
+      "Description": "Loading Dock Equipment"
+    },
+    {
+      "Code": "11-2423",
+      "Description": "Window Washing System"
+    },
+    {
+      "Code": "11-3100",
+      "Description": "Appliances"
+    },
+    {
+      "Code": "11-3110",
+      "Description": "Outdoor Gas Grill"
+    },
+    {
+      "Code": "11-4000",
+      "Description": "Food Service Equipment"
+    },
+    {
+      "Code": "11-6700",
+      "Description": "Recreational Equipment"
+    },
+    {
+      "Code": "11-8216",
+      "Description": "Trash Compactors"
+    },
+    {
+      "Code": "12-2000",
+      "Description": "Window Treatments"
+    },
+    {
+      "Code": "12-3530",
+      "Description": "Residential Casework"
+    },
+    {
+      "Code": "12-3640",
+      "Description": "Residential Countertops"
+    },
+    {
+      "Code": "12-3663",
+      "Description": "Window Sills"
+    },
+    {
+      "Code": "12-4000",
+      "Description": "Furnishings and Accessories"
+    },
+    {
+      "Code": "12-4813",
+      "Description": "Entrance Floor Mats and Frames"
+    },
+    {
+      "Code": "12-9313",
+      "Description": "Bike Equipment and Racks"
+    },
+    {
+      "Code": "13-1100",
+      "Description": "Swimming Pools and Spas"
+    },
+    {
+      "Code": "13-1900",
+      "Description": "Pet Equipment"
+    },
+    {
+      "Code": "13-2416",
+      "Description": "Saunas"
+    },
+    {
+      "Code": "14-0000",
+      "Description": "Conveying Equipment"
+    },
+    {
+      "Code": "14-2000",
+      "Description": "Elevators"
+    },
+    {
+      "Code": "14-4200",
+      "Description": "Wheelchair Lifts"
+    },
+    {
+      "Code": "14-9182",
+      "Description": "Trash Chutes"
+    },
+    {
+      "Code": "21-0000",
+      "Description": "Fire Suppression"
+    },
+    {
+      "Code": "22-0000",
+      "Description": "Plumbing"
+    },
+    {
+      "Code": "23-0000",
+      "Description": "HVAC"
+    },
+    {
+      "Code": "26-0000",
+      "Description": "Electrical"
+    },
+    {
+      "Code": "27-2000",
+      "Description": "Data Communications"
+    },
+    {
+      "Code": "27-4000",
+      "Description": "Audio Video Communications"
+    },
+    {
+      "Code": "28-1300",
+      "Description": "Access Control"
+    },
+    {
+      "Code": "28-3000",
+      "Description": "Video Surveillance"
+    },
+    {
+      "Code": "28-4600",
+      "Description": "Fire Detection and Alarm"
+    },
+    {
+      "Code": "28-9010",
+      "Description": "Radio Amplification System"
+    },
+    {
+      "Code": "31-0000",
+      "Description": "Earthwork"
+    },
+    {
+      "Code": "31-2113",
+      "Description": "Radon Mitigation"
+    },
+    {
+      "Code": "31-2316",
+      "Description": "Excavation"
+    },
+    {
+      "Code": "31-4000",
+      "Description": "Shoring"
+    },
+    {
+      "Code": "31-4300",
+      "Description": "Concrete Raising"
+    },
+    {
+      "Code": "31-6000",
+      "Description": "Piles, Piers and Caissons"
+    },
+    {
+      "Code": "32-1216",
+      "Description": "Asphalt Paving"
+    },
+    {
+      "Code": "32-1313",
+      "Description": "Concrete Paving"
+    },
+    {
+      "Code": "32-1316",
+      "Description": "Decorative Concrete Paving"
+    },
+    {
+      "Code": "32-1343",
+      "Description": "Pervious Concrete Paving"
+    },
+    {
+      "Code": "32-1400",
+      "Description": "Unit Pavers"
+    },
+    {
+      "Code": "32-1613",
+      "Description": "Site Concrete"
+    },
+    {
+      "Code": "32-1813",
+      "Description": "Artificial Turf"
+    },
+    {
+      "Code": "32-3100",
+      "Description": "Fences and Gates"
+    },
+    {
+      "Code": "32-3200",
+      "Description": "Retaining Walls"
+    },
+    {
+      "Code": "32-9000",
+      "Description": "Landscaping and Irrigation"
+    },
+    {
+      "Code": "33-0000",
+      "Description": "Utilities"
+    }
+  ]
+}
