@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using DocHandler.ViewModels;
 using Serilog;
@@ -63,6 +65,30 @@ namespace DocHandler
             // Reset border appearance
             DropBorder.BorderBrush = (Brush)FindResource("SystemControlForegroundBaseMediumBrush");
             DropBorder.BorderThickness = new Thickness(2);
+        }
+        
+        /// <summary>
+        /// Handle double-click on recent portion items to select them
+        /// </summary>
+        private void RecentPortionItem_DoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is ListBoxItem item && item.DataContext is string portion)
+            {
+                ViewModel.SelectedFileNamePortion = portion;
+                ViewModel.FileNamePortionSearchText = portion;
+                ViewModel.SelectFileNamePortionCommand.Execute(portion);
+            }
+        }
+        
+        /// <summary>
+        /// Handle selection of filename portion from main list
+        /// </summary>
+        private void FileNamePortionItem_Selected(object sender, RoutedEventArgs e)
+        {
+            if (sender is ListBoxItem item && item.DataContext is string portion)
+            {
+                ViewModel.SelectFileNamePortionCommand.Execute(portion);
+            }
         }
         
         private void MainWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e)

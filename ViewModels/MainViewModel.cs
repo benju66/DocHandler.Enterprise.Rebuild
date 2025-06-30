@@ -8,6 +8,7 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using DocHandler.Services;
+using DocHandler.Views;
 using Serilog;
 
 namespace DocHandler.ViewModels
@@ -18,6 +19,8 @@ namespace DocHandler.ViewModels
         private readonly FileProcessingService _fileProcessingService;
         private readonly ConfigurationService _configService;
         private readonly OfficeConversionService _officeConversionService;
+        private readonly CompanyNameService _companyNameService;
+        private readonly FileNamePortionService _fileNamePortionService;
         
         public ConfigurationService ConfigService => _configService;
         
@@ -47,29 +50,91 @@ namespace DocHandler.ViewModels
         [ObservableProperty]
         private string _processButtonText = "Process Files";
         
+        // Save Quotes Mode properties
+        [ObservableProperty]
+        private bool _saveQuotesMode;
+
+        [ObservableProperty]
+        private string? _selectedFileNamePortion;
+
+        [ObservableProperty]
+        private ObservableCollection<string> _fileNamePortions = new();
+
+        [ObservableProperty]
+        private ObservableCollection<string> _recentPortions = new();
+
+        [ObservableProperty]
+        private string _fileNamePortionSearchText = "";
+
+        [ObservableProperty]
+        private string _sessionSaveLocation = "";
+        
         public MainViewModel()
         {
             _logger = Log.ForContext<MainViewModel>();
             _fileProcessingService = new FileProcessingService();
             _configService = new ConfigurationService();
             _officeConversionService = new OfficeConversionService();
+            _companyNameService = new CompanyNameService();
+            _fileNamePortionService = new FileNamePortionService();
+            
+            // Load filename portions
+            LoadFileNamePortions();
+            LoadRecentPortions();
             
             // Update UI when files are added/removed
             PendingFiles.CollectionChanged += (s, e) => UpdateUI();
         }
         
+        private void LoadFileNamePortions()
+        {
+            FileNamePortions.Clear();
+            foreach (var portion in _fileNamePortionService.Portions)
+            {
+                FileNamePortions.Add(_fileNamePortionService.GetFormattedPortion(portion));
+            }
+        }
+
+        private void LoadRecentPortions()
+        {
+            RecentPortions.Clear();
+            foreach (var portion in _fileNamePortionService.RecentPortions.Take(10))
+            {
+                RecentPortions.Add(portion);
+            }
+        }
+        
         private void UpdateUI()
         {
-            CanProcess = PendingFiles.Count > 0 && !IsProcessing;
-            ProcessButtonText = PendingFiles.Count > 1 ? "Merge and Save" : "Process Files";
-            
-            if (PendingFiles.Count == 0)
+            if (SaveQuotesMode)
             {
-                StatusMessage = "Drop files here to begin";
+                CanProcess = PendingFiles.Count > 0 && !IsProcessing && !string.IsNullOrEmpty(SelectedFileNamePortion);
+                ProcessButtonText = PendingFiles.Count > 1 ? "Process All Quotes" : "Process Quote";
+                
+                if (PendingFiles.Count == 0)
+                {
+                    StatusMessage = string.IsNullOrEmpty(SelectedFileNamePortion) 
+                        ? "Select a filename portion and drop quotes" 
+                        : $"Selected: {SelectedFileNamePortion} - Drop quote documents";
+                }
+                else
+                {
+                    StatusMessage = $"{PendingFiles.Count} quote(s) ready - {SelectedFileNamePortion}";
+                }
             }
             else
             {
-                StatusMessage = $"{PendingFiles.Count} file(s) ready to process";
+                CanProcess = PendingFiles.Count > 0 && !IsProcessing;
+                ProcessButtonText = PendingFiles.Count > 1 ? "Merge and Save" : "Process Files";
+                
+                if (PendingFiles.Count == 0)
+                {
+                    StatusMessage = "Drop files here to begin";
+                }
+                else
+                {
+                    StatusMessage = $"{PendingFiles.Count} file(s) ready to process";
+                }
             }
         }
         
@@ -108,6 +173,12 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private async Task ProcessFiles()
         {
+            if (SaveQuotesMode)
+            {
+                await ProcessSaveQuotes();
+                return;
+            }
+
             if (!PendingFiles.Any())
             {
                 StatusMessage = "No files selected";
@@ -217,6 +288,307 @@ namespace DocHandler.ViewModels
                 PendingFiles.Remove(fileItem);
                 UpdateUI();
             }
+        }
+        
+        [RelayCommand]
+        private void ToggleSaveQuotesMode()
+        {
+            SaveQuotesMode = !SaveQuotesMode;
+            UpdateUI();
+            
+            if (SaveQuotesMode)
+            {
+                StatusMessage = "Save Quotes Mode: Select a filename portion and drop quotes";
+                SessionSaveLocation = _configService.Config.DefaultSaveLocation;
+            }
+            else
+            {
+                StatusMessage = "Drop files here to begin";
+                SelectedFileNamePortion = null;
+            }
+        }
+
+        [RelayCommand]
+        public void SelectFileNamePortion(string? portion)
+        {
+            SelectedFileNamePortion = portion;
+            if (!string.IsNullOrEmpty(portion))
+            {
+                _ = _fileNamePortionService.UpdateRecentPortion(portion);
+                LoadRecentPortions();
+                StatusMessage = $"Selected: {portion} - Drop quote documents";
+            }
+            UpdateUI();
+        }
+
+        [RelayCommand]
+        private void SearchFileNamePortions()
+        {
+            FileNamePortions.Clear();
+            var searchResults = _fileNamePortionService.SearchPortions(FileNamePortionSearchText);
+            
+            foreach (var portion in searchResults)
+            {
+                FileNamePortions.Add(_fileNamePortionService.GetFormattedPortion(portion));
+            }
+        }
+
+        [RelayCommand]
+        private async Task ClearRecentPortions()
+        {
+            await _fileNamePortionService.ClearRecentPortions();
+            LoadRecentPortions();
+        }
+
+        private async Task ProcessSaveQuotes()
+        {
+            if (!SaveQuotesMode || string.IsNullOrEmpty(SelectedFileNamePortion))
+            {
+                MessageBox.Show("Please select a filename portion first.", "Save Quotes", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (!PendingFiles.Any())
+            {
+                StatusMessage = "No quote documents to process";
+                return;
+            }
+
+            IsProcessing = true;
+            var processedCount = 0;
+            var failedFiles = new List<(string file, string error)>();
+
+            try
+            {
+                var outputDir = !string.IsNullOrEmpty(SessionSaveLocation) 
+                    ? SessionSaveLocation 
+                    : _configService.Config.DefaultSaveLocation;
+
+                foreach (var file in PendingFiles.ToList())
+                {
+                    try
+                    {
+                        StatusMessage = $"Processing quote: {file.FileName}";
+                        
+                        // First, scan for company name
+                        var detectedCompany = await _companyNameService.ScanDocumentForCompanyName(file.FilePath);
+                        string companyName;
+
+                        if (!string.IsNullOrEmpty(detectedCompany))
+                        {
+                            // Found a company - confirm with user
+                            var confirmResult = MessageBox.Show(
+                                $"Detected company: {detectedCompany}\n\nIs this correct?",
+                                "Confirm Company Name",
+                                MessageBoxButton.YesNoCancel,
+                                MessageBoxImage.Question);
+
+                            if (confirmResult == MessageBoxResult.Cancel)
+                                continue;
+
+                            if (confirmResult == MessageBoxResult.Yes)
+                            {
+                                companyName = detectedCompany;
+                            }
+                            else
+                            {
+                                // User said no, prompt for correct name
+                                companyName = await PromptForCompanyName();
+                                if (string.IsNullOrEmpty(companyName))
+                                    continue;
+                            }
+                        }
+                        else
+                        {
+                            // No company detected, prompt user
+                            companyName = await PromptForCompanyName();
+                            if (string.IsNullOrEmpty(companyName))
+                                continue;
+                        }
+
+                        // Build the filename: [Portion] - [Company].pdf
+                        var outputFileName = $"{SelectedFileNamePortion} - {companyName}.pdf";
+                        var outputPath = Path.Combine(outputDir, outputFileName);
+
+                        // Ensure unique filename
+                        outputPath = Path.Combine(outputDir, 
+                            _fileProcessingService.GetUniqueFileName(outputDir, outputFileName));
+
+                        // Process the file (convert if needed and save)
+                        var processResult = await ProcessSingleQuoteFile(file.FilePath, outputPath);
+                        
+                        if (processResult.Success)
+                        {
+                            processedCount++;
+                            PendingFiles.Remove(file);
+                            _logger.Information("Saved quote as: {FileName}", outputFileName);
+                        }
+                        else
+                        {
+                            failedFiles.Add((file.FileName, processResult.ErrorMessage ?? "Unknown error"));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Failed to process quote: {File}", file.FileName);
+                        failedFiles.Add((file.FileName, ex.Message));
+                    }
+                }
+
+                // Update status
+                if (processedCount > 0)
+                {
+                    StatusMessage = $"Successfully processed {processedCount} quote(s)";
+                    
+                    // Open output folder
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = outputDir,
+                            UseShellExecute = true,
+                            Verb = "open"
+                        });
+                    }
+                    catch { }
+                }
+
+                if (failedFiles.Any())
+                {
+                    var failedList = string.Join("\n", failedFiles.Select(f => $"• {f.file}: {f.error}"));
+                    MessageBox.Show(
+                        $"The following quotes could not be processed:\n\n{failedList}",
+                        "Processing Errors",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Save Quotes processing failed");
+                MessageBox.Show($"An error occurred: {ex.Message}", "Error", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                IsProcessing = false;
+                UpdateUI();
+            }
+        }
+
+        private async Task<ProcessingResult> ProcessSingleQuoteFile(string inputPath, string outputPath)
+        {
+            var extension = Path.GetExtension(inputPath).ToLowerInvariant();
+            
+            if (extension == ".pdf")
+            {
+                // Just copy the PDF
+                File.Copy(inputPath, outputPath, true);
+                return new ProcessingResult { Success = true, SuccessfulFiles = { outputPath } };
+            }
+            else
+            {
+                // Convert to PDF first
+                var files = new List<string> { inputPath };
+                var tempDir = _fileProcessingService.CreateTempFolder();
+                
+                try
+                {
+                    var result = await _fileProcessingService.ProcessFiles(files, tempDir, true);
+                    
+                    if (result.Success && result.SuccessfulFiles.Any())
+                    {
+                        var convertedPdf = result.SuccessfulFiles.First();
+                        File.Move(convertedPdf, outputPath, true);
+                        result.SuccessfulFiles[0] = outputPath;
+                    }
+                    
+                    return result;
+                }
+                finally
+                {
+                    // Clean up temp folder
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        private async Task<string> PromptForCompanyName(string detectedCompany = null)
+        {
+            return await Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                string message = detectedCompany != null
+                    ? $"Company '{detectedCompany}' was detected. Confirm or enter a different company name:"
+                    : "Please enter the company name for this quote:";
+
+                // Create suggested companies collection
+                // TODO: Update this when you add a GetCompanies/GetCompanyNames method to CompanyNameService
+                var suggestedCompanies = new ObservableCollection<string>();
+
+                // Create and show the dialog
+                var dialog = new CompanyNameDialog(message, suggestedCompanies)
+                {
+                    CompanyName = detectedCompany ?? string.Empty,
+                    Owner = Application.Current.MainWindow
+                };
+
+                if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.CompanyName))
+                {
+                    string companyName = dialog.CompanyName.Trim();
+
+                    // Add to database if requested
+                    if (dialog.AddToDatabase)
+                    {
+                        _ = _companyNameService.AddCompanyName(companyName);
+                    }
+
+                    return companyName;
+                }
+
+                return null;
+            });
+        }
+        
+        // Placeholder commands - implement these later
+        [RelayCommand]
+        private void SetSaveLocation()
+        {
+            // TODO: Implement folder browser dialog
+            MessageBox.Show("Set Save Location - Coming Soon", "Feature", 
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        [RelayCommand]
+        private void EditCompanyNames()
+        {
+            // TODO: Implement company names editor window
+            MessageBox.Show("Edit Company Names - Coming Soon", "Feature", 
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        [RelayCommand]
+        private void EditFileNamePortions()
+        {
+            // TODO: Implement filename portions editor window
+            MessageBox.Show("Edit Filename Portions - Coming Soon", "Feature", 
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        [RelayCommand]
+        private void Exit()
+        {
+            Application.Current.Shutdown();
+        }
+
+        [RelayCommand]
+        private void About()
+        {
+            MessageBox.Show(
+                "DocHandler Enterprise\nVersion 1.0\n\nDocument Processing Tool with Save Quotes Mode\n\n© 2024", 
+                "About DocHandler",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
         }
         
         public void Cleanup()
