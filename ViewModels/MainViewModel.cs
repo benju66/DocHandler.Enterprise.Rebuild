@@ -190,6 +190,9 @@ namespace DocHandler.ViewModels
                     {
                         DetectedCompanyName = detectedCompany;
                         _logger.Information("Detected company name: {Company}", detectedCompany);
+                        
+                        // Force UI update after detection
+                        UpdateUI();
                     }
                 }
             }
@@ -200,6 +203,7 @@ namespace DocHandler.ViewModels
             finally
             {
                 IsDetectingCompany = false;
+                UpdateUI(); // Ensure UI updates after detection completes
             }
         }
         
@@ -611,9 +615,25 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private void EditCompanyNames()
         {
-            // TODO: Implement company names editor window
-            MessageBox.Show("Edit Company Names - Coming Soon", "Feature", 
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            var window = new EditCompanyNamesWindow(_companyNameService)
+            {
+                Owner = Application.Current.MainWindow
+            };
+            
+            if (window.ShowDialog() == true)
+            {
+                _logger.Information("Company names were modified");
+                
+                // If we're in Save Quotes mode and have files, rescan them for company names
+                // since the database has changed
+                if (SaveQuotesMode && PendingFiles.Any())
+                {
+                    var firstFile = PendingFiles.First();
+                    CompanyNameInput = "";
+                    DetectedCompanyName = "";
+                    _ = ScanForCompanyName(firstFile.FilePath);
+                }
+            }
         }
 
         [RelayCommand]
@@ -821,6 +841,11 @@ namespace DocHandler.ViewModels
         
         // Command handlers
         partial void OnCompanyNameInputChanged(string value)
+        {
+            UpdateUI();
+        }
+        
+        partial void OnDetectedCompanyNameChanged(string? value)
         {
             UpdateUI();
         }

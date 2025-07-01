@@ -1,0 +1,243 @@
+<Window x:Class="DocHandler.Views.EditCompanyNamesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:ui="http://schemas.modernwpf.com/2019"
+        mc:Ignorable="d"
+        ui:WindowHelper.UseModernWindowStyle="True"
+        Title="Edit Company Names" 
+        Height="600" 
+        Width="800"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False">
+    
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <!-- Header -->
+        <Border Grid.Row="0" 
+                Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                Padding="20,15">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                
+                <StackPanel Grid.Column="0">
+                    <TextBlock Text="Company Names Manager"
+                               FontSize="20"
+                               FontWeight="SemiBold"/>
+                    <TextBlock Text="{Binding Companies.Count, StringFormat='{}{0} companies in database'}"
+                               FontSize="13"
+                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                               Margin="0,5,0,0"/>
+                </StackPanel>
+                
+                <Button Grid.Column="1" 
+                        Command="{Binding AddCompanyCommand}"
+                        VerticalAlignment="Center"
+                        Style="{StaticResource AccentButtonStyle}">
+                    <StackPanel Orientation="Horizontal">
+                        <ui:SymbolIcon Symbol="Add" Margin="0,0,8,0"/>
+                        <TextBlock Text="Add Company"/>
+                    </StackPanel>
+                </Button>
+            </Grid>
+        </Border>
+        
+        <!-- Search Bar -->
+        <Grid Grid.Row="1" Margin="20,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            
+            <ui:AutoSuggestBox Grid.Column="0"
+                              PlaceholderText="Search companies by name or alias..."
+                              Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                              QueryIcon="Find"
+                              Margin="0,0,10,0"/>
+            
+            <Button Grid.Column="1"
+                    Command="{Binding ClearSearchCommand}"
+                    Content="Clear"
+                    Padding="15,5"
+                    IsEnabled="{Binding SearchText, Converter={StaticResource StringNotEmptyConverter}}"/>
+        </Grid>
+        
+        <!-- Company List -->
+        <Border Grid.Row="2" 
+                Margin="20,0,20,10"
+                BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+                BorderThickness="1"
+                CornerRadius="4">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <ItemsControl ItemsSource="{Binding FilteredCompanies}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+                                    BorderThickness="0,0,0,1"
+                                    Padding="15,12">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Style.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}"/>
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    
+                                    <!-- Company Info -->
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{Binding Name}" 
+                                                   FontSize="14" 
+                                                   FontWeight="SemiBold"/>
+                                        <TextBlock FontSize="12"
+                                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                                                   Margin="0,2,0,0">
+                                            <TextBlock.Text>
+                                                <MultiBinding StringFormat="{}Aliases: {0}">
+                                                    <Binding Path="AliasesDisplay"/>
+                                                </MultiBinding>
+                                            </TextBlock.Text>
+                                        </TextBlock>
+                                        <TextBlock FontSize="11"
+                                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                                                   Margin="0,2,0,0">
+                                            <TextBlock.Text>
+                                                <MultiBinding StringFormat="{}Used {0} • Last used {1}">
+                                                    <Binding Path="UsageDisplay"/>
+                                                    <Binding Path="LastUsedDisplay"/>
+                                                </MultiBinding>
+                                            </TextBlock.Text>
+                                        </TextBlock>
+                                    </StackPanel>
+                                    
+                                    <!-- Usage Badge -->
+                                    <Border Grid.Column="1" 
+                                            Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                                            CornerRadius="12"
+                                            Padding="12,4"
+                                            Margin="10,0"
+                                            VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding UsageCount}" 
+                                                   FontWeight="SemiBold"
+                                                   FontSize="12"/>
+                                    </Border>
+                                    
+                                    <!-- Action Buttons -->
+                                    <StackPanel Grid.Column="2" 
+                                                Orientation="Horizontal"
+                                                VerticalAlignment="Center">
+                                        <Button Command="{Binding DataContext.EditCompanyCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}"
+                                                ToolTip="Edit company"
+                                                Margin="0,0,5,0"
+                                                Padding="8">
+                                            <ui:SymbolIcon Symbol="Edit" Width="16" Height="16"/>
+                                        </Button>
+                                        
+                                        <Button Command="{Binding DataContext.DeleteCompanyCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}"
+                                                ToolTip="Delete company"
+                                                Padding="8">
+                                            <Button.Style>
+                                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                                    <Style.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter Property="Foreground" Value="{DynamicResource SystemControlErrorTextForegroundBrush}"/>
+                                                        </Trigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                            <ui:SymbolIcon Symbol="Delete" Width="16" Height="16"/>
+                                        </Button>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                
+                <!-- Empty State -->
+                <TextBlock Text="No companies found"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Margin="0,50"
+                           FontSize="14"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding FilteredCompanies.Count}" Value="0">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </ScrollViewer>
+        </Border>
+        
+        <!-- Footer -->
+        <Border Grid.Row="3" 
+                Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                Padding="20,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                
+                <Button Grid.Column="0" 
+                        Command="{Binding RefreshListCommand}"
+                        Content="Refresh"
+                        Padding="15,5"
+                        Margin="0,0,10,0"/>
+                
+                <TextBlock Grid.Column="1" 
+                           Text="Changes are saved automatically"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Center"
+                           FontSize="12"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding HasChanges}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                
+                <Button Grid.Column="2" 
+                        Content="Close"
+                        IsCancel="True"
+                        Click="CloseButton_Click"
+                        Padding="20,5"
+                        MinWidth="80"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
