@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -58,55 +59,235 @@ namespace DocHandler
                 DropBorder.BorderBrush = (Brush)FindResource("SystemControlForegroundBaseMediumBrush");
                 DropBorder.BorderThickness = new Thickness(2);
                 
+                // DIAGNOSTIC: Log all available data formats
+                var formats = e.Data.GetFormats();
+                _logger.Information("Available drag formats: {Formats}", string.Join(", ", formats));
+                
                 var filesToAdd = new List<string>();
                 
-                // Check for standard file drop first
-                if (e.Data.GetDataPresent(DataFormats.FileDrop))
+                // Check for standard file drop first - but handle COM exceptions
+                try
                 {
-                    string[] files = (string[])e.Data.GetData(DataFormats.FileDrop);
-                    filesToAdd.AddRange(files);
-                    _logger.Information("Received {Count} files via standard file drop", files.Length);
+                    if (e.Data.GetDataPresent(DataFormats.FileDrop))
+                    {
+                        string[] files = (string[])e.Data.GetData(DataFormats.FileDrop);
+                        if (files != null)
+                        {
+                            filesToAdd.AddRange(files);
+                            _logger.Information("Received {Count} files via standard file drop", files.Length);
+                        }
+                    }
+                }
+                catch (System.Runtime.InteropServices.COMException comEx)
+                {
+                    _logger.Warning("COM exception accessing FileDrop format: {Message}", comEx.Message);
+                    // Continue trying other methods
                 }
                 
-                // Check for Outlook attachments
-                if (e.Data.GetDataPresent("FileGroupDescriptor") || e.Data.GetDataPresent("FileGroupDescriptorW"))
+                // If no files yet, check for classic Outlook attachments
+                if (!filesToAdd.Any() && (e.Data.GetDataPresent("FileGroupDescriptor") || e.Data.GetDataPresent("FileGroupDescriptorW")))
                 {
-                    _logger.Information("Detected Outlook attachment drop");
+                    _logger.Information("Detected classic Outlook attachment drop");
                     
                     try
                     {
-                        // Show processing indicator
                         Mouse.OverrideCursor = Cursors.Wait;
                         ViewModel.StatusMessage = "Extracting Outlook attachments...";
                         
-                        // Extract Outlook attachments
                         var outlookFiles = OutlookAttachmentHelper.ExtractOutlookAttachments(e.Data);
                         
                         if (outlookFiles.Any())
                         {
                             filesToAdd.AddRange(outlookFiles);
-                            _logger.Information("Successfully extracted {Count} Outlook attachments", outlookFiles.Count);
-                            
-                            // Mark these files for cleanup after processing
+                            _logger.Information("Successfully extracted {Count} classic Outlook attachments", outlookFiles.Count);
                             ViewModel.AddTempFilesForCleanup(outlookFiles);
-                        }
-                        else
-                        {
-                            _logger.Warning("No attachments could be extracted from Outlook drop");
                         }
                     }
                     catch (Exception ex)
                     {
-                        _logger.Error(ex, "Failed to extract Outlook attachments");
-                        MessageBox.Show(
-                            "Failed to extract attachments from Outlook. Please try saving the attachments first.",
-                            "Outlook Attachment Error",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Warning);
+                        _logger.Error(ex, "Failed to extract classic Outlook attachments");
                     }
                     finally
                     {
                         Mouse.OverrideCursor = null;
+                    }
+                }
+                
+                // If still no files, try new Outlook formats
+                if (!filesToAdd.Any())
+                {
+                    _logger.Information("Attempting to handle new Outlook formats");
+                    
+                    // Check for Chromium format (new Outlook indicator)
+                    if (formats.Contains("Chromium Web Custom MIME Data Format"))
+                    {
+                        _logger.Information("Detected new Chromium-based Outlook");
+                        
+                        try
+                        {
+                            // Try to read the Chromium MIME data
+                            var chromeData = e.Data.GetData("Chromium Web Custom MIME Data Format");
+                            if (chromeData is MemoryStream ms)
+                            {
+                                var bytes = ms.ToArray();
+                                _logger.Information("Chromium data size: {Size} bytes", bytes.Length);
+                                
+                                // FIRST: Log hex dump for analysis (do this before text conversions)
+                                try
+                                {
+                                    var hexDump = BitConverter.ToString(bytes.Take(200).ToArray()).Replace("-", " ");
+                                    _logger.Information("Hex dump (first 200 bytes): {Hex}", hexDump);
+                                }
+                                catch (Exception hexEx)
+                                {
+                                    _logger.Warning(hexEx, "Failed to create hex dump");
+                                }
+                                
+                                // Try multiple parsing approaches
+                                
+                                // 1. Try as UTF-8 text
+                                try
+                                {
+                                    var utf8Text = System.Text.Encoding.UTF8.GetString(bytes);
+                                    // Replace non-printable characters to prevent logging issues
+                                    var cleanUtf8 = System.Text.RegularExpressions.Regex.Replace(utf8Text, @"[\x00-\x1F\x7F-\x9F]", "?");
+                                    _logger.Information("UTF-8 text (cleaned): {Text}", cleanUtf8.Length > 200 ? cleanUtf8.Substring(0, 200) + "..." : cleanUtf8);
+                                }
+                                catch (Exception utf8Ex) 
+                                {
+                                    _logger.Warning(utf8Ex, "Failed to parse as UTF-8");
+                                }
+                                
+                                // 2. Try as UTF-16 text (this is what new Outlook uses)
+                                try
+                                {
+                                    var utf16Text = System.Text.Encoding.Unicode.GetString(bytes);
+                                    // Replace non-printable characters to prevent logging issues
+                                    var cleanUtf16 = System.Text.RegularExpressions.Regex.Replace(utf16Text, @"[\x00-\x1F\x7F-\x9F]", "?");
+                                    _logger.Information("UTF-16 text (cleaned): {Text}", cleanUtf16.Length > 200 ? cleanUtf16.Substring(0, 200) + "..." : cleanUtf16);
+                                    
+                                    // Try to parse as JSON to extract attachment info
+                                    try
+                                    {
+                                        // Find the JSON start
+                                        var jsonStart = utf16Text.IndexOf("{");
+                                        if (jsonStart >= 0)
+                                        {
+                                            var jsonText = utf16Text.Substring(jsonStart);
+                                            dynamic jsonData = Newtonsoft.Json.JsonConvert.DeserializeObject(jsonText);
+                                            
+                                            if (jsonData?.attachmentFiles != null)
+                                            {
+                                                var attachmentNames = new List<string>();
+                                                foreach (var file in jsonData.attachmentFiles)
+                                                {
+                                                    if (file.name != null)
+                                                    {
+                                                        attachmentNames.Add(file.name.ToString());
+                                                    }
+                                                }
+                                                
+                                                if (attachmentNames.Any())
+                                                {
+                                                    _logger.Information("Found attachments in new Outlook data: {Names}", string.Join(", ", attachmentNames));
+                                                    
+                                                    // Show user what files they're trying to drop
+                                                    var fileList = string.Join("\n• ", attachmentNames);
+                                                    MessageBox.Show(
+                                                        $"The new Outlook is trying to share these attachments:\n\n• {fileList}\n\n" +
+                                                        "Unfortunately, direct drag-and-drop from the new Outlook is not supported because the files are stored in the cloud.\n\n" +
+                                                        "Please use one of these alternatives:\n" +
+                                                        "• Save attachments to a folder first, then drag them here\n" +
+                                                        "• Use the classic Outlook desktop application\n" +
+                                                        "• Right-click attachments and select 'Save As'",
+                                                        "New Outlook Attachments Detected",
+                                                        MessageBoxButton.OK,
+                                                        MessageBoxImage.Information);
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    catch (Exception jsonEx)
+                                    {
+                                        _logger.Warning(jsonEx, "Failed to parse Outlook JSON data");
+                                    }
+                                }
+                                catch (Exception utf16Ex) 
+                                {
+                                    _logger.Warning(utf16Ex, "Failed to parse as UTF-16");
+                                }
+                                
+                                // 3. Try as ASCII text
+                                try
+                                {
+                                    var asciiText = System.Text.Encoding.ASCII.GetString(bytes);
+                                    // Replace non-printable characters
+                                    var cleanAscii = System.Text.RegularExpressions.Regex.Replace(asciiText, @"[\x00-\x1F\x7F-\xFF]", "?");
+                                    _logger.Information("ASCII text (cleaned): {Text}", cleanAscii.Length > 200 ? cleanAscii.Substring(0, 200) + "..." : cleanAscii);
+                                    
+                                    // Check for MIME headers
+                                    if (asciiText.Contains("Content-Type:") || asciiText.Contains("Content-Disposition:"))
+                                    {
+                                        _logger.Information("Found MIME headers in data");
+                                    }
+                                }
+                                catch (Exception asciiEx)
+                                {
+                                    _logger.Warning(asciiEx, "Failed to parse as ASCII");
+                                }
+                                
+                                // 4. Look for file paths in the binary data
+                                try
+                                {
+                                    var possiblePaths = ExtractPathsFromBinary(bytes);
+                                    if (possiblePaths.Any())
+                                    {
+                                        _logger.Information("Found possible file paths in Chromium data: {Paths}", string.Join(", ", possiblePaths));
+                                        
+                                        // Check if any of these paths are valid files
+                                        foreach (var path in possiblePaths)
+                                        {
+                                            if (File.Exists(path))
+                                            {
+                                                filesToAdd.Add(path);
+                                                _logger.Information("Found valid file: {Path}", path);
+                                            }
+                                        }
+                                        
+                                        if (filesToAdd.Any())
+                                        {
+                                            ViewModel.AddFiles(filesToAdd.ToArray());
+                                            return;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        _logger.Information("No file paths found in binary data");
+                                    }
+                                }
+                                catch (Exception pathEx)
+                                {
+                                    _logger.Warning(pathEx, "Failed to extract paths");
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Failed to analyze Chromium format");
+                        }
+                        
+                        // Show specific message for new Outlook
+                        MessageBox.Show(
+                            "Direct attachment drag-and-drop from the new Outlook is not currently supported.\n\n" +
+                            "Please use one of these alternatives:\n" +
+                            "• Save attachments to a folder first, then drag them here\n" +
+                            "• Use the classic Outlook desktop application\n" +
+                            "• Right-click attachments and select 'Save As'",
+                            "New Outlook Not Supported",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Information);
+                        return;
                     }
                 }
                 
@@ -115,16 +296,15 @@ namespace DocHandler
                 {
                     ViewModel.AddFiles(filesToAdd.ToArray());
                 }
-                else if (!e.Data.GetDataPresent(DataFormats.FileDrop) && 
-                         !e.Data.GetDataPresent("FileGroupDescriptor") && 
-                         !e.Data.GetDataPresent("FileGroupDescriptorW"))
+                else if (!formats.Contains("Chromium Web Custom MIME Data Format"))
                 {
-                    // Log available formats for debugging
-                    var formats = e.Data.GetFormats();
-                    _logger.Debug("Available drop formats: {Formats}", string.Join(", ", formats));
+                    // Generic error for other unsupported formats
+                    var availableFormats = string.Join(", ", formats);
+                    _logger.Warning("No files could be extracted. Available formats: {Formats}", availableFormats);
                     
                     MessageBox.Show(
-                        "The dropped items are not in a supported format. Please drop files or Outlook attachments.",
+                        "The dropped items are not in a supported format.\n\n" +
+                        "Please drop PDF, Word, or Excel files.",
                         "Unsupported Format",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information);
@@ -133,14 +313,64 @@ namespace DocHandler
             catch (Exception ex)
             {
                 _logger.Error(ex, "Error handling file drop");
-                MessageBox.Show("An error occurred while adding files.", "Error", 
+                MessageBox.Show($"An error occurred while adding files:\n\n{ex.Message}", "Error", 
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
         
+        private List<string> ExtractPathsFromBinary(byte[] bytes)
+        {
+            var paths = new List<string>();
+            var text = System.Text.Encoding.ASCII.GetString(bytes);
+            
+            // Look for common path patterns
+            var pathPatterns = new[]
+            {
+                @"[A-Za-z]:\\[^<>:""|?*\x00-\x1f]+\.[a-zA-Z]{2,4}",  // Windows paths
+                @"\\\\[^<>:""|?*\x00-\x1f]+\.[a-zA-Z]{2,4}",         // UNC paths
+                @"/[^<>:""|?*\x00-\x1f]+\.[a-zA-Z]{2,4}"             // Unix paths
+            };
+            
+            foreach (var pattern in pathPatterns)
+            {
+                var matches = System.Text.RegularExpressions.Regex.Matches(text, pattern);
+                foreach (System.Text.RegularExpressions.Match match in matches)
+                {
+                    paths.Add(match.Value);
+                }
+            }
+            
+            // Also try to extract from UTF-16
+            var utf16Text = System.Text.Encoding.Unicode.GetString(bytes);
+            foreach (var pattern in pathPatterns)
+            {
+                var matches = System.Text.RegularExpressions.Regex.Matches(utf16Text, pattern);
+                foreach (System.Text.RegularExpressions.Match match in matches)
+                {
+                    paths.Add(match.Value);
+                }
+            }
+            
+            return paths.Distinct().ToList();
+        }
+        
         private void Border_DragEnter(object sender, DragEventArgs e)
         {
-            // Check if the drag data contains files or Outlook attachments
+            var formats = e.Data.GetFormats();
+            
+            // Check if it's the new Outlook (Chromium-based)
+            if (formats.Contains("Chromium Web Custom MIME Data Format"))
+            {
+                e.Effects = DragDropEffects.None;
+                
+                // Still show visual feedback but with a different message
+                DropBorder.BorderBrush = (Brush)FindResource("SystemControlForegroundBaseMediumHighBrush");
+                DropBorder.BorderThickness = new Thickness(3);
+                ViewModel.StatusMessage = "New Outlook not supported - please save attachments first";
+                return;
+            }
+            
+            // Check if the drag data contains files or classic Outlook attachments
             if (e.Data.GetDataPresent(DataFormats.FileDrop) || 
                 e.Data.GetDataPresent("FileGroupDescriptor") || 
                 e.Data.GetDataPresent("FileGroupDescriptorW"))
