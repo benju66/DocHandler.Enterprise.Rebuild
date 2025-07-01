@@ -1,8 +1,11 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using DocHandler.Helpers;
 using DocHandler.ViewModels;
 using Serilog;
 
@@ -41,6 +44,9 @@ namespace DocHandler
                     WindowState = state;
                 }
             }
+            
+            // Clean up old Outlook temp files on startup
+            OutlookAttachmentHelper.CleanupTempFiles();
         }
         
         private void Border_Drop(object sender, DragEventArgs e)
@@ -51,10 +57,76 @@ namespace DocHandler
                 DropBorder.BorderBrush = (Brush)FindResource("SystemControlForegroundBaseMediumBrush");
                 DropBorder.BorderThickness = new Thickness(2);
                 
+                var filesToAdd = new List<string>();
+                
+                // Check for standard file drop first
                 if (e.Data.GetDataPresent(DataFormats.FileDrop))
                 {
                     string[] files = (string[])e.Data.GetData(DataFormats.FileDrop);
-                    ViewModel.AddFiles(files);
+                    filesToAdd.AddRange(files);
+                    _logger.Information("Received {Count} files via standard file drop", files.Length);
+                }
+                
+                // Check for Outlook attachments
+                if (e.Data.GetDataPresent("FileGroupDescriptor") || e.Data.GetDataPresent("FileGroupDescriptorW"))
+                {
+                    _logger.Information("Detected Outlook attachment drop");
+                    
+                    try
+                    {
+                        // Show processing indicator
+                        Mouse.OverrideCursor = Cursors.Wait;
+                        ViewModel.StatusMessage = "Extracting Outlook attachments...";
+                        
+                        // Extract Outlook attachments
+                        var outlookFiles = OutlookAttachmentHelper.ExtractOutlookAttachments(e.Data);
+                        
+                        if (outlookFiles.Any())
+                        {
+                            filesToAdd.AddRange(outlookFiles);
+                            _logger.Information("Successfully extracted {Count} Outlook attachments", outlookFiles.Count);
+                            
+                            // Mark these files for cleanup after processing
+                            ViewModel.AddTempFilesForCleanup(outlookFiles);
+                        }
+                        else
+                        {
+                            _logger.Warning("No attachments could be extracted from Outlook drop");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Failed to extract Outlook attachments");
+                        MessageBox.Show(
+                            "Failed to extract attachments from Outlook. Please try saving the attachments first.",
+                            "Outlook Attachment Error",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                    }
+                    finally
+                    {
+                        Mouse.OverrideCursor = null;
+                    }
+                }
+                
+                // Add all collected files
+                if (filesToAdd.Any())
+                {
+                    ViewModel.AddFiles(filesToAdd.ToArray());
+                }
+                else if (!e.Data.GetDataPresent(DataFormats.FileDrop) && 
+                         !e.Data.GetDataPresent("FileGroupDescriptor") && 
+                         !e.Data.GetDataPresent("FileGroupDescriptorW"))
+                {
+                    // Log available formats for debugging
+                    var formats = e.Data.GetFormats();
+                    _logger.Debug("Available drop formats: {Formats}", string.Join(", ", formats));
+                    
+                    MessageBox.Show(
+                        "The dropped items are not in a supported format. Please drop files or Outlook attachments.",
+                        "Unsupported Format",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
                 }
             }
             catch (Exception ex)
@@ -67,13 +139,22 @@ namespace DocHandler
         
         private void Border_DragEnter(object sender, DragEventArgs e)
         {
-            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            // Check if the drag data contains files or Outlook attachments
+            if (e.Data.GetDataPresent(DataFormats.FileDrop) || 
+                e.Data.GetDataPresent("FileGroupDescriptor") || 
+                e.Data.GetDataPresent("FileGroupDescriptorW"))
             {
                 e.Effects = DragDropEffects.Copy;
                 
                 // Highlight the border
                 DropBorder.BorderBrush = (Brush)FindResource("SystemControlHighlightAccentBrush");
                 DropBorder.BorderThickness = new Thickness(3);
+                
+                // Update status for Outlook attachments
+                if (e.Data.GetDataPresent("FileGroupDescriptor") || e.Data.GetDataPresent("FileGroupDescriptorW"))
+                {
+                    ViewModel.StatusMessage = "Drop Outlook attachments here...";
+                }
             }
             else
             {
@@ -86,6 +167,9 @@ namespace DocHandler
             // Reset border appearance
             DropBorder.BorderBrush = (Brush)FindResource("SystemControlForegroundBaseMediumBrush");
             DropBorder.BorderThickness = new Thickness(2);
+            
+            // Reset status message
+            ViewModel.UpdateUI();
         }
         
         /// <summary>
@@ -119,6 +203,9 @@ namespace DocHandler
             
             // Cleanup
             ViewModel.Cleanup();
+            
+            // Clean up any remaining Outlook temp files
+            OutlookAttachmentHelper.CleanupTempFiles();
         }
     }
 }

@@ -45,9 +45,15 @@ namespace DocHandler.Services
                 if (File.Exists(_companyNamesPath))
                 {
                     var json = File.ReadAllText(_companyNamesPath);
-                    var data = JsonSerializer.Deserialize<CompanyNamesData>(json);
+                    var options = new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true,
+                        AllowTrailingCommas = true,
+                        ReadCommentHandling = JsonCommentHandling.Skip
+                    };
+                    var data = JsonSerializer.Deserialize<CompanyNamesData>(json, options);
                     
-                    if (data != null)
+                    if (data != null && data.Companies != null)
                     {
                         _logger.Information("Loaded {Count} company names", data.Companies.Count);
                         return data;
@@ -61,7 +67,12 @@ namespace DocHandler.Services
             
             // Return default data with some sample companies
             _logger.Information("Creating default company names data");
-            return CreateDefaultData();
+            var defaultData = CreateDefaultData();
+            
+            // Save the default data immediately
+            _ = SaveCompanyNames();
+            
+            return defaultData;
         }
         
         private CompanyNamesData CreateDefaultData()
@@ -175,8 +186,8 @@ namespace DocHandler.Services
                 // Convert to lowercase for comparison
                 string lowerText = documentText.ToLowerInvariant();
                 
-                // Check each company and its aliases
-                foreach (var company in _data.Companies)
+                // Check each company and its aliases, ordered by usage count for efficiency
+                foreach (var company in _data.Companies.OrderByDescending(c => c.UsageCount))
                 {
                     // Check main name
                     if (ContainsCompanyName(lowerText, company.Name))
@@ -189,7 +200,7 @@ namespace DocHandler.Services
                     // Check aliases
                     foreach (var alias in company.Aliases)
                     {
-                        if (ContainsCompanyName(lowerText, alias))
+                        if (!string.IsNullOrWhiteSpace(alias) && ContainsCompanyName(lowerText, alias))
                         {
                             _logger.Information("Found company via alias '{Alias}': {Name}", alias, company.Name);
                             await IncrementUsageCount(company.Name);
@@ -210,25 +221,42 @@ namespace DocHandler.Services
         
         private bool ContainsCompanyName(string text, string companyName)
         {
-            // Simple word boundary match - can be enhanced with better patterns
-            string pattern = $@"\b{Regex.Escape(companyName.ToLowerInvariant())}\b";
-            return Regex.IsMatch(text, pattern);
+            try
+            {
+                // Simple word boundary match - can be enhanced with better patterns
+                string pattern = $@"\b{Regex.Escape(companyName.ToLowerInvariant())}\b";
+                return Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Regex match failed for company name: {Name}", companyName);
+                // Fallback to simple contains
+                return text.Contains(companyName.ToLowerInvariant());
+            }
         }
         
         private async Task<string> ExtractTextFromDocument(string filePath)
         {
             var extension = Path.GetExtension(filePath).ToLowerInvariant();
             
-            switch (extension)
+            try
             {
-                case ".pdf":
-                    return await ExtractTextFromPdf(filePath);
-                case ".doc":
-                case ".docx":
-                    return await ExtractTextFromWord(filePath);
-                default:
-                    _logger.Warning("Unsupported file type for text extraction: {Extension}", extension);
-                    return string.Empty;
+                switch (extension)
+                {
+                    case ".pdf":
+                        return await ExtractTextFromPdf(filePath);
+                    case ".doc":
+                    case ".docx":
+                        return await ExtractTextFromWord(filePath);
+                    default:
+                        _logger.Warning("Unsupported file type for text extraction: {Extension}", extension);
+                        return string.Empty;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to extract text from document: {Path}", filePath);
+                return string.Empty;
             }
         }
         
@@ -243,14 +271,21 @@ namespace DocHandler.Services
                     {
                         var text = new System.Text.StringBuilder();
                         
-                        for (int page = 1; page <= pdfDoc.GetNumberOfPages(); page++)
+                        // Only extract first few pages for company detection
+                        int maxPages = Math.Min(3, pdfDoc.GetNumberOfPages());
+                        
+                        for (int page = 1; page <= maxPages; page++)
                         {
-                            var strategy = new SimpleTextExtractionStrategy();
-                            var pageText = PdfTextExtractor.GetTextFromPage(pdfDoc.GetPage(page), strategy);
-                            text.AppendLine(pageText);
-                            
-                            // Only extract first few pages for company detection
-                            if (page >= 3) break;
+                            try
+                            {
+                                var strategy = new SimpleTextExtractionStrategy();
+                                var pageText = PdfTextExtractor.GetTextFromPage(pdfDoc.GetPage(page), strategy);
+                                text.AppendLine(pageText);
+                            }
+                            catch (Exception pageEx)
+                            {
+                                _logger.Warning(pageEx, "Failed to extract text from page {Page} of PDF", page);
+                            }
                         }
                         
                         return text.ToString();
@@ -270,6 +305,13 @@ namespace DocHandler.Services
             {
                 try
                 {
+                    // First, verify this is actually a Word document
+                    if (!IsValidWordDocument(filePath))
+                    {
+                        _logger.Warning("File is not a valid Word document: {Path}", filePath);
+                        return string.Empty;
+                    }
+
                     using (var doc = WordprocessingDocument.Open(filePath, false))
                     {
                         var text = new System.Text.StringBuilder();
@@ -279,7 +321,14 @@ namespace DocHandler.Services
                         {
                             foreach (var paragraph in body.Elements<Paragraph>())
                             {
-                                text.AppendLine(paragraph.InnerText);
+                                try
+                                {
+                                    text.AppendLine(paragraph.InnerText);
+                                }
+                                catch (Exception paraEx)
+                                {
+                                    _logger.Warning(paraEx, "Failed to extract text from paragraph");
+                                }
                             }
                         }
                         
@@ -292,6 +341,28 @@ namespace DocHandler.Services
                     return string.Empty;
                 }
             });
+        }
+
+        private bool IsValidWordDocument(string filePath)
+        {
+            try
+            {
+                // Check if it's a valid ZIP file (Office documents are ZIP archives)
+                using (var stream = File.OpenRead(filePath))
+                {
+                    // Check for ZIP signature
+                    var signature = new byte[4];
+                    if (stream.Read(signature, 0, 4) < 4)
+                        return false;
+                    
+                    // ZIP files start with PK (0x504B)
+                    return signature[0] == 0x50 && signature[1] == 0x4B;
+                }
+            }
+            catch
+            {
+                return false;
+            }
         }
         
         public async Task IncrementUsageCount(string companyName)

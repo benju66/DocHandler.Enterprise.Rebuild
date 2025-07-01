@@ -85,14 +85,25 @@
                 <TextBlock Text="{Binding StatusMessage}"/>
             </StatusBarItem>
             <StatusBarItem HorizontalAlignment="Right">
-                <TextBlock Text="{Binding SelectedScope}">
+                <TextBlock>
                     <TextBlock.Style>
                         <Style TargetType="TextBlock">
                             <Setter Property="Visibility" Value="Collapsed"/>
                             <Style.Triggers>
-                                <DataTrigger Binding="{Binding SaveQuotesMode}" Value="True">
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding SaveQuotesMode}" Value="True"/>
+                                        <Condition Binding="{Binding SelectedScope, Converter={StaticResource StringNotEmptyConverter}}" Value="True"/>
+                                    </MultiDataTrigger.Conditions>
                                     <Setter Property="Visibility" Value="Visible"/>
-                                </DataTrigger>
+                                    <Setter Property="Text">
+                                        <Setter.Value>
+                                            <MultiBinding StringFormat="{}Selected: {0}">
+                                                <Binding Path="SelectedScope"/>
+                                            </MultiBinding>
+                                        </Setter.Value>
+                                    </Setter>
+                                </MultiDataTrigger>
                             </Style.Triggers>
                         </Style>
                     </TextBlock.Style>
@@ -109,35 +120,11 @@
         <!-- Main Content Area -->
         <Grid Margin="10">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition>
-                    <ColumnDefinition.Style>
-                        <Style TargetType="ColumnDefinition">
-                            <Setter Property="Width" Value="300"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding SaveQuotesMode}" Value="False">
-                                    <Setter Property="Width" Value="0"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </ColumnDefinition.Style>
-                </ColumnDefinition>
-                <ColumnDefinition>
-                    <ColumnDefinition.Style>
-                        <Style TargetType="ColumnDefinition">
-                            <Setter Property="Width" Value="5"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding SaveQuotesMode}" Value="False">
-                                    <Setter Property="Width" Value="0"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </ColumnDefinition.Style>
-                </ColumnDefinition>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition>
                     <ColumnDefinition.Style>
                         <Style TargetType="ColumnDefinition">
-                            <Setter Property="Width" Value="250"/>
+                            <Setter Property="Width" Value="350"/>
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding SaveQuotesMode}" Value="False">
                                     <Setter Property="Width" Value="0"/>
@@ -148,76 +135,8 @@
                 </ColumnDefinition>
             </Grid.ColumnDefinitions>
             
-            <!-- Left Panel: Scopes of Work -->
-            <GroupBox Grid.Column="0" Header="Scopes of Work" Margin="0,0,5,0">
-                <GroupBox.Style>
-                    <Style TargetType="GroupBox" BasedOn="{StaticResource {x:Type GroupBox}}">
-                        <Setter Property="Visibility" Value="Visible"/>
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding SaveQuotesMode}" Value="False">
-                                <Setter Property="Visibility" Value="Collapsed"/>
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </GroupBox.Style>
-                <DockPanel>
-                    <!-- Search Box -->
-                    <Grid DockPanel.Dock="Top" Margin="0,0,0,5">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <ui:AutoSuggestBox Grid.Column="0" 
-                                          PlaceholderText="Search scopes..."
-                                          Text="{Binding ScopeSearchText, UpdateSourceTrigger=PropertyChanged}"
-                                          QueryIcon="Find"/>
-                        <Button Grid.Column="1" 
-                                Margin="5,0,0,0"
-                                Command="{Binding SearchScopesCommand}"
-                                ToolTip="Search">
-                            <ui:SymbolIcon Symbol="Find" Width="16" Height="16"/>
-                        </Button>
-                    </Grid>
-                    
-                    <!-- Scopes List -->
-                    <ListBox ItemsSource="{Binding ScopesOfWork}"
-                             SelectedItem="{Binding SelectedScope}"
-                             ScrollViewer.VerticalScrollBarVisibility="Auto">
-                        <ListBox.ItemContainerStyle>
-                            <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
-                                <EventSetter Event="Selected" Handler="ScopeItem_Selected"/>
-                            </Style>
-                        </ListBox.ItemContainerStyle>
-                        <ListBox.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding}" 
-                                          Padding="5,3"
-                                          ToolTip="{Binding}"/>
-                            </DataTemplate>
-                        </ListBox.ItemTemplate>
-                    </ListBox>
-                </DockPanel>
-            </GroupBox>
-            
-            <!-- GridSplitter -->
-            <GridSplitter Grid.Column="1" 
-                          HorizontalAlignment="Stretch" 
-                          VerticalAlignment="Stretch"
-                          Background="Transparent">
-                <GridSplitter.Style>
-                    <Style TargetType="GridSplitter">
-                        <Setter Property="Visibility" Value="Visible"/>
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding SaveQuotesMode}" Value="False">
-                                <Setter Property="Visibility" Value="Collapsed"/>
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </GridSplitter.Style>
-            </GridSplitter>
-            
-            <!-- Center Panel: Drop Zone and Files -->
-            <Grid Grid.Column="2">
+            <!-- Main Panel: Drop Zone and Normal Mode -->
+            <Grid Grid.Column="0">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
@@ -270,7 +189,7 @@
                                         <Setter Property="Text" Value="Drop PDFs, Word documents, or Excel files here"/>
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding SaveQuotesMode}" Value="True">
-                                                <Setter Property="Text" Value="Select a scope of work, then drop quote documents here"/>
+                                                <Setter Property="Text" Value="Drop quote documents here"/>
                                                 <Setter Property="FontWeight" Value="Bold"/>
                                             </DataTrigger>
                                         </Style.Triggers>
@@ -344,10 +263,10 @@
                 </Button>
             </Grid>
             
-            <!-- Right Panel: Recent Scopes -->
-            <GroupBox Grid.Column="3" Header="Recent Scopes" Margin="5,0,0,0">
-                <GroupBox.Style>
-                    <Style TargetType="GroupBox" BasedOn="{StaticResource {x:Type GroupBox}}">
+            <!-- Right Panel: Save Quotes Mode Controls -->
+            <Grid Grid.Column="1" Margin="10,0,0,0">
+                <Grid.Style>
+                    <Style TargetType="Grid">
                         <Setter Property="Visibility" Value="Visible"/>
                         <Style.Triggers>
                             <DataTrigger Binding="{Binding SaveQuotesMode}" Value="False">
@@ -355,35 +274,177 @@
                             </DataTrigger>
                         </Style.Triggers>
                     </Style>
-                </GroupBox.Style>
-                <DockPanel>
-                    <!-- Clear Button -->
-                    <Button DockPanel.Dock="Bottom" 
-                            Command="{Binding ClearRecentScopesCommand}"
-                            Content="Clear Recent"
-                            HorizontalAlignment="Right"
-                            Margin="0,5,0,0"
-                            Padding="10,5"/>
-                    
-                    <!-- Recent Scopes List -->
-                    <ListBox ItemsSource="{Binding RecentScopes}"
-                             ScrollViewer.VerticalScrollBarVisibility="Auto">
-                        <ListBox.ItemContainerStyle>
-                            <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
-                                <Setter Property="Cursor" Value="Hand"/>
-                                <EventSetter Event="MouseDoubleClick" Handler="RecentScopeItem_DoubleClick"/>
-                            </Style>
-                        </ListBox.ItemContainerStyle>
-                        <ListBox.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding}" 
-                                          Padding="5,3"
-                                          ToolTip="Double-click to select"/>
-                            </DataTemplate>
-                        </ListBox.ItemTemplate>
-                    </ListBox>
-                </DockPanel>
-            </GroupBox>
+                </Grid.Style>
+                
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                
+                <!-- Company Name Section -->
+                <GroupBox Grid.Row="0" Header="Company Name" Margin="0,0,0,10">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        
+                        <TextBox Grid.Row="0"
+                                 x:Name="CompanyNameTextBox"
+                                 Text="{Binding CompanyNameInput, UpdateSourceTrigger=PropertyChanged}"
+                                 ui:ControlHelper.PlaceholderText="{Binding DetectedCompanyName}"
+                                 FontSize="14"
+                                 Padding="8,6"
+                                 Margin="0,5,0,0">
+                            <TextBox.Style>
+                                <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsDetectingCompany}" Value="True">
+                                            <Setter Property="IsEnabled" Value="False"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBox.Style>
+                        </TextBox>
+                        
+                        <TextBlock Grid.Row="1" 
+                                   Text="Company name will be detected from document"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                                   Margin="0,5,0,0"
+                                   TextWrapping="Wrap">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Path=PendingFiles.Count, Converter={StaticResource IntToBoolConverter}}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+                </GroupBox>
+                
+                <!-- Scope of Work Section -->
+                <GroupBox Grid.Row="1" Header="Scope of Work" Margin="0,0,0,5">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        
+                        <!-- Search Box -->
+                        <Grid Grid.Row="0" Margin="0,0,0,5">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <ui:AutoSuggestBox Grid.Column="0" 
+                                              PlaceholderText="Search scopes..."
+                                              Text="{Binding ScopeSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                              QueryIcon="Find"/>
+                            <Button Grid.Column="1" 
+                                    Margin="5,0,0,0"
+                                    Command="{Binding SearchScopesCommand}"
+                                    ToolTip="Search">
+                                <ui:SymbolIcon Symbol="Find" Width="16" Height="16"/>
+                            </Button>
+                        </Grid>
+                        
+                        <!-- Selected Scope Display -->
+                        <Border Grid.Row="1" 
+                                Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                                BorderBrush="{DynamicResource SystemControlHighlightAccentBrush}"
+                                BorderThickness="2"
+                                CornerRadius="4"
+                                Padding="10,8"
+                                Margin="0,5">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding SelectedScope, Converter={StaticResource StringNotEmptyConverter}}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <TextBlock Text="{Binding SelectedScope}" 
+                                       FontWeight="SemiBold"
+                                       TextWrapping="Wrap"/>
+                        </Border>
+                    </Grid>
+                </GroupBox>
+                
+                <!-- Scopes List -->
+                <GroupBox Grid.Row="2" Header="Available Scopes">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        
+                        <ListBox Grid.Row="0"
+                                 ItemsSource="{Binding ScopesOfWork}"
+                                 SelectedItem="{Binding SelectedScope}"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                    <EventSetter Event="Selected" Handler="ScopeItem_Selected"/>
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" 
+                                              Padding="5,3"
+                                              ToolTip="{Binding}"/>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        
+                        <!-- Recent Scopes -->
+                        <Expander Grid.Row="1" 
+                                  Header="Recent Scopes" 
+                                  Margin="0,5,0,0"
+                                  IsExpanded="False">
+                            <ListBox ItemsSource="{Binding RecentScopes}"
+                                     MaxHeight="150"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                     BorderThickness="0">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                        <Setter Property="Cursor" Value="Hand"/>
+                                        <EventSetter Event="MouseDoubleClick" Handler="RecentScopeItem_DoubleClick"/>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}" 
+                                                  Padding="3,2"
+                                                  FontSize="12"
+                                                  ToolTip="Double-click to select"/>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Expander>
+                    </Grid>
+                </GroupBox>
+                
+                <!-- Session Save Location -->
+                <StackPanel Grid.Row="3" Margin="0,10,0,0">
+                    <TextBlock Text="Save Location:" 
+                               FontSize="12"
+                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                    <TextBlock Text="{Binding SessionSaveLocation}" 
+                               FontSize="11"
+                               TextTrimming="CharacterEllipsis"
+                               ToolTip="{Binding SessionSaveLocation}"/>
+                </StackPanel>
+            </Grid>
         </Grid>
     </DockPanel>
 </Window>

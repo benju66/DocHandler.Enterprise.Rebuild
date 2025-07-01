@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
@@ -21,6 +22,7 @@ namespace DocHandler.ViewModels
         private readonly OfficeConversionService _officeConversionService;
         private readonly CompanyNameService _companyNameService;
         private readonly ScopeOfWorkService _scopeOfWorkService;
+        private readonly List<string> _tempFilesToCleanup = new();
         
         public ConfigurationService ConfigService => _configService;
         
@@ -63,13 +65,15 @@ namespace DocHandler.ViewModels
                     
                     if (value)
                     {
-                        StatusMessage = "Save Quotes Mode: Select a scope of work and drop quotes";
+                        StatusMessage = "Save Quotes Mode: Drop quote documents";
                         SessionSaveLocation = _configService.Config.DefaultSaveLocation;
                     }
                     else
                     {
                         StatusMessage = "Drop files here to begin";
                         SelectedScope = null;
+                        CompanyNameInput = "";
+                        DetectedCompanyName = "";
                     }
                 }
             }
@@ -89,6 +93,16 @@ namespace DocHandler.ViewModels
 
         [ObservableProperty]
         private string _sessionSaveLocation = "";
+
+        // Company name fields
+        [ObservableProperty]
+        private string _companyNameInput = "";
+
+        [ObservableProperty]
+        private string _detectedCompanyName = "";
+
+        [ObservableProperty]
+        private bool _isDetectingCompany;
         
         public MainViewModel()
         {
@@ -107,10 +121,53 @@ namespace DocHandler.ViewModels
             IsDarkMode = _configService.Config.Theme == "Dark";
             
             // Update UI when files are added/removed
-            PendingFiles.CollectionChanged += (s, e) => UpdateUI();
+            PendingFiles.CollectionChanged += (s, e) => 
+            {
+                UpdateUI();
+                
+                // When files are added in Save Quotes mode, scan for company names
+                if (SaveQuotesMode && e.NewItems != null)
+                {
+                    foreach (FileItem item in e.NewItems)
+                    {
+                        _ = ScanForCompanyName(item.FilePath);
+                    }
+                }
+            };
             
             // Check Office availability
             CheckOfficeAvailability();
+        }
+        
+        private async Task ScanForCompanyName(string filePath)
+        {
+            if (!SaveQuotesMode || IsDetectingCompany) return;
+            
+            try
+            {
+                IsDetectingCompany = true;
+                _logger.Information("Scanning document for company name: {Path}", filePath);
+                
+                var detectedCompany = await _companyNameService.ScanDocumentForCompanyName(filePath);
+                
+                if (!string.IsNullOrEmpty(detectedCompany))
+                {
+                    // Only update if user hasn't typed anything
+                    if (string.IsNullOrWhiteSpace(CompanyNameInput))
+                    {
+                        DetectedCompanyName = detectedCompany;
+                        _logger.Information("Detected company name: {Company}", detectedCompany);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to scan document for company name");
+            }
+            finally
+            {
+                IsDetectingCompany = false;
+            }
         }
         
         private void CheckOfficeAvailability()
@@ -139,22 +196,26 @@ namespace DocHandler.ViewModels
             }
         }
         
-        private void UpdateUI()
+        public void UpdateUI()
         {
             if (SaveQuotesMode)
             {
-                CanProcess = PendingFiles.Count > 0 && !IsProcessing && !string.IsNullOrEmpty(SelectedScope);
+                // Need both a scope and either typed or detected company name
+                var hasCompanyName = !string.IsNullOrWhiteSpace(CompanyNameInput) || 
+                                   !string.IsNullOrWhiteSpace(DetectedCompanyName);
+                
+                CanProcess = PendingFiles.Count > 0 && !IsProcessing && 
+                           !string.IsNullOrEmpty(SelectedScope) && hasCompanyName;
+                
                 ProcessButtonText = PendingFiles.Count > 1 ? "Process All Quotes" : "Process Quote";
                 
                 if (PendingFiles.Count == 0)
                 {
-                    StatusMessage = string.IsNullOrEmpty(SelectedScope) 
-                        ? "Select a scope of work and drop quotes" 
-                        : $"Selected: {SelectedScope} - Drop quote documents";
+                    StatusMessage = "Save Quotes Mode: Drop quote documents";
                 }
                 else
                 {
-                    StatusMessage = $"{PendingFiles.Count} quote(s) ready - {SelectedScope}";
+                    StatusMessage = $"{PendingFiles.Count} quote(s) ready to process";
                 }
             }
             else
@@ -205,6 +266,35 @@ namespace DocHandler.ViewModels
             }
         }
         
+        /// <summary>
+        /// Adds temporary files that should be cleaned up after processing
+        /// </summary>
+        public void AddTempFilesForCleanup(List<string> tempFiles)
+        {
+            _tempFilesToCleanup.AddRange(tempFiles);
+            _logger.Debug("Added {Count} temp files for cleanup", tempFiles.Count);
+        }
+        
+        private void CleanupTempFiles()
+        {
+            foreach (var tempFile in _tempFilesToCleanup)
+            {
+                try
+                {
+                    if (File.Exists(tempFile))
+                    {
+                        File.Delete(tempFile);
+                        _logger.Debug("Cleaned up temp file: {File}", tempFile);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Failed to cleanup temp file: {File}", tempFile);
+                }
+            }
+            _tempFilesToCleanup.Clear();
+        }
+        
         [RelayCommand]
         private async Task ProcessFiles()
         {
@@ -248,6 +338,9 @@ namespace DocHandler.ViewModels
 
                     // Clear the file list after successful processing
                     PendingFiles.Clear();
+                    
+                    // Clean up any temp files
+                    CleanupTempFiles();
 
                     // Update configuration with recent location
                     _configService.AddRecentLocation(outputDir);
@@ -311,6 +404,12 @@ namespace DocHandler.ViewModels
         private void ClearFiles()
         {
             PendingFiles.Clear();
+            CleanupTempFiles();
+            
+            // Reset company name detection
+            CompanyNameInput = "";
+            DetectedCompanyName = "";
+            
             StatusMessage = "Files cleared";
             UpdateUI();
         }
@@ -321,6 +420,32 @@ namespace DocHandler.ViewModels
             if (fileItem != null)
             {
                 PendingFiles.Remove(fileItem);
+                
+                // If this was a temp file, clean it up immediately
+                if (_tempFilesToCleanup.Contains(fileItem.FilePath))
+                {
+                    try
+                    {
+                        if (File.Exists(fileItem.FilePath))
+                        {
+                            File.Delete(fileItem.FilePath);
+                            _logger.Debug("Cleaned up removed temp file: {File}", fileItem.FilePath);
+                        }
+                        _tempFilesToCleanup.Remove(fileItem.FilePath);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Failed to cleanup removed temp file: {File}", fileItem.FilePath);
+                    }
+                }
+                
+                // If no files left, clear company detection
+                if (PendingFiles.Count == 0 && SaveQuotesMode)
+                {
+                    CompanyNameInput = "";
+                    DetectedCompanyName = "";
+                }
+                
                 UpdateUI();
             }
         }
@@ -333,7 +458,6 @@ namespace DocHandler.ViewModels
             {
                 _ = _scopeOfWorkService.UpdateRecentScope(scope);
                 LoadRecentScopes();
-                StatusMessage = $"Selected: {scope} - Drop quote documents";
             }
             UpdateUI();
         }
@@ -366,6 +490,19 @@ namespace DocHandler.ViewModels
                 return;
             }
 
+            // Get company name - use typed value first, then detected value
+            var companyName = !string.IsNullOrWhiteSpace(CompanyNameInput) 
+                ? CompanyNameInput.Trim() 
+                : DetectedCompanyName?.Trim();
+            
+            if (string.IsNullOrWhiteSpace(companyName))
+            {
+                MessageBox.Show("Please enter a company name or wait for automatic detection.", 
+                    "Company Name Required", 
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
             if (!PendingFiles.Any())
             {
                 StatusMessage = "No quote documents to process";
@@ -387,42 +524,6 @@ namespace DocHandler.ViewModels
                     try
                     {
                         StatusMessage = $"Processing quote: {file.FileName}";
-                        
-                        // First, scan for company name
-                        var detectedCompany = await _companyNameService.ScanDocumentForCompanyName(file.FilePath);
-                        string companyName;
-
-                        if (!string.IsNullOrEmpty(detectedCompany))
-                        {
-                            // Found a company - confirm with user
-                            var confirmResult = MessageBox.Show(
-                                $"Detected company: {detectedCompany}\n\nIs this correct?",
-                                "Confirm Company Name",
-                                MessageBoxButton.YesNoCancel,
-                                MessageBoxImage.Question);
-
-                            if (confirmResult == MessageBoxResult.Cancel)
-                                continue;
-
-                            if (confirmResult == MessageBoxResult.Yes)
-                            {
-                                companyName = detectedCompany;
-                            }
-                            else
-                            {
-                                // User said no, prompt for correct name
-                                companyName = await PromptForCompanyName();
-                                if (string.IsNullOrEmpty(companyName))
-                                    continue;
-                            }
-                        }
-                        else
-                        {
-                            // No company detected, prompt user
-                            companyName = await PromptForCompanyName();
-                            if (string.IsNullOrEmpty(companyName))
-                                continue;
-                        }
 
                         // Build the filename: [Scope] - [Company].pdf
                         var outputFileName = $"{SelectedScope} - {companyName}.pdf";
@@ -440,6 +541,20 @@ namespace DocHandler.ViewModels
                             processedCount++;
                             PendingFiles.Remove(file);
                             _logger.Information("Saved quote as: {FileName}", outputFileName);
+                            
+                            // Update company usage if it was detected
+                            if (!string.IsNullOrWhiteSpace(DetectedCompanyName) && 
+                                companyName.Equals(DetectedCompanyName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                await _companyNameService.IncrementUsageCount(companyName);
+                            }
+                            
+                            // Add to company database if not already there
+                            if (!_companyNameService.Companies.Any(c => 
+                                c.Name.Equals(companyName, StringComparison.OrdinalIgnoreCase)))
+                            {
+                                await _companyNameService.AddCompanyName(companyName);
+                            }
                         }
                         else
                         {
@@ -452,6 +567,13 @@ namespace DocHandler.ViewModels
                         failedFiles.Add((file.FileName, ex.Message));
                     }
                 }
+
+                // Clean up any temp files
+                CleanupTempFiles();
+                
+                // Clear company name fields after processing
+                CompanyNameInput = "";
+                DetectedCompanyName = "";
 
                 // Update status
                 if (processedCount > 0)
@@ -530,41 +652,16 @@ namespace DocHandler.ViewModels
                 }
             }
         }
-
-        private async Task<string> PromptForCompanyName(string detectedCompany = null)
+        
+        // Command handlers
+        partial void OnCompanyNameInputChanged(string value)
         {
-            return await Application.Current.Dispatcher.InvokeAsync(() =>
-            {
-                string message = detectedCompany != null
-                    ? $"Company '{detectedCompany}' was detected. Confirm or enter a different company name:"
-                    : "Please enter the company name for this quote:";
-
-                // Create suggested companies collection
-                // TODO: Update this when you add a GetCompanies/GetCompanyNames method to CompanyNameService
-                var suggestedCompanies = new ObservableCollection<string>();
-
-                // Create and show the dialog
-                var dialog = new CompanyNameDialog(message, suggestedCompanies)
-                {
-                    CompanyName = detectedCompany ?? string.Empty,
-                    Owner = Application.Current.MainWindow
-                };
-
-                if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.CompanyName))
-                {
-                    string companyName = dialog.CompanyName.Trim();
-
-                    // Add to database if requested
-                    if (dialog.AddToDatabase)
-                    {
-                        _ = _companyNameService.AddCompanyName(companyName);
-                    }
-
-                    return companyName;
-                }
-
-                return null;
-            });
+            UpdateUI();
+        }
+        
+        partial void OnSelectedScopeChanged(string? value)
+        {
+            UpdateUI();
         }
         
         // Placeholder commands - implement these later
@@ -611,6 +708,7 @@ namespace DocHandler.ViewModels
         public void Cleanup()
         {
             _officeConversionService?.Dispose();
+            CleanupTempFiles();
         }
         
         public void SaveWindowState(double left, double top, double width, double height, string state)
