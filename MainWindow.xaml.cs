@@ -8,6 +8,7 @@ using System.Windows.Media;
 using DocHandler.Helpers;
 using DocHandler.ViewModels;
 using Serilog;
+using DragEventArgs = System.Windows.DragEventArgs;
 
 namespace DocHandler
 {
@@ -196,10 +197,21 @@ namespace DocHandler
             }
         }
         
+        /// <summary>
+        /// Handle saving preferences when menu item is clicked
+        /// </summary>
+        private void MenuItem_SavePreferences(object sender, RoutedEventArgs e)
+        {
+            ViewModel.SavePreferences();
+        }
+        
         private void MainWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
             // Save window position
             ViewModel.SaveWindowState(Left, Top, Width, Height, WindowState.ToString());
+            
+            // Save preferences
+            ViewModel.SavePreferences();
             
             // Cleanup
             ViewModel.Cleanup();

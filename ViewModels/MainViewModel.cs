@@ -11,6 +11,10 @@ using CommunityToolkit.Mvvm.Input;
 using DocHandler.Services;
 using DocHandler.Views;
 using Serilog;
+using MessageBox = System.Windows.MessageBox;
+using Application = System.Windows.Application;
+using FolderBrowserDialog = System.Windows.Forms.FolderBrowserDialog;
+using DialogResult = System.Windows.Forms.DialogResult;
 
 namespace DocHandler.ViewModels
 {
@@ -29,12 +33,19 @@ namespace DocHandler.ViewModels
         [ObservableProperty]
         private ObservableCollection<FileItem> _pendingFiles = new();
 
-        // Checkbox options - hardcoded for now
+        // Checkbox options
         private bool _convertOfficeToPdf = true;
         public bool ConvertOfficeToPdf 
         { 
             get => _convertOfficeToPdf;
             set => SetProperty(ref _convertOfficeToPdf, value);
+        }
+
+        private bool _openFolderAfterProcessing = true;
+        public bool OpenFolderAfterProcessing
+        {
+            get => _openFolderAfterProcessing;
+            set => SetProperty(ref _openFolderAfterProcessing, value);
         }
         
         [ObservableProperty]
@@ -86,10 +97,23 @@ namespace DocHandler.ViewModels
         private ObservableCollection<string> _scopesOfWork = new();
 
         [ObservableProperty]
-        private ObservableCollection<string> _recentScopes = new();
+        private ObservableCollection<string> _filteredScopesOfWork = new();
 
         [ObservableProperty]
+        private ObservableCollection<string> _recentScopes = new();
+
         private string _scopeSearchText = "";
+        public string ScopeSearchText
+        {
+            get => _scopeSearchText;
+            set
+            {
+                if (SetProperty(ref _scopeSearchText, value))
+                {
+                    FilterScopes();
+                }
+            }
+        }
 
         [ObservableProperty]
         private string _sessionSaveLocation = "";
@@ -103,6 +127,10 @@ namespace DocHandler.ViewModels
 
         [ObservableProperty]
         private bool _isDetectingCompany;
+
+        // Recent locations
+        public ObservableCollection<string> RecentLocations => 
+            new ObservableCollection<string>(_configService.Config.RecentLocations);
         
         public MainViewModel()
         {
@@ -117,8 +145,14 @@ namespace DocHandler.ViewModels
             LoadScopesOfWork();
             LoadRecentScopes();
             
+            // Initialize session save location
+            SessionSaveLocation = _configService.Config.DefaultSaveLocation;
+            
             // Initialize theme from config
             IsDarkMode = _configService.Config.Theme == "Dark";
+            
+            // Load open folder preference
+            OpenFolderAfterProcessing = _configService.Config.OpenFolderAfterProcessing ?? true;
             
             // Update UI when files are added/removed
             PendingFiles.CollectionChanged += (s, e) => 
@@ -185,6 +219,7 @@ namespace DocHandler.ViewModels
             {
                 ScopesOfWork.Add(_scopeOfWorkService.GetFormattedScope(scope));
             }
+            FilterScopes();
         }
 
         private void LoadRecentScopes()
@@ -193,6 +228,21 @@ namespace DocHandler.ViewModels
             foreach (var scope in _scopeOfWorkService.RecentScopes.Take(10))
             {
                 RecentScopes.Add(scope);
+            }
+        }
+
+        private void FilterScopes()
+        {
+            FilteredScopesOfWork.Clear();
+            
+            var searchTerm = ScopeSearchText?.Trim() ?? "";
+            var filteredScopes = string.IsNullOrWhiteSpace(searchTerm) 
+                ? ScopesOfWork 
+                : ScopesOfWork.Where(s => s.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase) >= 0);
+            
+            foreach (var scope in filteredScopes)
+            {
+                FilteredScopesOfWork.Add(scope);
             }
         }
         
@@ -345,19 +395,22 @@ namespace DocHandler.ViewModels
                     // Update configuration with recent location
                     _configService.AddRecentLocation(outputDir);
 
-                    // Open the output folder
-                    try
+                    // Open the output folder if preference is set
+                    if (OpenFolderAfterProcessing)
                     {
-                        Process.Start(new ProcessStartInfo
+                        try
                         {
-                            FileName = outputDir,
-                            UseShellExecute = true,
-                            Verb = "open"
-                        });
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Warning(ex, "Failed to open output folder");
+                            Process.Start(new ProcessStartInfo
+                            {
+                                FileName = outputDir,
+                                UseShellExecute = true,
+                                Verb = "open"
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Failed to open output folder");
+                        }
                     }
                 }
                 else
@@ -465,13 +518,7 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private void SearchScopes()
         {
-            ScopesOfWork.Clear();
-            var searchResults = _scopeOfWorkService.SearchScopes(ScopeSearchText);
-            
-            foreach (var scope in searchResults)
-            {
-                ScopesOfWork.Add(_scopeOfWorkService.GetFormattedScope(scope));
-            }
+            FilterScopes();
         }
 
         [RelayCommand]
@@ -479,6 +526,119 @@ namespace DocHandler.ViewModels
         {
             await _scopeOfWorkService.ClearRecentScopes();
             LoadRecentScopes();
+        }
+
+        [RelayCommand]
+        private void SetSaveLocation()
+        {
+            using (var dialog = new FolderBrowserDialog())
+            {
+                dialog.Description = "Select save location for documents";
+                dialog.ShowNewFolderButton = true;
+                
+                // Set initial directory
+                if (Directory.Exists(SessionSaveLocation))
+                {
+                    dialog.SelectedPath = SessionSaveLocation;
+                }
+                else if (Directory.Exists(_configService.Config.DefaultSaveLocation))
+                {
+                    dialog.SelectedPath = _configService.Config.DefaultSaveLocation;
+                }
+                
+                if (dialog.ShowDialog() == DialogResult.OK)
+                {
+                    SessionSaveLocation = dialog.SelectedPath;
+                    _configService.UpdateDefaultSaveLocation(dialog.SelectedPath);
+                    _ = _configService.SaveConfiguration();
+                    
+                    // Notify UI of recent locations change
+                    OnPropertyChanged(nameof(RecentLocations));
+                    
+                    _logger.Information("Save location set to: {Path}", dialog.SelectedPath);
+                }
+            }
+        }
+
+        [RelayCommand]
+        private void OpenSaveLocation()
+        {
+            if (Directory.Exists(SessionSaveLocation))
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = SessionSaveLocation,
+                        UseShellExecute = true,
+                        Verb = "open"
+                    });
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Failed to open save location");
+                    MessageBox.Show("Could not open the save location folder.", "Error", 
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+            else
+            {
+                MessageBox.Show("The save location folder does not exist.", "Folder Not Found", 
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        [RelayCommand]
+        private void ShowRecentLocations()
+        {
+            var dialog = new RecentLocationsDialog(_configService.Config.RecentLocations)
+            {
+                Owner = Application.Current.MainWindow
+            };
+            
+            if (dialog.ShowDialog() == true && !string.IsNullOrEmpty(dialog.SelectedLocation))
+            {
+                SessionSaveLocation = dialog.SelectedLocation;
+                _configService.UpdateDefaultSaveLocation(dialog.SelectedLocation);
+                _ = _configService.SaveConfiguration();
+                
+                // Notify UI of recent locations change
+                OnPropertyChanged(nameof(RecentLocations));
+                
+                _logger.Information("Save location set to: {Path}", dialog.SelectedLocation);
+            }
+        }
+
+        [RelayCommand]
+        private void EditCompanyNames()
+        {
+            // TODO: Implement company names editor window
+            MessageBox.Show("Edit Company Names - Coming Soon", "Feature", 
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        [RelayCommand]
+        private void EditScopesOfWork()
+        {
+            // TODO: Implement scopes of work editor window
+            MessageBox.Show("Edit Scopes of Work - Coming Soon", "Feature", 
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        [RelayCommand]
+        private void Exit()
+        {
+            Application.Current.Shutdown();
+        }
+
+        [RelayCommand]
+        private void About()
+        {
+            MessageBox.Show(
+                "DocHandler Enterprise\nVersion 1.0\n\nDocument Processing Tool with Save Quotes Mode\n\n© 2024", 
+                "About DocHandler",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
         }
 
         private async Task ProcessSaveQuotes()
@@ -580,17 +740,24 @@ namespace DocHandler.ViewModels
                 {
                     StatusMessage = $"Successfully processed {processedCount} quote(s)";
                     
-                    // Open output folder
-                    try
+                    // Update recent locations
+                    _configService.AddRecentLocation(outputDir);
+                    OnPropertyChanged(nameof(RecentLocations));
+                    
+                    // Open output folder if preference is set
+                    if (OpenFolderAfterProcessing)
                     {
-                        Process.Start(new ProcessStartInfo
+                        try
                         {
-                            FileName = outputDir,
-                            UseShellExecute = true,
-                            Verb = "open"
-                        });
+                            Process.Start(new ProcessStartInfo
+                            {
+                                FileName = outputDir,
+                                UseShellExecute = true,
+                                Verb = "open"
+                            });
+                        }
+                        catch { }
                     }
-                    catch { }
                 }
 
                 if (failedFiles.Any())
@@ -664,47 +831,6 @@ namespace DocHandler.ViewModels
             UpdateUI();
         }
         
-        // Placeholder commands - implement these later
-        [RelayCommand]
-        private void SetSaveLocation()
-        {
-            // TODO: Implement folder browser dialog
-            MessageBox.Show("Set Save Location - Coming Soon", "Feature", 
-                MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-
-        [RelayCommand]
-        private void EditCompanyNames()
-        {
-            // TODO: Implement company names editor window
-            MessageBox.Show("Edit Company Names - Coming Soon", "Feature", 
-                MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-
-        [RelayCommand]
-        private void EditScopesOfWork()
-        {
-            // TODO: Implement scopes of work editor window
-            MessageBox.Show("Edit Scopes of Work - Coming Soon", "Feature", 
-                MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-
-        [RelayCommand]
-        private void Exit()
-        {
-            Application.Current.Shutdown();
-        }
-
-        [RelayCommand]
-        private void About()
-        {
-            MessageBox.Show(
-                "DocHandler Enterprise\nVersion 1.0\n\nDocument Processing Tool with Save Quotes Mode\n\n© 2024", 
-                "About DocHandler",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-        }
-        
         public void Cleanup()
         {
             _officeConversionService?.Dispose();
@@ -718,6 +844,12 @@ namespace DocHandler.ViewModels
                 _configService.UpdateWindowPosition(left, top, width, height, state);
                 _ = _configService.SaveConfiguration();
             }
+        }
+
+        public void SavePreferences()
+        {
+            _configService.Config.OpenFolderAfterProcessing = OpenFolderAfterProcessing;
+            _ = _configService.SaveConfiguration();
         }
 
         // Property for theme

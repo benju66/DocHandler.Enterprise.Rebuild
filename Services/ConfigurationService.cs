@@ -67,7 +67,8 @@ namespace DocHandler.Services
                 WindowTop = 100,
                 WindowWidth = 800,
                 WindowHeight = 600,
-                WindowState = "Normal"
+                WindowState = "Normal",
+                OpenFolderAfterProcessing = true
             };
         }
         
@@ -147,5 +148,6 @@ namespace DocHandler.Services
         public double WindowWidth { get; set; }
         public double WindowHeight { get; set; }
         public string WindowState { get; set; } = "Normal";
+        public bool? OpenFolderAfterProcessing { get; set; } = true;
     }
 }

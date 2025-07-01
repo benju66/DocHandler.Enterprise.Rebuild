@@ -40,6 +40,14 @@
                         <ui:SymbolIcon Symbol="Save"/>
                     </MenuItem.Icon>
                 </MenuItem>
+                <MenuItem Header="Open Folder After Processing" 
+                          IsCheckable="True" 
+                          IsChecked="{Binding OpenFolderAfterProcessing}"
+                          Click="MenuItem_SavePreferences">
+                    <MenuItem.Icon>
+                        <ui:SymbolIcon Symbol="OpenFile"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <MenuItem Header="Edit Company Names..." Command="{Binding EditCompanyNamesCommand}"/>
                 <MenuItem Header="Edit Scopes of Work..." Command="{Binding EditScopesOfWorkCommand}"/>
@@ -341,18 +349,11 @@
                         <Grid Grid.Row="0" Margin="0,0,0,5">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <ui:AutoSuggestBox Grid.Column="0" 
                                               PlaceholderText="Search scopes..."
                                               Text="{Binding ScopeSearchText, UpdateSourceTrigger=PropertyChanged}"
                                               QueryIcon="Find"/>
-                            <Button Grid.Column="1" 
-                                    Margin="5,0,0,0"
-                                    Command="{Binding SearchScopesCommand}"
-                                    ToolTip="Search">
-                                <ui:SymbolIcon Symbol="Find" Width="16" Height="16"/>
-                            </Button>
                         </Grid>
                         
                         <!-- Selected Scope Display -->
@@ -389,7 +390,7 @@
                         </Grid.RowDefinitions>
                         
                         <ListBox Grid.Row="0"
-                                 ItemsSource="{Binding ScopesOfWork}"
+                                 ItemsSource="{Binding FilteredScopesOfWork}"
                                  SelectedItem="{Binding SelectedScope}"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto">
                             <ListBox.ItemContainerStyle>
@@ -435,15 +436,87 @@
                 </GroupBox>
                 
                 <!-- Session Save Location -->
-                <StackPanel Grid.Row="3" Margin="0,10,0,0">
-                    <TextBlock Text="Save Location:" 
-                               FontSize="12"
-                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-                    <TextBlock Text="{Binding SessionSaveLocation}" 
-                               FontSize="11"
-                               TextTrimming="CharacterEllipsis"
-                               ToolTip="{Binding SessionSaveLocation}"/>
-                </StackPanel>
+                <GroupBox Grid.Row="3" Header="Save Location" Margin="0,10,0,0">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        
+                        <!-- Save Location Path - Clickable -->
+                        <Button Grid.Row="0" 
+                                Command="{Binding OpenSaveLocationCommand}"
+                                HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Left"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Padding="5,3"
+                                Cursor="Hand">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border Background="{TemplateBinding Background}"
+                                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                                        Padding="{TemplateBinding Padding}">
+                                                    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                    <Style.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}"/>
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                            <TextBlock Text="{Binding SessionSaveLocation}" 
+                                       TextTrimming="CharacterEllipsis"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource SystemControlHighlightAccentBrush}"
+                                       TextDecorations="Underline"
+                                       ToolTip="{Binding SessionSaveLocation}"/>
+                        </Button>
+                        
+                        <!-- Buttons Row -->
+                        <Grid Grid.Row="1" Margin="0,5,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            
+                            <Button Grid.Column="1" 
+                                    Command="{Binding SetSaveLocationCommand}"
+                                    Content="Change Location"
+                                    Padding="10,5"
+                                    Margin="0,0,5,0">
+                                <Button.Resources>
+                                    <Style TargetType="ui:SymbolIcon">
+                                        <Setter Property="Width" Value="16"/>
+                                        <Setter Property="Height" Value="16"/>
+                                    </Style>
+                                </Button.Resources>
+                            </Button>
+                            
+                            <Button Grid.Column="2" 
+                                    Command="{Binding ShowRecentLocationsCommand}"
+                                    Content="Recent"
+                                    Padding="10,5">
+                                <Button.Resources>
+                                    <Style TargetType="ui:SymbolIcon">
+                                        <Setter Property="Width" Value="16"/>
+                                        <Setter Property="Height" Value="16"/>
+                                    </Style>
+                                </Button.Resources>
+                            </Button>
+                        </Grid>
+                    </Grid>
+                </GroupBox>
             </Grid>
         </Grid>
     </DockPanel>
