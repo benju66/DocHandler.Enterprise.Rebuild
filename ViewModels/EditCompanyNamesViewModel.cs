@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
@@ -79,7 +80,7 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private async Task AddCompany()
         {
-            var dialog = new Views.CompanyEditDialog("", new())
+            var dialog = new Views.CompanyEditDialog("", new List<string>())
             {
                 Owner = Application.Current.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive),
                 Title = "Add New Company"
@@ -87,7 +88,7 @@ namespace DocHandler.ViewModels
             
             if (dialog.ShowDialog() == true)
             {
-                var success = await _companyNameService.AddCompanyName(dialog.CompanyName, dialog.Aliases);
+                var success = await _companyNameService.AddCompanyName(dialog.CompanyName, dialog.Aliases.ToList());
                 
                 if (success)
                 {
@@ -126,7 +127,7 @@ namespace DocHandler.ViewModels
                     var newCompany = new CompanyInfo
                     {
                         Name = dialog.CompanyName,
-                        Aliases = dialog.Aliases,
+                        Aliases = dialog.Aliases.ToList(),
                         DateAdded = company.CompanyInfo.DateAdded,
                         LastUsed = company.CompanyInfo.LastUsed,
                         UsageCount = company.CompanyInfo.UsageCount
@@ -138,7 +139,7 @@ namespace DocHandler.ViewModels
                 else
                 {
                     // Just update aliases
-                    company.CompanyInfo.Aliases = dialog.Aliases;
+                    company.CompanyInfo.Aliases = dialog.Aliases.ToList();
                     await _companyNameService.SaveCompanyNames();
                 }
                 

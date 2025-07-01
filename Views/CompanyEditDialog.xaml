@@ -62,56 +62,58 @@
                 CornerRadius="4"
                 MaxHeight="200">
             <ScrollViewer VerticalScrollBarVisibility="Auto">
-                <ItemsControl x:Name="AliasesList" 
-                              ItemsSource="{Binding Aliases}">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <Border BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
-                                    BorderThickness="0,0,0,1"
-                                    Padding="10,8">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    
-                                    <TextBlock Grid.Column="0" 
-                                               Text="{Binding}"
-                                               VerticalAlignment="Center"/>
-                                    
-                                    <Button Grid.Column="1"
-                                            Click="RemoveAliasButton_Click"
-                                            Tag="{Binding}"
-                                            ToolTip="Remove alias"
-                                            Padding="6"
-                                            Background="Transparent"
-                                            BorderThickness="0">
-                                        <ui:SymbolIcon Symbol="Cancel" Width="14" Height="14"/>
-                                    </Button>
-                                </Grid>
-                            </Border>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-                
-                <!-- Empty State -->
-                <TextBlock Text="No aliases defined"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"
-                           Margin="0,20"
-                           FontStyle="Italic"
-                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}">
-                    <TextBlock.Style>
-                        <Style TargetType="TextBlock">
-                            <Setter Property="Visibility" Value="Collapsed"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding Aliases.Count}" Value="0">
-                                    <Setter Property="Visibility" Value="Visible"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </TextBlock.Style>
-                </TextBlock>
+                <Grid>
+                    <ItemsControl x:Name="AliasesList" 
+                                  ItemsSource="{Binding Aliases}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+                                        BorderThickness="0,0,0,1"
+                                        Padding="10,8">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        
+                                        <TextBlock Grid.Column="0" 
+                                                   Text="{Binding}"
+                                                   VerticalAlignment="Center"/>
+                                        
+                                        <Button Grid.Column="1"
+                                                Click="RemoveAliasButton_Click"
+                                                Tag="{Binding}"
+                                                ToolTip="Remove alias"
+                                                Padding="6"
+                                                Background="Transparent"
+                                                BorderThickness="0">
+                                            <ui:SymbolIcon Symbol="Cancel" Width="14" Height="14"/>
+                                        </Button>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    
+                    <!-- Empty State -->
+                    <TextBlock Text="No aliases defined"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Margin="0,20"
+                               FontStyle="Italic"
+                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Aliases.Count}" Value="0">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
             </ScrollViewer>
         </Border>
         
