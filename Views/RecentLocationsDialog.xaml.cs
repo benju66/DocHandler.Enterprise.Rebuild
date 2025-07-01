@@ -6,7 +6,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using Microsoft.WindowsAPICodePack.Dialogs;
+using Ookii.Dialogs.Wpf;
 
 namespace DocHandler.Views
 {
@@ -83,30 +83,22 @@ namespace DocHandler.Views
 
         private void BrowseButton_Click(object sender, RoutedEventArgs e)
         {
-            using (var dialog = new CommonOpenFileDialog())
+            var dialog = new VistaFolderBrowserDialog
             {
-                dialog.Title = "Select save location for documents";
-                dialog.IsFolderPicker = true;
-                dialog.AddToMostRecentlyUsedList = false;
-                dialog.AllowNonFileSystemItems = false;
-                dialog.EnsureFileExists = true;
-                dialog.EnsurePathExists = true;
-                dialog.EnsureReadOnly = false;
-                dialog.EnsureValidNames = true;
-                dialog.Multiselect = false;
-                dialog.ShowPlacesList = true;
-                
-                // Set initial directory to selected item if any
-                if (LocationsList.SelectedItem is LocationItem selectedItem)
-                {
-                    dialog.InitialDirectory = selectedItem.FullPath;
-                }
-                
-                if (dialog.ShowDialog() == CommonFileDialogResult.Ok)
-                {
-                    SelectedLocation = dialog.FileName;
-                    DialogResult = true;
-                }
+                Description = "Select save location for documents",
+                UseDescriptionForTitle = true
+            };
+            
+            // Set initial directory to selected item if any
+            if (LocationsList.SelectedItem is LocationItem selectedItem)
+            {
+                dialog.SelectedPath = selectedItem.FullPath;
+            }
+            
+            if (dialog.ShowDialog() == true)
+            {
+                SelectedLocation = dialog.SelectedPath;
+                DialogResult = true;
             }
         }
 

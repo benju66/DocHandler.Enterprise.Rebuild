@@ -13,8 +13,7 @@ using DocHandler.Views;
 using Serilog;
 using MessageBox = System.Windows.MessageBox;
 using Application = System.Windows.Application;
-using FolderBrowserDialog = System.Windows.Forms.FolderBrowserDialog;
-using DialogResult = System.Windows.Forms.DialogResult;
+using FolderBrowserDialog = Ookii.Dialogs.Wpf.VistaFolderBrowserDialog;
 
 namespace DocHandler.ViewModels
 {
@@ -531,32 +530,32 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private void SetSaveLocation()
         {
-            using (var dialog = new FolderBrowserDialog())
+            var dialog = new FolderBrowserDialog
             {
-                dialog.Description = "Select save location for documents";
-                dialog.ShowNewFolderButton = true;
+                Description = "Select save location for documents",
+                UseDescriptionForTitle = true
+            };
+            
+            // Set initial directory
+            if (Directory.Exists(SessionSaveLocation))
+            {
+                dialog.SelectedPath = SessionSaveLocation;
+            }
+            else if (Directory.Exists(_configService.Config.DefaultSaveLocation))
+            {
+                dialog.SelectedPath = _configService.Config.DefaultSaveLocation;
+            }
+            
+            if (dialog.ShowDialog() == true)
+            {
+                SessionSaveLocation = dialog.SelectedPath;
+                _configService.UpdateDefaultSaveLocation(dialog.SelectedPath);
+                _ = _configService.SaveConfiguration();
                 
-                // Set initial directory
-                if (Directory.Exists(SessionSaveLocation))
-                {
-                    dialog.SelectedPath = SessionSaveLocation;
-                }
-                else if (Directory.Exists(_configService.Config.DefaultSaveLocation))
-                {
-                    dialog.SelectedPath = _configService.Config.DefaultSaveLocation;
-                }
+                // Notify UI of recent locations change
+                OnPropertyChanged(nameof(RecentLocations));
                 
-                if (dialog.ShowDialog() == DialogResult.OK)
-                {
-                    SessionSaveLocation = dialog.SelectedPath;
-                    _configService.UpdateDefaultSaveLocation(dialog.SelectedPath);
-                    _ = _configService.SaveConfiguration();
-                    
-                    // Notify UI of recent locations change
-                    OnPropertyChanged(nameof(RecentLocations));
-                    
-                    _logger.Information("Save location set to: {Path}", dialog.SelectedPath);
-                }
+                _logger.Information("Save location set to: {Path}", dialog.SelectedPath);
             }
         }
 
