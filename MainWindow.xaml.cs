@@ -20,6 +20,27 @@ namespace DocHandler
             
             // Window closing event to cleanup
             Closing += MainWindow_Closing;
+            
+            // Restore window position after loading
+            Loaded += MainWindow_Loaded;
+        }
+        
+        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        {
+            // Restore window position from config
+            var config = ViewModel.ConfigService.Config;
+            if (config.RememberWindowPosition)
+            {
+                Left = config.WindowLeft;
+                Top = config.WindowTop;
+                Width = config.WindowWidth;
+                Height = config.WindowHeight;
+                
+                if (Enum.TryParse<WindowState>(config.WindowState, out var state))
+                {
+                    WindowState = state;
+                }
+            }
         }
         
         private void Border_Drop(object sender, DragEventArgs e)
@@ -68,26 +89,26 @@ namespace DocHandler
         }
         
         /// <summary>
-        /// Handle double-click on recent portion items to select them
+        /// Handle double-click on recent scope items to select them
         /// </summary>
-        private void RecentPortionItem_DoubleClick(object sender, MouseButtonEventArgs e)
+        private void RecentScopeItem_DoubleClick(object sender, MouseButtonEventArgs e)
         {
-            if (sender is ListBoxItem item && item.DataContext is string portion)
+            if (sender is ListBoxItem item && item.DataContext is string scope)
             {
-                ViewModel.SelectedFileNamePortion = portion;
-                ViewModel.FileNamePortionSearchText = portion;
-                ViewModel.SelectFileNamePortionCommand.Execute(portion);
+                ViewModel.SelectedScope = scope;
+                ViewModel.ScopeSearchText = scope;
+                ViewModel.SelectScopeCommand.Execute(scope);
             }
         }
         
         /// <summary>
-        /// Handle selection of filename portion from main list
+        /// Handle selection of scope from main list
         /// </summary>
-        private void FileNamePortionItem_Selected(object sender, RoutedEventArgs e)
+        private void ScopeItem_Selected(object sender, RoutedEventArgs e)
         {
-            if (sender is ListBoxItem item && item.DataContext is string portion)
+            if (sender is ListBoxItem item && item.DataContext is string scope)
             {
-                ViewModel.SelectFileNamePortionCommand.Execute(portion);
+                ViewModel.SelectScopeCommand.Execute(scope);
             }
         }
         

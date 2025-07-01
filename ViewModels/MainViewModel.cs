@@ -20,7 +20,7 @@ namespace DocHandler.ViewModels
         private readonly ConfigurationService _configService;
         private readonly OfficeConversionService _officeConversionService;
         private readonly CompanyNameService _companyNameService;
-        private readonly FileNamePortionService _fileNamePortionService;
+        private readonly ScopeOfWorkService _scopeOfWorkService;
         
         public ConfigurationService ConfigService => _configService;
         
@@ -51,20 +51,41 @@ namespace DocHandler.ViewModels
         private string _processButtonText = "Process Files";
         
         // Save Quotes Mode properties
-        [ObservableProperty]
         private bool _saveQuotesMode;
+        public bool SaveQuotesMode
+        {
+            get => _saveQuotesMode;
+            set
+            {
+                if (SetProperty(ref _saveQuotesMode, value))
+                {
+                    UpdateUI();
+                    
+                    if (value)
+                    {
+                        StatusMessage = "Save Quotes Mode: Select a scope of work and drop quotes";
+                        SessionSaveLocation = _configService.Config.DefaultSaveLocation;
+                    }
+                    else
+                    {
+                        StatusMessage = "Drop files here to begin";
+                        SelectedScope = null;
+                    }
+                }
+            }
+        }
 
         [ObservableProperty]
-        private string? _selectedFileNamePortion;
+        private string? _selectedScope;
 
         [ObservableProperty]
-        private ObservableCollection<string> _fileNamePortions = new();
+        private ObservableCollection<string> _scopesOfWork = new();
 
         [ObservableProperty]
-        private ObservableCollection<string> _recentPortions = new();
+        private ObservableCollection<string> _recentScopes = new();
 
         [ObservableProperty]
-        private string _fileNamePortionSearchText = "";
+        private string _scopeSearchText = "";
 
         [ObservableProperty]
         private string _sessionSaveLocation = "";
@@ -76,31 +97,45 @@ namespace DocHandler.ViewModels
             _configService = new ConfigurationService();
             _officeConversionService = new OfficeConversionService();
             _companyNameService = new CompanyNameService();
-            _fileNamePortionService = new FileNamePortionService();
+            _scopeOfWorkService = new ScopeOfWorkService();
             
-            // Load filename portions
-            LoadFileNamePortions();
-            LoadRecentPortions();
+            // Load scopes of work
+            LoadScopesOfWork();
+            LoadRecentScopes();
+            
+            // Initialize theme from config
+            IsDarkMode = _configService.Config.Theme == "Dark";
             
             // Update UI when files are added/removed
             PendingFiles.CollectionChanged += (s, e) => UpdateUI();
+            
+            // Check Office availability
+            CheckOfficeAvailability();
         }
         
-        private void LoadFileNamePortions()
+        private void CheckOfficeAvailability()
         {
-            FileNamePortions.Clear();
-            foreach (var portion in _fileNamePortionService.Portions)
+            if (!_officeConversionService.IsOfficeInstalled())
             {
-                FileNamePortions.Add(_fileNamePortionService.GetFormattedPortion(portion));
+                _logger.Warning("Microsoft Office is not available - Word/Excel conversion features will be disabled");
+            }
+        }
+        
+        private void LoadScopesOfWork()
+        {
+            ScopesOfWork.Clear();
+            foreach (var scope in _scopeOfWorkService.Scopes)
+            {
+                ScopesOfWork.Add(_scopeOfWorkService.GetFormattedScope(scope));
             }
         }
 
-        private void LoadRecentPortions()
+        private void LoadRecentScopes()
         {
-            RecentPortions.Clear();
-            foreach (var portion in _fileNamePortionService.RecentPortions.Take(10))
+            RecentScopes.Clear();
+            foreach (var scope in _scopeOfWorkService.RecentScopes.Take(10))
             {
-                RecentPortions.Add(portion);
+                RecentScopes.Add(scope);
             }
         }
         
@@ -108,18 +143,18 @@ namespace DocHandler.ViewModels
         {
             if (SaveQuotesMode)
             {
-                CanProcess = PendingFiles.Count > 0 && !IsProcessing && !string.IsNullOrEmpty(SelectedFileNamePortion);
+                CanProcess = PendingFiles.Count > 0 && !IsProcessing && !string.IsNullOrEmpty(SelectedScope);
                 ProcessButtonText = PendingFiles.Count > 1 ? "Process All Quotes" : "Process Quote";
                 
                 if (PendingFiles.Count == 0)
                 {
-                    StatusMessage = string.IsNullOrEmpty(SelectedFileNamePortion) 
-                        ? "Select a filename portion and drop quotes" 
-                        : $"Selected: {SelectedFileNamePortion} - Drop quote documents";
+                    StatusMessage = string.IsNullOrEmpty(SelectedScope) 
+                        ? "Select a scope of work and drop quotes" 
+                        : $"Selected: {SelectedScope} - Drop quote documents";
                 }
                 else
                 {
-                    StatusMessage = $"{PendingFiles.Count} quote(s) ready - {SelectedFileNamePortion}";
+                    StatusMessage = $"{PendingFiles.Count} quote(s) ready - {SelectedScope}";
                 }
             }
             else
@@ -289,62 +324,44 @@ namespace DocHandler.ViewModels
                 UpdateUI();
             }
         }
-        
-        [RelayCommand]
-        private void ToggleSaveQuotesMode()
-        {
-            SaveQuotesMode = !SaveQuotesMode;
-            UpdateUI();
-            
-            if (SaveQuotesMode)
-            {
-                StatusMessage = "Save Quotes Mode: Select a filename portion and drop quotes";
-                SessionSaveLocation = _configService.Config.DefaultSaveLocation;
-            }
-            else
-            {
-                StatusMessage = "Drop files here to begin";
-                SelectedFileNamePortion = null;
-            }
-        }
 
         [RelayCommand]
-        public void SelectFileNamePortion(string? portion)
+        public void SelectScope(string? scope)
         {
-            SelectedFileNamePortion = portion;
-            if (!string.IsNullOrEmpty(portion))
+            SelectedScope = scope;
+            if (!string.IsNullOrEmpty(scope))
             {
-                _ = _fileNamePortionService.UpdateRecentPortion(portion);
-                LoadRecentPortions();
-                StatusMessage = $"Selected: {portion} - Drop quote documents";
+                _ = _scopeOfWorkService.UpdateRecentScope(scope);
+                LoadRecentScopes();
+                StatusMessage = $"Selected: {scope} - Drop quote documents";
             }
             UpdateUI();
         }
 
         [RelayCommand]
-        private void SearchFileNamePortions()
+        private void SearchScopes()
         {
-            FileNamePortions.Clear();
-            var searchResults = _fileNamePortionService.SearchPortions(FileNamePortionSearchText);
+            ScopesOfWork.Clear();
+            var searchResults = _scopeOfWorkService.SearchScopes(ScopeSearchText);
             
-            foreach (var portion in searchResults)
+            foreach (var scope in searchResults)
             {
-                FileNamePortions.Add(_fileNamePortionService.GetFormattedPortion(portion));
+                ScopesOfWork.Add(_scopeOfWorkService.GetFormattedScope(scope));
             }
         }
 
         [RelayCommand]
-        private async Task ClearRecentPortions()
+        private async Task ClearRecentScopes()
         {
-            await _fileNamePortionService.ClearRecentPortions();
-            LoadRecentPortions();
+            await _scopeOfWorkService.ClearRecentScopes();
+            LoadRecentScopes();
         }
 
         private async Task ProcessSaveQuotes()
         {
-            if (!SaveQuotesMode || string.IsNullOrEmpty(SelectedFileNamePortion))
+            if (!SaveQuotesMode || string.IsNullOrEmpty(SelectedScope))
             {
-                MessageBox.Show("Please select a filename portion first.", "Save Quotes", 
+                MessageBox.Show("Please select a scope of work first.", "Save Quotes", 
                     MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
@@ -407,8 +424,8 @@ namespace DocHandler.ViewModels
                                 continue;
                         }
 
-                        // Build the filename: [Portion] - [Company].pdf
-                        var outputFileName = $"{SelectedFileNamePortion} - {companyName}.pdf";
+                        // Build the filename: [Scope] - [Company].pdf
+                        var outputFileName = $"{SelectedScope} - {companyName}.pdf";
                         var outputPath = Path.Combine(outputDir, outputFileName);
 
                         // Ensure unique filename
@@ -568,10 +585,10 @@ namespace DocHandler.ViewModels
         }
 
         [RelayCommand]
-        private void EditFileNamePortions()
+        private void EditScopesOfWork()
         {
-            // TODO: Implement filename portions editor window
-            MessageBox.Show("Edit Filename Portions - Coming Soon", "Feature", 
+            // TODO: Implement scopes of work editor window
+            MessageBox.Show("Edit Scopes of Work - Coming Soon", "Feature", 
                 MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
@@ -602,6 +619,23 @@ namespace DocHandler.ViewModels
             {
                 _configService.UpdateWindowPosition(left, top, width, height, state);
                 _ = _configService.SaveConfiguration();
+            }
+        }
+
+        // Property for theme
+        private bool _isDarkMode = false;
+        public bool IsDarkMode
+        {
+            get => _isDarkMode;
+            set
+            {
+                if (SetProperty(ref _isDarkMode, value))
+                {
+                    ModernWpf.ThemeManager.Current.ApplicationTheme = value
+                        ? ModernWpf.ApplicationTheme.Dark
+                        : ModernWpf.ApplicationTheme.Light;
+                    _configService.UpdateTheme(value ? "Dark" : "Light");
+                }
             }
         }
     }

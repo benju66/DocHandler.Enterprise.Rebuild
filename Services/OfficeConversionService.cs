@@ -2,8 +2,6 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
-using Microsoft.Office.Interop.Word;
-using Excel = Microsoft.Office.Interop.Excel;
 using Serilog;
 using Task = System.Threading.Tasks.Task;
 
@@ -12,41 +10,87 @@ namespace DocHandler.Services
     public class OfficeConversionService : IDisposable
     {
         private readonly ILogger _logger;
-        private Application? _wordApp;
-        private Excel.Application? _excelApp;
+        private dynamic? _wordApp;
+        private dynamic? _excelApp;
         private bool _disposed;
+        private bool? _officeAvailable;
         
         public OfficeConversionService()
         {
             _logger = Log.ForContext<OfficeConversionService>();
         }
         
+        private bool IsOfficeAvailable()
+        {
+            if (_officeAvailable.HasValue)
+                return _officeAvailable.Value;
+                
+            try
+            {
+                // Try to create Word application using late binding
+                Type? wordType = Type.GetTypeFromProgID("Word.Application");
+                if (wordType != null)
+                {
+                    dynamic testApp = Activator.CreateInstance(wordType);
+                    testApp.Visible = false;
+                    testApp.Quit();
+                    Marshal.ReleaseComObject(testApp);
+                    _officeAvailable = true;
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Microsoft Office is not available");
+            }
+            
+            _officeAvailable = false;
+            return false;
+        }
+        
         public async System.Threading.Tasks.Task<ConversionResult> ConvertWordToPdf(string inputPath, string outputPath)
         {
+            if (!IsOfficeAvailable())
+            {
+                return new ConversionResult
+                {
+                    Success = false,
+                    ErrorMessage = "Microsoft Office is not installed or accessible. Please install Microsoft Office to convert Word documents to PDF."
+                };
+            }
+            
             return await Task.Run(() => ConvertWordToPdfSync(inputPath, outputPath));
         }
         
         private ConversionResult ConvertWordToPdfSync(string inputPath, string outputPath)
         {
             var result = new ConversionResult();
-            Document? doc = null;
+            dynamic? doc = null;
             
             try
             {
-                // Ensure Word application is initialized
+                // Ensure Word application is initialized using late binding
                 if (_wordApp == null)
                 {
                     try
                     {
-                        _wordApp = new Application();
+                        Type? wordType = Type.GetTypeFromProgID("Word.Application");
+                        if (wordType == null)
+                        {
+                            result.Success = false;
+                            result.ErrorMessage = "Microsoft Word is not installed.";
+                            return result;
+                        }
+                        
+                        _wordApp = Activator.CreateInstance(wordType);
                         _wordApp.Visible = false;
-                        _wordApp.DisplayAlerts = WdAlertLevel.wdAlertsNone;
+                        _wordApp.DisplayAlerts = 0; // wdAlertsNone
                     }
-                    catch (COMException ex)
+                    catch (Exception ex)
                     {
-                        _logger.Error(ex, "Microsoft Word is not installed or accessible");
+                        _logger.Error(ex, "Failed to create Word application");
                         result.Success = false;
-                        result.ErrorMessage = "Microsoft Word is not installed. Please install Microsoft Office to convert Word documents to PDF.";
+                        result.ErrorMessage = "Microsoft Word is not installed or accessible.";
                         return result;
                     }
                 }
@@ -55,9 +99,9 @@ namespace DocHandler.Services
                 _logger.Information("Opening Word document: {Path}", inputPath);
                 doc = _wordApp.Documents.Open(inputPath, ReadOnly: true);
                 
-                // Save as PDF
+                // Save as PDF (17 = wdFormatPDF)
                 _logger.Information("Converting to PDF: {Path}", outputPath);
-                doc.SaveAs2(outputPath, WdSaveFormat.wdFormatPDF);
+                doc.SaveAs2(outputPath, FileFormat: 17);
                 
                 result.Success = true;
                 result.OutputPath = outputPath;
@@ -76,7 +120,7 @@ namespace DocHandler.Services
                 {
                     try
                     {
-                        doc.Close(WdSaveOptions.wdDoNotSaveChanges);
+                        doc.Close(SaveChanges: false);
                         Marshal.ReleaseComObject(doc);
                     }
                     catch (Exception ex)
@@ -91,29 +135,46 @@ namespace DocHandler.Services
         
         public async System.Threading.Tasks.Task<ConversionResult> ConvertExcelToPdf(string inputPath, string outputPath)
         {
+            if (!IsOfficeAvailable())
+            {
+                return new ConversionResult
+                {
+                    Success = false,
+                    ErrorMessage = "Microsoft Office is not installed or accessible. Please install Microsoft Office to convert Excel documents to PDF."
+                };
+            }
+            
             _logger.Information("Converting Excel to PDF: {ExcelPath} -> {PdfPath}", inputPath, outputPath);
 
             return await Task.Run(() =>
             {
-                Excel.Workbook? workbook = null;
+                dynamic? workbook = null;
                 var result = new ConversionResult();
 
                 try
                 {
-                    // Create Excel application if needed
+                    // Create Excel application if needed using late binding
                     if (_excelApp == null)
                     {
                         try
                         {
-                            _excelApp = new Excel.Application();
+                            Type? excelType = Type.GetTypeFromProgID("Excel.Application");
+                            if (excelType == null)
+                            {
+                                result.Success = false;
+                                result.ErrorMessage = "Microsoft Excel is not installed.";
+                                return result;
+                            }
+                            
+                            _excelApp = Activator.CreateInstance(excelType);
                             _excelApp.Visible = false;
                             _excelApp.DisplayAlerts = false;
                         }
-                        catch (COMException ex)
+                        catch (Exception ex)
                         {
-                            _logger.Error(ex, "Microsoft Excel is not installed or accessible");
+                            _logger.Error(ex, "Failed to create Excel application");
                             result.Success = false;
-                            result.ErrorMessage = "Microsoft Excel is not installed. Please install Microsoft Office to convert Excel documents to PDF.";
+                            result.ErrorMessage = "Microsoft Excel is not installed or accessible.";
                             return result;
                         }
                     }
@@ -125,11 +186,11 @@ namespace DocHandler.Services
                         IgnoreReadOnlyRecommended: true,
                         Notify: false);
 
-                    // Export as PDF
+                    // Export as PDF (0 = xlTypePDF)
                     workbook.ExportAsFixedFormat(
-                        Excel.XlFixedFormatType.xlTypePDF,
-                        outputPath,
-                        Excel.XlFixedFormatQuality.xlQualityStandard,
+                        Type: 0,
+                        Filename: outputPath,
+                        Quality: 0, // xlQualityStandard
                         IncludeDocProperties: true,
                         IgnorePrintAreas: false,
                         OpenAfterPublish: false);
@@ -167,17 +228,7 @@ namespace DocHandler.Services
         
         public bool IsOfficeInstalled()
         {
-            try
-            {
-                var testApp = new Application();
-                testApp.Quit();
-                Marshal.ReleaseComObject(testApp);
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
+            return IsOfficeAvailable();
         }
         
         public void Dispose()

@@ -35,15 +35,14 @@
             <MenuItem Header="_Processing">
                 <MenuItem Header="Save Quotes Mode" 
                           IsCheckable="True" 
-                          IsChecked="{Binding SaveQuotesMode}" 
-                          Command="{Binding ToggleSaveQuotesModeCommand}">
+                          IsChecked="{Binding SaveQuotesMode}">
                     <MenuItem.Icon>
                         <ui:SymbolIcon Symbol="Save"/>
                     </MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
                 <MenuItem Header="Edit Company Names..." Command="{Binding EditCompanyNamesCommand}"/>
-                <MenuItem Header="Edit Filename Portions..." Command="{Binding EditFileNamePortionsCommand}"/>
+                <MenuItem Header="Edit Scopes of Work..." Command="{Binding EditScopesOfWorkCommand}"/>
             </MenuItem>
             
             <MenuItem Header="_View">
@@ -86,7 +85,7 @@
                 <TextBlock Text="{Binding StatusMessage}"/>
             </StatusBarItem>
             <StatusBarItem HorizontalAlignment="Right">
-                <TextBlock Text="{Binding SelectedFileNamePortion}">
+                <TextBlock Text="{Binding SelectedScope}">
                     <TextBlock.Style>
                         <Style TargetType="TextBlock">
                             <Setter Property="Visibility" Value="Collapsed"/>
@@ -110,10 +109,10 @@
         <!-- Main Content Area -->
         <Grid Margin="10">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="300">
+                <ColumnDefinition>
                     <ColumnDefinition.Style>
                         <Style TargetType="ColumnDefinition">
-                            <Setter Property="MinWidth" Value="0"/>
+                            <Setter Property="Width" Value="300"/>
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding SaveQuotesMode}" Value="False">
                                     <Setter Property="Width" Value="0"/>
@@ -122,12 +121,23 @@
                         </Style>
                     </ColumnDefinition.Style>
                 </ColumnDefinition>
-                <ColumnDefinition Width="5"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="250">
+                <ColumnDefinition>
                     <ColumnDefinition.Style>
                         <Style TargetType="ColumnDefinition">
-                            <Setter Property="MinWidth" Value="0"/>
+                            <Setter Property="Width" Value="5"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding SaveQuotesMode}" Value="False">
+                                    <Setter Property="Width" Value="0"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ColumnDefinition.Style>
+                </ColumnDefinition>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition>
+                    <ColumnDefinition.Style>
+                        <Style TargetType="ColumnDefinition">
+                            <Setter Property="Width" Value="250"/>
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding SaveQuotesMode}" Value="False">
                                     <Setter Property="Width" Value="0"/>
@@ -138,8 +148,8 @@
                 </ColumnDefinition>
             </Grid.ColumnDefinitions>
             
-            <!-- Left Panel: Filename Portions -->
-            <GroupBox Grid.Column="0" Header="Filename Portions" Margin="0,0,5,0">
+            <!-- Left Panel: Scopes of Work -->
+            <GroupBox Grid.Column="0" Header="Scopes of Work" Margin="0,0,5,0">
                 <GroupBox.Style>
                     <Style TargetType="GroupBox" BasedOn="{StaticResource {x:Type GroupBox}}">
                         <Setter Property="Visibility" Value="Visible"/>
@@ -158,24 +168,24 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <ui:AutoSuggestBox Grid.Column="0" 
-                                          PlaceholderText="Search filename portions..."
-                                          Text="{Binding FileNamePortionSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                          PlaceholderText="Search scopes..."
+                                          Text="{Binding ScopeSearchText, UpdateSourceTrigger=PropertyChanged}"
                                           QueryIcon="Find"/>
                         <Button Grid.Column="1" 
                                 Margin="5,0,0,0"
-                                Command="{Binding SearchFileNamePortionsCommand}"
+                                Command="{Binding SearchScopesCommand}"
                                 ToolTip="Search">
                             <ui:SymbolIcon Symbol="Find" Width="16" Height="16"/>
                         </Button>
                     </Grid>
                     
-                    <!-- Filename Portions List -->
-                    <ListBox ItemsSource="{Binding FileNamePortions}"
-                             SelectedItem="{Binding SelectedFileNamePortion}"
+                    <!-- Scopes List -->
+                    <ListBox ItemsSource="{Binding ScopesOfWork}"
+                             SelectedItem="{Binding SelectedScope}"
                              ScrollViewer.VerticalScrollBarVisibility="Auto">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
-                                <EventSetter Event="Selected" Handler="FileNamePortionItem_Selected"/>
+                                <EventSetter Event="Selected" Handler="ScopeItem_Selected"/>
                             </Style>
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
@@ -260,7 +270,7 @@
                                         <Setter Property="Text" Value="Drop PDFs, Word documents, or Excel files here"/>
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding SaveQuotesMode}" Value="True">
-                                                <Setter Property="Text" Value="Select a filename portion, then drop quote documents here"/>
+                                                <Setter Property="Text" Value="Select a scope of work, then drop quote documents here"/>
                                                 <Setter Property="FontWeight" Value="Bold"/>
                                             </DataTrigger>
                                         </Style.Triggers>
@@ -334,8 +344,8 @@
                 </Button>
             </Grid>
             
-            <!-- Right Panel: Recent Portions -->
-            <GroupBox Grid.Column="3" Header="Recent Portions" Margin="5,0,0,0">
+            <!-- Right Panel: Recent Scopes -->
+            <GroupBox Grid.Column="3" Header="Recent Scopes" Margin="5,0,0,0">
                 <GroupBox.Style>
                     <Style TargetType="GroupBox" BasedOn="{StaticResource {x:Type GroupBox}}">
                         <Setter Property="Visibility" Value="Visible"/>
@@ -349,19 +359,19 @@
                 <DockPanel>
                     <!-- Clear Button -->
                     <Button DockPanel.Dock="Bottom" 
-                            Command="{Binding ClearRecentPortionsCommand}"
+                            Command="{Binding ClearRecentScopesCommand}"
                             Content="Clear Recent"
                             HorizontalAlignment="Right"
                             Margin="0,5,0,0"
                             Padding="10,5"/>
                     
-                    <!-- Recent Portions List -->
-                    <ListBox ItemsSource="{Binding RecentPortions}"
+                    <!-- Recent Scopes List -->
+                    <ListBox ItemsSource="{Binding RecentScopes}"
                              ScrollViewer.VerticalScrollBarVisibility="Auto">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
                                 <Setter Property="Cursor" Value="Hand"/>
-                                <EventSetter Event="MouseDoubleClick" Handler="RecentPortionItem_DoubleClick"/>
+                                <EventSetter Event="MouseDoubleClick" Handler="RecentScopeItem_DoubleClick"/>
                             </Style>
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
