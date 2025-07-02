@@ -84,8 +84,12 @@ namespace DocHandler
             try
             {
                 // Reset border appearance
-                DropBorder.BorderBrush = (Brush)FindResource("SystemControlForegroundBaseMediumBrush");
-                DropBorder.BorderThickness = new Thickness(2);
+                var dropBorder = sender as Border;
+                if (dropBorder != null)
+                {
+                    dropBorder.BorderBrush = (Brush)FindResource("SystemControlForegroundBaseMediumBrush");
+                    dropBorder.BorderThickness = new Thickness(2);
+                }
                 
                 // DIAGNOSTIC: Log all available data formats
                 var formats = e.Data.GetFormats();
@@ -384,6 +388,9 @@ namespace DocHandler
         
         private void Border_DragEnter(object sender, DragEventArgs e)
         {
+            var dropBorder = sender as Border;
+            if (dropBorder == null) return;
+            
             var formats = e.Data.GetFormats();
             
             // Check if it's the new Outlook (Chromium-based)
@@ -392,8 +399,8 @@ namespace DocHandler
                 e.Effects = DragDropEffects.None;
                 
                 // Still show visual feedback but with a different message
-                DropBorder.BorderBrush = (Brush)FindResource("SystemControlForegroundBaseMediumHighBrush");
-                DropBorder.BorderThickness = new Thickness(3);
+                dropBorder.BorderBrush = (Brush)FindResource("SystemControlForegroundBaseMediumHighBrush");
+                dropBorder.BorderThickness = new Thickness(3);
                 ViewModel.StatusMessage = "New Outlook not supported - please save attachments first";
                 return;
             }
@@ -406,8 +413,8 @@ namespace DocHandler
                 e.Effects = DragDropEffects.Copy;
                 
                 // Highlight the border
-                DropBorder.BorderBrush = (Brush)FindResource("SystemControlHighlightAccentBrush");
-                DropBorder.BorderThickness = new Thickness(3);
+                dropBorder.BorderBrush = (Brush)FindResource("SystemControlHighlightAccentBrush");
+                dropBorder.BorderThickness = new Thickness(3);
                 
                 // Update status for Outlook attachments
                 if (e.Data.GetDataPresent("FileGroupDescriptor") || e.Data.GetDataPresent("FileGroupDescriptorW"))
@@ -423,9 +430,12 @@ namespace DocHandler
         
         private void Border_DragLeave(object sender, DragEventArgs e)
         {
+            var dropBorder = sender as Border;
+            if (dropBorder == null) return;
+            
             // Reset border appearance
-            DropBorder.BorderBrush = (Brush)FindResource("SystemControlForegroundBaseMediumBrush");
-            DropBorder.BorderThickness = new Thickness(2);
+            dropBorder.BorderBrush = (Brush)FindResource("SystemControlForegroundBaseMediumBrush");
+            dropBorder.BorderThickness = new Thickness(2);
             
             // Reset status message
             ViewModel.UpdateUI();
@@ -472,21 +482,24 @@ namespace DocHandler
         private void ScopeSearchTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
         {
             var vm = DataContext as ViewModels.MainViewModel;
-            if (vm == null || ScopesListBox.Items.Count == 0) return;
+            var scopeSearchTextBox = sender as TextBox;
+            var scopesListBox = GetCurrentScopesListBox();
+            
+            if (vm == null || scopesListBox == null || scopesListBox.Items.Count == 0) return;
 
             // Debug output
-            System.Diagnostics.Debug.WriteLine($"PreviewKeyDown: {e.Key}, Items: {ScopesListBox.Items.Count}");
+            System.Diagnostics.Debug.WriteLine($"PreviewKeyDown: {e.Key}, Items: {scopesListBox.Items.Count}");
             this.Title = $"DocHandler Enterprise - Key: {e.Key}";
 
             switch (e.Key)
             {
                 case Key.Down:
-                    NavigateDown(vm);
+                    NavigateDown(vm, scopesListBox);
                     e.Handled = true;
                     break;
                     
                 case Key.Up:
-                    NavigateUp(vm);
+                    NavigateUp(vm, scopesListBox);
                     e.Handled = true;
                     break;
                     
@@ -494,21 +507,34 @@ namespace DocHandler
                     if (vm.SelectedScope != null)
                     {
                         vm.SelectScopeCommand.Execute(vm.SelectedScope);
-                        ScopeSearchTextBox.Clear();
+                        scopeSearchTextBox?.Clear();
                         this.Title = "DocHandler Enterprise";
                     }
                     e.Handled = true;
                     break;
                     
                 case Key.Escape:
-                    ScopeSearchTextBox.Clear();
+                    scopeSearchTextBox?.Clear();
                     vm.SelectedScope = null;
                     e.Handled = true;
                     break;
             }
         }
 
-        private void NavigateDown(ViewModels.MainViewModel vm)
+        private ListBox GetCurrentScopesListBox()
+        {
+            // Try to find the save mode list box first
+            var saveModeScopesListBox = FindName("ScopesListBoxSaveMode") as ListBox;
+            if (saveModeScopesListBox != null && saveModeScopesListBox.IsVisible)
+            {
+                return saveModeScopesListBox;
+            }
+            
+            // Fallback to normal mode (if it exists)
+            return FindName("ScopesListBox") as ListBox;
+        }
+
+        private void NavigateDown(ViewModels.MainViewModel vm, ListBox scopesListBox)
         {
             var currentIndex = vm.FilteredScopesOfWork.IndexOf(vm.SelectedScope ?? "");
             var nextIndex = currentIndex < vm.FilteredScopesOfWork.Count - 1 ? currentIndex + 1 : 0;
@@ -516,12 +542,12 @@ namespace DocHandler
             if (vm.FilteredScopesOfWork.Count > nextIndex)
             {
                 vm.SelectedScope = vm.FilteredScopesOfWork[nextIndex];
-                ScopesListBox.ScrollIntoView(vm.SelectedScope);
+                scopesListBox.ScrollIntoView(vm.SelectedScope);
                 System.Diagnostics.Debug.WriteLine($"Down: Selected {vm.SelectedScope}");
             }
         }
 
-        private void NavigateUp(ViewModels.MainViewModel vm)
+        private void NavigateUp(ViewModels.MainViewModel vm, ListBox scopesListBox)
         {
             var currentIndex = vm.FilteredScopesOfWork.IndexOf(vm.SelectedScope ?? "");
             var prevIndex = currentIndex > 0 ? currentIndex - 1 : vm.FilteredScopesOfWork.Count - 1;
@@ -529,7 +555,7 @@ namespace DocHandler
             if (vm.FilteredScopesOfWork.Count > prevIndex && prevIndex >= 0)
             {
                 vm.SelectedScope = vm.FilteredScopesOfWork[prevIndex];
-                ScopesListBox.ScrollIntoView(vm.SelectedScope);
+                scopesListBox.ScrollIntoView(vm.SelectedScope);
                 System.Diagnostics.Debug.WriteLine($"Up: Selected {vm.SelectedScope}");
             }
         }

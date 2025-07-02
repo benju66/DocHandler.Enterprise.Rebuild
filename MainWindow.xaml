@@ -129,463 +129,521 @@
                      Visibility="{Binding IsProcessing, Converter={StaticResource BoolToVisibilityConverter}}"/>
         
         <!-- Main Content Area -->
-        <Grid Margin="10">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition>
-                    <ColumnDefinition.Style>
-                        <Style TargetType="ColumnDefinition">
-                            <Setter Property="Width" Value="350"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding SaveQuotesMode}" Value="False">
-                                    <Setter Property="Width" Value="0"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </ColumnDefinition.Style>
-                </ColumnDefinition>
-            </Grid.ColumnDefinitions>
-            
-            <!-- Main Panel: Drop Zone and Normal Mode -->
-            <Grid Grid.Column="0">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
+        <Grid Margin="5">
+            <!-- Save Quotes Mode Layout - Top to Bottom Workflow -->
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <ScrollViewer.Style>
+                    <Style TargetType="ScrollViewer">
+                        <Setter Property="Visibility" Value="Collapsed"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding SaveQuotesMode}" Value="True">
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ScrollViewer.Style>
                 
-                <!-- Drop Zone -->
-                <Border Grid.Row="0" 
-                        Name="DropBorder"
-                        BorderThickness="2" 
-                        CornerRadius="10"
-                        AllowDrop="True"
-                        Drop="Border_Drop"
-                        DragEnter="Border_DragEnter"
-                        DragLeave="Border_DragLeave"
-                        Margin="5">
-                    <Border.Style>
-                        <Style TargetType="Border">
-                            <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-                            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding SaveQuotesMode}" Value="True">
-                                    <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
-                                    <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundChromeMediumBrush}"/>
-                                </DataTrigger>
-                                <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
-                                    <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}"/>
-                                </Trigger>
-                            </Style.Triggers>
-                        </Style>
-                    </Border.Style>
+                <StackPanel HorizontalAlignment="Stretch" Margin="10,5,10,5">
                     
-                    <Grid>
-                        <!-- Drop Instructions (when no files) -->
-                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
-                                    Visibility="{Binding Path=PendingFiles.Count, Converter={StaticResource IntToVisibilityConverter}, ConverterParameter=0}">
-                            <ui:SymbolIcon Symbol="OpenFile" Width="48" Height="48" 
-                                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-                            <TextBlock Text="{Binding StatusMessage}" 
-                                      TextAlignment="Center" 
-                                      Margin="10" 
-                                      FontSize="16"
-                                      TextWrapping="Wrap"
-                                      MaxWidth="400"/>
-                            <TextBlock TextAlignment="Center" 
-                                      FontSize="12"
-                                      Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="Text" Value="Drop PDFs, Word documents, or Excel files here"/>
+                    <!-- Step 1: Drop Zone - Compact but prominent -->
+                    <Border Name="DropBorderSaveMode"
+                            BorderThickness="2" 
+                            CornerRadius="10"
+                            AllowDrop="True"
+                            Drop="Border_Drop"
+                            DragEnter="Border_DragEnter"
+                            DragLeave="Border_DragLeave"
+                            Height="80"
+                            Margin="0,0,0,6">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+                                <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundChromeMediumBrush}"/>
+                                <Style.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+                                        <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}"/>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        
+                        <Grid>
+                            <!-- Drop Instructions (when no files) -->
+                            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                                        Visibility="{Binding Path=PendingFiles.Count, Converter={StaticResource IntToVisibilityConverter}, ConverterParameter=0}">
+                                <ui:SymbolIcon Symbol="OpenFile" Width="24" Height="24" 
+                                              Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                                <TextBlock Text="Drop quote documents here" 
+                                          TextAlignment="Center" 
+                                          Margin="8,4" 
+                                          FontSize="14"
+                                          FontWeight="Bold"/>
+                            </StackPanel>
+                            
+                            <!-- Pending Files List (horizontal scrolling for multiple files) -->
+                            <ScrollViewer HorizontalScrollBarVisibility="Auto" 
+                                         VerticalScrollBarVisibility="Disabled"
+                                         Margin="6"
+                                         Visibility="{Binding Path=PendingFiles.Count, Converter={StaticResource IntToVisibilityConverter}, ConverterParameter=1}">
+                                <ItemsControl ItemsSource="{Binding PendingFiles}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal"/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="{DynamicResource SystemControlBackgroundListLowBrush}"
+                                                    CornerRadius="4" Padding="6,3" Margin="0,0,8,0"
+                                                    MinWidth="160">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    
+                                                    <TextBlock Grid.Column="0" Text="📄" FontSize="16" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                                    
+                                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" FontSize="11"/>
+                                                        <TextBlock FontSize="9" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}">
+                                                            <TextBlock.Text>
+                                                                <MultiBinding StringFormat="{}{0} • {1}">
+                                                                    <Binding Path="FileType"/>
+                                                                    <Binding Path="FileSizeDisplay"/>
+                                                                </MultiBinding>
+                                                            </TextBlock.Text>
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                    
+                                                    <Button Grid.Column="2" 
+                                                            Content="✕" 
+                                                            FontSize="10"
+                                                            Width="18" Height="18"
+                                                            Background="Transparent"
+                                                            BorderThickness="0"
+                                                            Command="{Binding DataContext.RemoveFileCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                            CommandParameter="{Binding}"
+                                                            ToolTip="Remove file"/>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </Grid>
+                    </Border>
+                    
+                    <!-- Step 2: Company Name -->
+                    <GroupBox Header="Company Name" Margin="0,0,0,6" HorizontalAlignment="Stretch">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            
+                            <TextBox Grid.Row="0"
+                                     x:Name="CompanyNameTextBoxSaveMode"
+                                     Text="{Binding CompanyNameInput, UpdateSourceTrigger=PropertyChanged}"
+                                     ui:ControlHelper.PlaceholderText="{Binding DetectedCompanyName}"
+                                     FontSize="14"
+                                     Padding="6,4"
+                                     Margin="0,2,0,0">
+                                <TextBox.Style>
+                                    <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
                                         <Style.Triggers>
-                                            <DataTrigger Binding="{Binding SaveQuotesMode}" Value="True">
-                                                <Setter Property="Text" Value="Drop quote documents here"/>
-                                                <Setter Property="FontWeight" Value="Bold"/>
+                                            <DataTrigger Binding="{Binding IsDetectingCompany}" Value="True">
+                                                <Setter Property="IsEnabled" Value="False"/>
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
+                                </TextBox.Style>
+                            </TextBox>
+                            
+                            <!-- Detection Progress Indicator -->
+                            <ProgressBar Grid.Row="1"
+                                         IsIndeterminate="True"
+                                         Height="2"
+                                         Margin="0,3,0,0"
+                                         Visibility="{Binding IsDetectingCompany, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                            
+                            
+                        </Grid>
+                    </GroupBox>
+                    
+                    <!-- Step 3: Available Scopes with integrated search -->
+                    <GroupBox Header="Available Scopes" Margin="0,0,0,6" HorizontalAlignment="Stretch">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="350"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            
+                            <!-- Search Box with integrated selected scope display -->
+                            <Grid Grid.Row="0">
+                                <TextBox x:Name="ScopeSearchTextBoxSaveMode"
+                                         FontSize="14"
+                                         Padding="6,4,30,4"
+                                         Margin="0,0,0,4"
+                                         PreviewKeyDown="ScopeSearchTextBox_PreviewKeyDown">
+                                    <TextBox.Style>
+                                        <Style TargetType="TextBox">
+                                            <Setter Property="Text" Value="{Binding ScopeSearchText, UpdateSourceTrigger=PropertyChanged}"/>
+                                            <Setter Property="ui:ControlHelper.PlaceholderText" Value="Search scopes..."/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SelectedScope, Converter={StaticResource StringNotEmptyConverter}}" Value="True">
+                                                    <Setter Property="Text" Value="{Binding SelectedScope}"/>
+                                                    <Setter Property="ui:ControlHelper.PlaceholderText" Value=""/>
+                                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                                    <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundChromeMediumBrush}"/>
+                                                    <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBox.Style>
+                                </TextBox>
+                                <!-- Clear button overlay -->
+                                <Button HorizontalAlignment="Right"
+                                        VerticalAlignment="Center"
+                                        Margin="0,0,8,4"
+                                        Padding="4"
+                                        Background="Transparent"
+                                        BorderThickness="0"
+                                        Command="{Binding ClearSelectedScopeCommand}"
+                                        ToolTip="Clear selection">
+                                    <Button.Style>
+                                        <Style TargetType="Button">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SelectedScope, Converter={StaticResource StringNotEmptyConverter}}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                    <ui:SymbolIcon Symbol="Cancel" Width="12" Height="12"/>
+                                </Button>
+                            </Grid>
+                            
+                            <!-- Main scopes list -->
+                            <ListBox Grid.Row="1"
+                                     x:Name="ScopesListBoxSaveMode"
+                                     ItemsSource="{Binding FilteredScopesOfWork}"
+                                     SelectedItem="{Binding SelectedScope, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="Padding" Value="6,3"/>
+                                        <Setter Property="Margin" Value="1"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <Border x:Name="ItemBorder" 
+                                                            Background="{TemplateBinding Background}"
+                                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                                            Padding="{TemplateBinding Padding}"
+                                                            CornerRadius="3">
+                                                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsSelected" Value="True">
+                                                            <Setter TargetName="ItemBorder" Property="Background" Value="#0078D4"/>
+                                                            <Setter Property="Foreground" Value="White"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="ItemBorder" Property="Background" Value="#E5E5E5"/>
+                                                        </Trigger>
+                                                        <MultiTrigger>
+                                                            <MultiTrigger.Conditions>
+                                                                <Condition Property="IsSelected" Value="True"/>
+                                                                <Condition Property="IsMouseOver" Value="True"/>
+                                                            </MultiTrigger.Conditions>
+                                                            <Setter TargetName="ItemBorder" Property="Background" Value="#106EBE"/>
+                                                            <Setter Property="Foreground" Value="White"/>
+                                                        </MultiTrigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}" 
+                                                  ToolTip="{Binding}"/>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            
+                            <!-- Recent Scopes -->
+                            <Expander Grid.Row="2" 
+                                      Header="Recent Scopes" 
+                                      Margin="0,4,0,0"
+                                      IsExpanded="False">
+                                <ListBox ItemsSource="{Binding RecentScopes}"
+                                         MaxHeight="100"
+                                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                         BorderThickness="0">
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                            <Setter Property="Cursor" Value="Hand"/>
+                                            <EventSetter Event="MouseDoubleClick" Handler="RecentScopeItem_DoubleClick"/>
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" 
+                                                      Padding="3,2"
+                                                      FontSize="12"
+                                                      ToolTip="Double-click to select"/>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Expander>
+                        </Grid>
+                    </GroupBox>
+                    
+                    <!-- Step 4: Save Location -->
+                    <GroupBox Header="Save Location" Margin="0,0,0,8" HorizontalAlignment="Stretch">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            
+                            <!-- Save Location Path - Clickable -->
+                            <Button Grid.Row="0" 
+                                    Command="{Binding OpenSaveLocationCommand}"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Center"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    Padding="5,6"
+                                    Cursor="Hand">
+                                <Button.Style>
+                                    <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border Background="{TemplateBinding Background}"
+                                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                                            Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                                                    </Border>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                        <Style.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}"/>
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Button.Style>
+                                <TextBlock Text="{Binding SessionSaveLocation}" 
+                                           TextTrimming="CharacterEllipsis"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource SystemControlHighlightAccentBrush}"
+                                           TextDecorations="Underline"
+                                           ToolTip="{Binding SessionSaveLocation}"/>
+                            </Button>
+                            
+                            <!-- Buttons Row -->
+                            <StackPanel Grid.Row="1" 
+                                        Orientation="Horizontal" 
+                                        HorizontalAlignment="Center"
+                                        Margin="0,4,0,0">
+                                <Button Command="{Binding SetSaveLocationCommand}"
+                                        Content="Change Location"
+                                        Padding="6,3"
+                                        Margin="0,0,6,0"
+                                        Background="Transparent"
+                                        BorderThickness="0"
+                                        Foreground="{DynamicResource SystemControlHighlightAccentBrush}"
+                                        Cursor="Hand">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                            <Style.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}"/>
+                                                </Trigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                                <Button Command="{Binding ShowRecentLocationsCommand}"
+                                        Content="Recent"
+                                        Padding="6,3"
+                                        Background="Transparent"
+                                        BorderThickness="0"
+                                        Foreground="{DynamicResource SystemControlHighlightAccentBrush}"
+                                        Cursor="Hand">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                            <Style.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}"/>
+                                                </Trigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+                    </GroupBox>
+                    
+                    <!-- Step 5: Process Button -->
+                    <Button Command="{Binding ProcessFilesCommand}"
+                            IsEnabled="{Binding CanProcess}"
+                            HorizontalAlignment="Center"
+                            Padding="25,10"
+                            FontSize="16"
+                            Style="{StaticResource AccentButtonStyle}">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="Play" Margin="0,0,10,0"/>
+                            <TextBlock Text="Process Quote ▶"/>
                         </StackPanel>
-                        
-                        <!-- Pending Files List -->
-                        <ListBox ItemsSource="{Binding PendingFiles}" 
-                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                 BorderThickness="0"
-                                 Background="Transparent"
-                                 Margin="10">
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <Border Background="{DynamicResource SystemControlBackgroundListLowBrush}"
-                                            CornerRadius="4" Padding="10" Margin="0,2">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                            </Grid.ColumnDefinitions>
-                                            
-                                            <TextBlock Grid.Column="0" Text="📄" FontSize="24" Margin="0,0,10,0" VerticalAlignment="Center"/>
-                                            
-                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                                <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                                                <TextBlock FontSize="12" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}">
-                                                    <TextBlock.Text>
-                                                        <MultiBinding StringFormat="{}{0} • {1}">
-                                                            <Binding Path="FileType"/>
-                                                            <Binding Path="FileSizeDisplay"/>
-                                                        </MultiBinding>
-                                                    </TextBlock.Text>
-                                                </TextBlock>
-                                            </StackPanel>
-                                            
-                                            <Button Grid.Column="3" 
-                                                    Content="✕" 
-                                                    FontSize="16"
-                                                    Width="30" Height="30"
-                                                    Background="Transparent"
-                                                    BorderThickness="0"
-                                                    Command="{Binding DataContext.RemoveFileCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                    CommandParameter="{Binding}"
-                                                    ToolTip="Remove file"/>
-                                        </Grid>
-                                    </Border>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                    </Grid>
-                </Border>
-                
-                <!-- Process Button -->
-                <Button Grid.Row="1" 
-                        Command="{Binding ProcessFilesCommand}"
-                        IsEnabled="{Binding CanProcess}"
-                        HorizontalAlignment="Center"
-                        Margin="5"
-                        Padding="20,10"
-                        FontSize="14"
-                        Style="{StaticResource AccentButtonStyle}">
-                    <StackPanel Orientation="Horizontal">
-                        <ui:SymbolIcon Symbol="Play" Margin="0,0,10,0"/>
-                        <TextBlock Text="{Binding ProcessButtonText}"/>
-                    </StackPanel>
-                </Button>
-            </Grid>
+                    </Button>
+                </StackPanel>
+            </ScrollViewer>
             
-            <!-- Right Panel: Save Quotes Mode Controls -->
-            <Grid Grid.Column="1" Margin="10,0,0,0">
+            <!-- Normal Mode Layout - Keep existing two-column layout -->
+            <Grid>
                 <Grid.Style>
                     <Style TargetType="Grid">
                         <Setter Property="Visibility" Value="Visible"/>
                         <Style.Triggers>
-                            <DataTrigger Binding="{Binding SaveQuotesMode}" Value="False">
+                            <DataTrigger Binding="{Binding SaveQuotesMode}" Value="True">
                                 <Setter Property="Visibility" Value="Collapsed"/>
                             </DataTrigger>
                         </Style.Triggers>
                     </Style>
                 </Grid.Style>
                 
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
                 
-                <!-- Company Name Section -->
-                <GroupBox Grid.Row="0" Header="Company Name" Margin="0,0,0,10">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
+                <!-- Main Panel: Drop Zone and Normal Mode -->
+                <Grid Grid.Column="0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    
+                    <!-- Drop Zone for Normal Mode-->
+                    <Border Grid.Row="0" 
+                            Name="DropBorderNormalMode"
+                            BorderThickness="2" 
+                            CornerRadius="10"
+                            AllowDrop="True"
+                            Drop="Border_Drop"
+                            DragEnter="Border_DragEnter"
+                            DragLeave="Border_DragLeave"
+                            Margin="5">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                                <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"/>
+                                <Style.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+                                        <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}"/>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
                         
-                        <TextBox Grid.Row="0"
-                                 x:Name="CompanyNameTextBox"
-                                 Text="{Binding CompanyNameInput, UpdateSourceTrigger=PropertyChanged}"
-                                 ui:ControlHelper.PlaceholderText="{Binding DetectedCompanyName}"
-                                 FontSize="14"
-                                 Padding="8,6"
-                                 Margin="0,5,0,0">
-                            <TextBox.Style>
-                                <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsDetectingCompany}" Value="True">
-                                            <Setter Property="IsEnabled" Value="False"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBox.Style>
-                        </TextBox>
-                        
-                        <!-- Detection Progress Indicator -->
-                        <ProgressBar Grid.Row="1"
-                                     IsIndeterminate="True"
-                                     Height="2"
-                                     Margin="0,5,0,0"
-                                     Visibility="{Binding IsDetectingCompany, Converter={StaticResource BoolToVisibilityConverter}}"/>
-                        
-                        <TextBlock Grid.Row="2" 
-                                   FontSize="11"
-                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
-                                   Margin="0,5,0,0"
-                                   TextWrapping="Wrap">
-                            <TextBlock.Style>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="Text" Value="Company name will be detected from document"/>
-                                    <Setter Property="Visibility" Value="Visible"/>
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsDetectingCompany}" Value="True">
-                                            <Setter Property="Text" Value="Detecting company name from document..."/>
-                                        </DataTrigger>
-                                        <DataTrigger Binding="{Binding Path=PendingFiles.Count, Converter={StaticResource IntToBoolConverter}}" Value="True">
-                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBlock.Style>
-                        </TextBlock>
-                    </Grid>
-                </GroupBox>
-                
-                <!-- Scope of Work Section -->
-                <GroupBox Grid.Row="1" Header="Scope of Work" Margin="0,0,0,5">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-                        
-                        <!-- Search Box -->
-                        <Grid Grid.Row="0" Margin="0,0,0,5">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBox x:Name="ScopeSearchTextBox"
-                                     Grid.Column="0"
-                                     Text="{Binding ScopeSearchText, UpdateSourceTrigger=PropertyChanged}"
-                                     ui:ControlHelper.PlaceholderText="Search scopes..."
-                                     FontSize="14"
-                                     Padding="8,6"
-                                     Margin="0,0,0,0"
-                                     PreviewKeyDown="ScopeSearchTextBox_PreviewKeyDown"/>
-                        </Grid>
-                        
-                        <!-- Selected Scope Display with Clear Button -->
-                        <Border Grid.Row="1" 
-                                Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
-                                BorderBrush="{DynamicResource SystemControlHighlightAccentBrush}"
-                                BorderThickness="2"
-                                CornerRadius="4"
-                                Padding="10,8"
-                                Margin="0,5">
-                            <Border.Style>
-                                <Style TargetType="Border">
-                                    <Setter Property="Visibility" Value="Collapsed"/>
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding SelectedScope, Converter={StaticResource StringNotEmptyConverter}}" Value="True">
-                                            <Setter Property="Visibility" Value="Visible"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </Border.Style>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" 
-                                           Text="{Binding SelectedScope}" 
-                                           FontWeight="SemiBold"
-                                           TextWrapping="Wrap"
-                                           VerticalAlignment="Center"/>
-                                <Button Grid.Column="1"
-                                        Command="{Binding ClearSelectedScopeCommand}"
-                                        ToolTip="Clear selection"
-                                        Padding="6"
-                                        Margin="5,0,0,0"
-                                        Background="Transparent"
-                                        BorderThickness="0">
-                                    <ui:SymbolIcon Symbol="Cancel" Width="14" Height="14"/>
-                                </Button>
-                            </Grid>
-                        </Border>
-                    </Grid>
-                </GroupBox>
-                
-                <!-- Scopes List - FIXED: Now using ICollectionView -->
-                <GroupBox Grid.Row="2" Header="Available Scopes">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="*"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-                        
-                        <ListBox x:Name="ScopesListBox"
-                                 ItemsSource="{Binding FilteredScopesOfWork}"
-                                 SelectedItem="{Binding SelectedScope, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                 ScrollViewer.VerticalScrollBarVisibility="Auto">
-                            <ListBox.ItemContainerStyle>
-                                <Style TargetType="ListBoxItem">
-                                    <Setter Property="Padding" Value="5,3"/>
-                                    <Setter Property="Margin" Value="1"/>
-                                    <Setter Property="Template">
-                                        <Setter.Value>
-                                            <ControlTemplate TargetType="ListBoxItem">
-                                                <Border x:Name="ItemBorder" 
-                                                        Background="{TemplateBinding Background}"
-                                                        BorderBrush="{TemplateBinding BorderBrush}"
-                                                        BorderThickness="{TemplateBinding BorderThickness}"
-                                                        Padding="{TemplateBinding Padding}"
-                                                        CornerRadius="3">
-                                                    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
-                                                </Border>
-                                                <ControlTemplate.Triggers>
-                                                    <!-- Always show selection highlight regardless of focus -->
-                                                    <Trigger Property="IsSelected" Value="True">
-                                                        <Setter TargetName="ItemBorder" Property="Background" Value="#0078D4"/>
-                                                        <Setter Property="Foreground" Value="White"/>
-                                                    </Trigger>
-                                                    <Trigger Property="IsMouseOver" Value="True">
-                                                        <Setter TargetName="ItemBorder" Property="Background" Value="#E5E5E5"/>
-                                                    </Trigger>
-                                                    <!-- Override mouse over when selected -->
-                                                    <MultiTrigger>
-                                                        <MultiTrigger.Conditions>
-                                                            <Condition Property="IsSelected" Value="True"/>
-                                                            <Condition Property="IsMouseOver" Value="True"/>
-                                                        </MultiTrigger.Conditions>
-                                                        <Setter TargetName="ItemBorder" Property="Background" Value="#106EBE"/>
-                                                        <Setter Property="Foreground" Value="White"/>
-                                                    </MultiTrigger>
-                                                </ControlTemplate.Triggers>
-                                            </ControlTemplate>
-                                        </Setter.Value>
-                                    </Setter>
-                                </Style>
-                            </ListBox.ItemContainerStyle>
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding}" 
-                                              ToolTip="{Binding}"/>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                        
-                        <!-- Recent Scopes -->
-                        <Expander Grid.Row="1" 
-                                  Header="Recent Scopes" 
-                                  Margin="0,5,0,0"
-                                  IsExpanded="False">
-                            <ListBox ItemsSource="{Binding RecentScopes}"
-                                     MaxHeight="150"
-                                     ScrollViewer.VerticalScrollBarVisibility="Auto"
-                                     BorderThickness="0">
-                                <ListBox.ItemContainerStyle>
-                                    <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
-                                        <Setter Property="Cursor" Value="Hand"/>
-                                        <EventSetter Event="MouseDoubleClick" Handler="RecentScopeItem_DoubleClick"/>
-                                    </Style>
-                                </ListBox.ItemContainerStyle>
+                        <Grid>
+                            <!-- Drop Instructions (when no files) -->
+                            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                                        Visibility="{Binding Path=PendingFiles.Count, Converter={StaticResource IntToVisibilityConverter}, ConverterParameter=0}">
+                                <ui:SymbolIcon Symbol="OpenFile" Width="48" Height="48" 
+                                              Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                                <TextBlock Text="{Binding StatusMessage}" 
+                                          TextAlignment="Center" 
+                                          Margin="10" 
+                                          FontSize="16"
+                                          TextWrapping="Wrap"
+                                          MaxWidth="400"/>
+                                <TextBlock Text="Drop PDFs, Word documents, or Excel files here" 
+                                          TextAlignment="Center" 
+                                          FontSize="12"
+                                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                            </StackPanel>
+                            
+                            <!-- Pending Files List -->
+                            <ListBox ItemsSource="{Binding PendingFiles}" 
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     BorderThickness="0"
+                                     Background="Transparent"
+                                     Margin="10">
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>
-                                        <TextBlock Text="{Binding}" 
-                                                  Padding="3,2"
-                                                  FontSize="12"
-                                                  ToolTip="Double-click to select"/>
+                                        <Border Background="{DynamicResource SystemControlBackgroundListLowBrush}"
+                                                CornerRadius="4" Padding="10" Margin="0,2">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                
+                                                <TextBlock Grid.Column="0" Text="📄" FontSize="24" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                                
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                    <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                                    <TextBlock FontSize="12" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}">
+                                                        <TextBlock.Text>
+                                                            <MultiBinding StringFormat="{}{0} • {1}">
+                                                                <Binding Path="FileType"/>
+                                                                <Binding Path="FileSizeDisplay"/>
+                                                            </MultiBinding>
+                                                        </TextBlock.Text>
+                                                    </TextBlock>
+                                                </StackPanel>
+                                                
+                                                <Button Grid.Column="3" 
+                                                        Content="✕" 
+                                                        FontSize="16"
+                                                        Width="30" Height="30"
+                                                        Background="Transparent"
+                                                        BorderThickness="0"
+                                                        Command="{Binding DataContext.RemoveFileCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="{Binding}"
+                                                        ToolTip="Remove file"/>
+                                            </Grid>
+                                        </Border>
                                     </DataTemplate>
                                 </ListBox.ItemTemplate>
                             </ListBox>
-                        </Expander>
-                    </Grid>
-                </GroupBox>
-                
-                <!-- Session Save Location -->
-                <GroupBox Grid.Row="3" Header="Save Location" Margin="0,10,0,0">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-                        
-                        <!-- Save Location Path - Clickable -->
-                        <Button Grid.Row="0" 
-                                Command="{Binding OpenSaveLocationCommand}"
-                                HorizontalAlignment="Stretch"
-                                HorizontalContentAlignment="Left"
-                                Background="Transparent"
-                                BorderThickness="0"
-                                Padding="5,3"
-                                Cursor="Hand">
-                            <Button.Style>
-                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-                                    <Setter Property="Template">
-                                        <Setter.Value>
-                                            <ControlTemplate TargetType="Button">
-                                                <Border Background="{TemplateBinding Background}"
-                                                        BorderBrush="{TemplateBinding BorderBrush}"
-                                                        BorderThickness="{TemplateBinding BorderThickness}"
-                                                        Padding="{TemplateBinding Padding}">
-                                                    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
-                                                </Border>
-                                            </ControlTemplate>
-                                        </Setter.Value>
-                                    </Setter>
-                                    <Style.Triggers>
-                                        <Trigger Property="IsMouseOver" Value="True">
-                                            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}"/>
-                                        </Trigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </Button.Style>
-                            <TextBlock Text="{Binding SessionSaveLocation}" 
-                                       TextTrimming="CharacterEllipsis"
-                                       FontSize="12"
-                                       Foreground="{DynamicResource SystemControlHighlightAccentBrush}"
-                                       TextDecorations="Underline"
-                                       ToolTip="{Binding SessionSaveLocation}"/>
-                        </Button>
-                        
-                        <!-- Buttons Row -->
-                        <Grid Grid.Row="1" Margin="0,5,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            
-                            <Button Grid.Column="1" 
-                                    Command="{Binding SetSaveLocationCommand}"
-                                    Content="Change Location"
-                                    Padding="10,5"
-                                    Margin="0,0,5,0">
-                                <Button.Resources>
-                                    <Style TargetType="ui:SymbolIcon">
-                                        <Setter Property="Width" Value="16"/>
-                                        <Setter Property="Height" Value="16"/>
-                                    </Style>
-                                </Button.Resources>
-                            </Button>
-                            
-                            <Button Grid.Column="2" 
-                                    Command="{Binding ShowRecentLocationsCommand}"
-                                    Content="Recent"
-                                    Padding="10,5">
-                                <Button.Resources>
-                                    <Style TargetType="ui:SymbolIcon">
-                                        <Setter Property="Width" Value="16"/>
-                                        <Setter Property="Height" Value="16"/>
-                                    </Style>
-                                </Button.Resources>
-                            </Button>
                         </Grid>
-                    </Grid>
-                </GroupBox>
+                    </Border>
+                    
+                    <!-- Process Button for Normal Mode-->
+                    <Button Grid.Row="1" 
+                            Command="{Binding ProcessFilesCommand}"
+                            IsEnabled="{Binding CanProcess}"
+                            HorizontalAlignment="Center"
+                            Margin="5"
+                            Padding="20,10"
+                            FontSize="14"
+                            Style="{StaticResource AccentButtonStyle}">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="Play" Margin="0,0,10,0"/>
+                            <TextBlock Text="{Binding ProcessButtonText}"/>
+                        </StackPanel>
+                    </Button>
+                </Grid>
             </Grid>
         </Grid>
     </DockPanel>
