@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -82,6 +83,7 @@ namespace DocHandler.ViewModels
                     {
                         StatusMessage = "Drop files here to begin";
                         SelectedScope = null;
+                        SelectedScopeItem = null;
                         CompanyNameInput = "";
                         DetectedCompanyName = "";
                     }
@@ -91,6 +93,20 @@ namespace DocHandler.ViewModels
 
         [ObservableProperty]
         private string? _selectedScope;
+
+        // Separate property for ListBox binding to fix search synchronization
+        private string? _selectedScopeItem;
+        public string? SelectedScopeItem
+        {
+            get => _selectedScopeItem;
+            set
+            {
+                if (SetProperty(ref _selectedScopeItem, value))
+                {
+                    SelectedScope = value;
+                }
+            }
+        }
 
         [ObservableProperty]
         private ObservableCollection<string> _scopesOfWork = new();
@@ -159,7 +175,8 @@ namespace DocHandler.ViewModels
                 UpdateUI();
                 
                 // When files are added in Save Quotes mode, scan for company names
-                if (SaveQuotesMode && e.NewItems != null)
+                // ONLY if user hasn't already entered a company name
+                if (SaveQuotesMode && e.NewItems != null && string.IsNullOrWhiteSpace(CompanyNameInput))
                 {
                     foreach (FileItem item in e.NewItems)
                     {
@@ -174,7 +191,9 @@ namespace DocHandler.ViewModels
         
         private async Task ScanForCompanyName(string filePath)
         {
-            if (!SaveQuotesMode || IsDetectingCompany) return;
+            // Don't scan if user has already typed a company name
+            if (!SaveQuotesMode || IsDetectingCompany || !string.IsNullOrWhiteSpace(CompanyNameInput)) 
+                return;
             
             try
             {
@@ -185,7 +204,7 @@ namespace DocHandler.ViewModels
                 
                 if (!string.IsNullOrEmpty(detectedCompany))
                 {
-                    // Only update if user hasn't typed anything
+                    // Only update if user still hasn't typed anything
                     if (string.IsNullOrWhiteSpace(CompanyNameInput))
                     {
                         DetectedCompanyName = detectedCompany;
@@ -236,6 +255,9 @@ namespace DocHandler.ViewModels
 
         private void FilterScopes()
         {
+            // Store current selection
+            var currentSelection = SelectedScopeItem;
+            
             FilteredScopesOfWork.Clear();
             
             var searchTerm = ScopeSearchText?.Trim() ?? "";
@@ -246,6 +268,12 @@ namespace DocHandler.ViewModels
             foreach (var scope in filteredScopes)
             {
                 FilteredScopesOfWork.Add(scope);
+            }
+            
+            // Restore selection if it's still in the filtered list
+            if (currentSelection != null && FilteredScopesOfWork.Contains(currentSelection))
+            {
+                SelectedScopeItem = currentSelection;
             }
         }
         
@@ -346,6 +374,42 @@ namespace DocHandler.ViewModels
                 }
             }
             _tempFilesToCleanup.Clear();
+        }
+        
+        /// <summary>
+        /// Sanitizes a filename to remove invalid characters
+        /// </summary>
+        private string SanitizeFileName(string fileName)
+        {
+            // Get invalid characters for file names
+            var invalidChars = Path.GetInvalidFileNameChars();
+            var invalidCharsPattern = string.Join("", invalidChars.Select(c => Regex.Escape(c.ToString())));
+            var pattern = $"[{invalidCharsPattern}]";
+            
+            // Replace invalid characters with underscore
+            var sanitized = Regex.Replace(fileName, pattern, "_");
+            
+            // Also replace some additional problematic characters
+            sanitized = sanitized.Replace(":", "_")
+                               .Replace("<", "_")
+                               .Replace(">", "_")
+                               .Replace("\"", "_")
+                               .Replace("/", "_")
+                               .Replace("\\", "_")
+                               .Replace("|", "_")
+                               .Replace("?", "_")
+                               .Replace("*", "_");
+            
+            // Trim dots and spaces from the ends
+            sanitized = sanitized.Trim(' ', '.');
+            
+            // If the filename is empty or just dots/spaces, provide a default
+            if (string.IsNullOrWhiteSpace(sanitized))
+            {
+                sanitized = "Document";
+            }
+            
+            return sanitized;
         }
         
         [RelayCommand]
@@ -510,11 +574,21 @@ namespace DocHandler.ViewModels
         public void SelectScope(string? scope)
         {
             SelectedScope = scope;
+            SelectedScopeItem = scope;
             if (!string.IsNullOrEmpty(scope))
             {
                 _ = _scopeOfWorkService.UpdateRecentScope(scope);
                 LoadRecentScopes();
             }
+            UpdateUI();
+        }
+
+        [RelayCommand]
+        private void ClearSelectedScope()
+        {
+            SelectedScope = null;
+            SelectedScopeItem = null;
+            // Don't clear the search text - user might want to search for another
             UpdateUI();
         }
 
@@ -625,8 +699,8 @@ namespace DocHandler.ViewModels
                 _logger.Information("Company names were modified");
                 
                 // If we're in Save Quotes mode and have files, rescan them for company names
-                // since the database has changed
-                if (SaveQuotesMode && PendingFiles.Any())
+                // since the database has changed - but only if user hasn't typed anything
+                if (SaveQuotesMode && PendingFiles.Any() && string.IsNullOrWhiteSpace(CompanyNameInput))
                 {
                     var firstFile = PendingFiles.First();
                     CompanyNameInput = "";
@@ -682,6 +756,9 @@ namespace DocHandler.ViewModels
                 return;
             }
 
+            // Sanitize company name for use in filename
+            companyName = SanitizeFileName(companyName);
+
             if (!PendingFiles.Any())
             {
                 StatusMessage = "No quote documents to process";
@@ -705,6 +782,7 @@ namespace DocHandler.ViewModels
                         StatusMessage = $"Processing quote: {file.FileName}";
 
                         // Build the filename: [Scope] - [Company].pdf
+                        // Scope is already sanitized in the database
                         var outputFileName = $"{SelectedScope} - {companyName}.pdf";
                         var outputPath = Path.Combine(outputDir, outputFileName);
 
@@ -723,16 +801,21 @@ namespace DocHandler.ViewModels
                             
                             // Update company usage if it was detected
                             if (!string.IsNullOrWhiteSpace(DetectedCompanyName) && 
-                                companyName.Equals(DetectedCompanyName, StringComparison.OrdinalIgnoreCase))
+                                companyName.Equals(SanitizeFileName(DetectedCompanyName), StringComparison.OrdinalIgnoreCase))
                             {
-                                await _companyNameService.IncrementUsageCount(companyName);
+                                await _companyNameService.IncrementUsageCount(DetectedCompanyName);
                             }
                             
-                            // Add to company database if not already there
-                            if (!_companyNameService.Companies.Any(c => 
-                                c.Name.Equals(companyName, StringComparison.OrdinalIgnoreCase)))
+                            // Add to company database if not already there (use original unsanitized name for database)
+                            var originalCompanyName = !string.IsNullOrWhiteSpace(CompanyNameInput) 
+                                ? CompanyNameInput.Trim() 
+                                : DetectedCompanyName?.Trim();
+                                
+                            if (!string.IsNullOrWhiteSpace(originalCompanyName) &&
+                                !_companyNameService.Companies.Any(c => 
+                                    c.Name.Equals(originalCompanyName, StringComparison.OrdinalIgnoreCase)))
                             {
-                                await _companyNameService.AddCompanyName(companyName);
+                                await _companyNameService.AddCompanyName(originalCompanyName);
                             }
                         }
                         else
@@ -863,10 +946,18 @@ namespace DocHandler.ViewModels
         
         public void SaveWindowState(double left, double top, double width, double height, string state)
         {
-            if (_configService.Config.RememberWindowPosition)
+            // Validate window position before saving
+            if (left >= SystemParameters.VirtualScreenLeft && 
+                top >= SystemParameters.VirtualScreenTop &&
+                left + width <= SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth &&
+                top + height <= SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight &&
+                state != "Minimized") // Don't save minimized state
             {
-                _configService.UpdateWindowPosition(left, top, width, height, state);
-                _ = _configService.SaveConfiguration();
+                if (_configService.Config.RememberWindowPosition)
+                {
+                    _configService.UpdateWindowPosition(left, top, width, height, state);
+                    _ = _configService.SaveConfiguration();
+                }
             }
         }
 

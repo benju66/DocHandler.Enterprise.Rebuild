@@ -36,14 +36,42 @@ namespace DocHandler
             var config = ViewModel.ConfigService.Config;
             if (config.RememberWindowPosition)
             {
-                Left = config.WindowLeft;
-                Top = config.WindowTop;
-                Width = config.WindowWidth;
-                Height = config.WindowHeight;
+                // Validate stored position before applying
+                var left = config.WindowLeft;
+                var top = config.WindowTop;
+                var width = config.WindowWidth;
+                var height = config.WindowHeight;
                 
-                if (Enum.TryParse<WindowState>(config.WindowState, out var state))
+                // Ensure window is at least partially visible on current screen configuration
+                var virtualScreenLeft = SystemParameters.VirtualScreenLeft;
+                var virtualScreenTop = SystemParameters.VirtualScreenTop;
+                var virtualScreenWidth = SystemParameters.VirtualScreenWidth;
+                var virtualScreenHeight = SystemParameters.VirtualScreenHeight;
+                
+                // Check if window would be visible
+                var isVisible = left + width > virtualScreenLeft + 50 && // At least 50 pixels visible horizontally
+                               left < virtualScreenLeft + virtualScreenWidth - 50 &&
+                               top + height > virtualScreenTop + 50 && // At least 50 pixels visible vertically
+                               top < virtualScreenTop + virtualScreenHeight - 50;
+                
+                if (isVisible)
                 {
-                    WindowState = state;
+                    Left = left;
+                    Top = top;
+                    Width = width;
+                    Height = height;
+                    
+                    // Only restore state if not minimized
+                    if (Enum.TryParse<WindowState>(config.WindowState, out var state) && state != WindowState.Minimized)
+                    {
+                        WindowState = state;
+                    }
+                }
+                else
+                {
+                    // Center window if saved position is not visible
+                    WindowStartupLocation = WindowStartupLocation.CenterScreen;
+                    _logger.Warning("Saved window position was off-screen, centering window");
                 }
             }
             
@@ -411,7 +439,8 @@ namespace DocHandler
             if (sender is ListBoxItem item && item.DataContext is string scope)
             {
                 ViewModel.SelectedScope = scope;
-                ViewModel.ScopeSearchText = scope;
+                ViewModel.SelectedScopeItem = scope;
+                ViewModel.ScopeSearchText = "";  // Clear search when selecting from recent
                 ViewModel.SelectScopeCommand.Execute(scope);
             }
         }

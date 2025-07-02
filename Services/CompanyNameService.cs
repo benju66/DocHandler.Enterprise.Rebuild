@@ -271,7 +271,7 @@ namespace DocHandler.Services
                     {
                         var text = new System.Text.StringBuilder();
                         
-                        // Only extract first few pages for company detection
+                        // Only extract first 3 pages for company detection (optimization)
                         int maxPages = Math.Min(3, pdfDoc.GetNumberOfPages());
                         
                         for (int page = 1; page <= maxPages; page++)
@@ -281,6 +281,13 @@ namespace DocHandler.Services
                                 var strategy = new SimpleTextExtractionStrategy();
                                 var pageText = PdfTextExtractor.GetTextFromPage(pdfDoc.GetPage(page), strategy);
                                 text.AppendLine(pageText);
+                                
+                                // If we've already found enough text (e.g., 5000 characters), stop scanning
+                                if (text.Length > 5000)
+                                {
+                                    _logger.Debug("Sufficient text extracted for company detection, stopping at page {Page}", page);
+                                    break;
+                                }
                             }
                             catch (Exception pageEx)
                             {
@@ -319,11 +326,21 @@ namespace DocHandler.Services
                         
                         if (body != null)
                         {
+                            int charCount = 0;
                             foreach (var paragraph in body.Elements<Paragraph>())
                             {
                                 try
                                 {
-                                    text.AppendLine(paragraph.InnerText);
+                                    var paraText = paragraph.InnerText;
+                                    text.AppendLine(paraText);
+                                    charCount += paraText.Length;
+                                    
+                                    // Stop after extracting enough text for company detection
+                                    if (charCount > 5000)
+                                    {
+                                        _logger.Debug("Sufficient text extracted for company detection");
+                                        break;
+                                    }
                                 }
                                 catch (Exception paraEx)
                                 {

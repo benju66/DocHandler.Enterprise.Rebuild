@@ -297,6 +297,7 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
                         
                         <TextBox Grid.Row="0"
@@ -317,16 +318,26 @@
                             </TextBox.Style>
                         </TextBox>
                         
-                        <TextBlock Grid.Row="1" 
-                                   Text="Company name will be detected from document"
+                        <!-- Detection Progress Indicator -->
+                        <ProgressBar Grid.Row="1"
+                                     IsIndeterminate="True"
+                                     Height="2"
+                                     Margin="0,5,0,0"
+                                     Visibility="{Binding IsDetectingCompany, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                        
+                        <TextBlock Grid.Row="2" 
                                    FontSize="11"
                                    Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
                                    Margin="0,5,0,0"
                                    TextWrapping="Wrap">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
+                                    <Setter Property="Text" Value="Company name will be detected from document"/>
                                     <Setter Property="Visibility" Value="Visible"/>
                                     <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsDetectingCompany}" Value="True">
+                                            <Setter Property="Text" Value="Detecting company name from document..."/>
+                                        </DataTrigger>
                                         <DataTrigger Binding="{Binding Path=PendingFiles.Count, Converter={StaticResource IntToBoolConverter}}" Value="True">
                                             <Setter Property="Visibility" Value="Collapsed"/>
                                         </DataTrigger>
@@ -374,9 +385,26 @@
                                     </Style.Triggers>
                                 </Style>
                             </Border.Style>
-                            <TextBlock Text="{Binding SelectedScope}" 
-                                       FontWeight="SemiBold"
-                                       TextWrapping="Wrap"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" 
+                                           Text="{Binding SelectedScope}" 
+                                           FontWeight="SemiBold"
+                                           TextWrapping="Wrap"
+                                           VerticalAlignment="Center"/>
+                                <Button Grid.Column="1"
+                                        Command="{Binding ClearSelectedScopeCommand}"
+                                        ToolTip="Clear selection"
+                                        Padding="6"
+                                        Margin="5,0,0,0"
+                                        Background="Transparent"
+                                        BorderThickness="0">
+                                    <ui:SymbolIcon Symbol="Cancel" Width="14" Height="14"/>
+                                </Button>
+                            </Grid>
                         </Border>
                     </Grid>
                 </GroupBox>
@@ -390,8 +418,9 @@
                         </Grid.RowDefinitions>
                         
                         <ListBox Grid.Row="0"
+                                 x:Name="ScopesListBox"
                                  ItemsSource="{Binding FilteredScopesOfWork}"
-                                 SelectedItem="{Binding SelectedScope}"
+                                 SelectedItem="{Binding SelectedScopeItem}"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto">
                             <ListBox.ItemContainerStyle>
                                 <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">

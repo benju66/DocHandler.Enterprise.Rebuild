@@ -14,6 +14,8 @@ namespace DocHandler.Services
         private dynamic? _excelApp;
         private bool _disposed;
         private bool? _officeAvailable;
+        private readonly object _wordLock = new object();
+        private readonly object _excelLock = new object();
         
         public OfficeConversionService()
         {
@@ -31,12 +33,26 @@ namespace DocHandler.Services
                 Type? wordType = Type.GetTypeFromProgID("Word.Application");
                 if (wordType != null)
                 {
-                    dynamic testApp = Activator.CreateInstance(wordType);
-                    testApp.Visible = false;
-                    testApp.Quit();
-                    Marshal.ReleaseComObject(testApp);
-                    _officeAvailable = true;
-                    return true;
+                    dynamic testApp = null;
+                    try
+                    {
+                        testApp = Activator.CreateInstance(wordType);
+                        testApp.Visible = false;
+                        testApp.Quit();
+                        _officeAvailable = true;
+                        return true;
+                    }
+                    finally
+                    {
+                        if (testApp != null)
+                        {
+                            try
+                            {
+                                Marshal.ReleaseComObject(testApp);
+                            }
+                            catch { }
+                        }
+                    }
                 }
             }
             catch (Exception ex)
@@ -67,66 +83,74 @@ namespace DocHandler.Services
             var result = new ConversionResult();
             dynamic? doc = null;
             
-            try
+            lock (_wordLock)
             {
-                // Ensure Word application is initialized using late binding
-                if (_wordApp == null)
+                try
                 {
-                    try
+                    // Ensure Word application is initialized using late binding
+                    if (_wordApp == null)
                     {
-                        Type? wordType = Type.GetTypeFromProgID("Word.Application");
-                        if (wordType == null)
+                        try
                         {
+                            Type? wordType = Type.GetTypeFromProgID("Word.Application");
+                            if (wordType == null)
+                            {
+                                result.Success = false;
+                                result.ErrorMessage = "Microsoft Word is not installed.";
+                                return result;
+                            }
+                            
+                            _wordApp = Activator.CreateInstance(wordType);
+                            _wordApp.Visible = false;
+                            _wordApp.DisplayAlerts = 0; // wdAlertsNone
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Error(ex, "Failed to create Word application");
                             result.Success = false;
-                            result.ErrorMessage = "Microsoft Word is not installed.";
+                            result.ErrorMessage = "Microsoft Word is not installed or accessible.";
                             return result;
                         }
-                        
-                        _wordApp = Activator.CreateInstance(wordType);
-                        _wordApp.Visible = false;
-                        _wordApp.DisplayAlerts = 0; // wdAlertsNone
                     }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex, "Failed to create Word application");
-                        result.Success = false;
-                        result.ErrorMessage = "Microsoft Word is not installed or accessible.";
-                        return result;
-                    }
+                    
+                    // Open the document
+                    _logger.Information("Opening Word document: {Path}", inputPath);
+                    doc = _wordApp.Documents.Open(inputPath, ReadOnly: true);
+                    
+                    // Save as PDF (17 = wdFormatPDF)
+                    _logger.Information("Converting to PDF: {Path}", outputPath);
+                    doc.SaveAs2(outputPath, FileFormat: 17);
+                    
+                    result.Success = true;
+                    result.OutputPath = outputPath;
+                    _logger.Information("Successfully converted Word to PDF");
                 }
-                
-                // Open the document
-                _logger.Information("Opening Word document: {Path}", inputPath);
-                doc = _wordApp.Documents.Open(inputPath, ReadOnly: true);
-                
-                // Save as PDF (17 = wdFormatPDF)
-                _logger.Information("Converting to PDF: {Path}", outputPath);
-                doc.SaveAs2(outputPath, FileFormat: 17);
-                
-                result.Success = true;
-                result.OutputPath = outputPath;
-                _logger.Information("Successfully converted Word to PDF");
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Failed to convert Word document to PDF");
-                result.Success = false;
-                result.ErrorMessage = $"Conversion failed: {ex.Message}";
-            }
-            finally
-            {
-                // Clean up document
-                if (doc != null)
+                catch (Exception ex)
                 {
-                    try
+                    _logger.Error(ex, "Failed to convert Word document to PDF");
+                    result.Success = false;
+                    result.ErrorMessage = $"Conversion failed: {ex.Message}";
+                }
+                finally
+                {
+                    // Clean up document
+                    if (doc != null)
                     {
-                        doc.Close(SaveChanges: false);
-                        Marshal.ReleaseComObject(doc);
+                        try
+                        {
+                            doc.Close(SaveChanges: false);
+                            Marshal.FinalReleaseComObject(doc);
+                            doc = null;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Error closing Word document");
+                        }
                     }
-                    catch (Exception ex)
-                    {
-                        _logger.Warning(ex, "Error closing Word document");
-                    }
+                    
+                    // Force garbage collection after COM operations
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
                 }
             }
             
@@ -151,74 +175,82 @@ namespace DocHandler.Services
                 dynamic? workbook = null;
                 var result = new ConversionResult();
 
-                try
+                lock (_excelLock)
                 {
-                    // Create Excel application if needed using late binding
-                    if (_excelApp == null)
+                    try
                     {
-                        try
+                        // Create Excel application if needed using late binding
+                        if (_excelApp == null)
                         {
-                            Type? excelType = Type.GetTypeFromProgID("Excel.Application");
-                            if (excelType == null)
+                            try
                             {
+                                Type? excelType = Type.GetTypeFromProgID("Excel.Application");
+                                if (excelType == null)
+                                {
+                                    result.Success = false;
+                                    result.ErrorMessage = "Microsoft Excel is not installed.";
+                                    return result;
+                                }
+                                
+                                _excelApp = Activator.CreateInstance(excelType);
+                                _excelApp.Visible = false;
+                                _excelApp.DisplayAlerts = false;
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.Error(ex, "Failed to create Excel application");
                                 result.Success = false;
-                                result.ErrorMessage = "Microsoft Excel is not installed.";
+                                result.ErrorMessage = "Microsoft Excel is not installed or accessible.";
                                 return result;
                             }
-                            
-                            _excelApp = Activator.CreateInstance(excelType);
-                            _excelApp.Visible = false;
-                            _excelApp.DisplayAlerts = false;
                         }
-                        catch (Exception ex)
-                        {
-                            _logger.Error(ex, "Failed to create Excel application");
-                            result.Success = false;
-                            result.ErrorMessage = "Microsoft Excel is not installed or accessible.";
-                            return result;
-                        }
+
+                        // Open the workbook
+                        workbook = _excelApp.Workbooks.Open(
+                            inputPath,
+                            ReadOnly: true,
+                            IgnoreReadOnlyRecommended: true,
+                            Notify: false);
+
+                        // Export as PDF (0 = xlTypePDF)
+                        workbook.ExportAsFixedFormat(
+                            Type: 0,
+                            Filename: outputPath,
+                            Quality: 0, // xlQualityStandard
+                            IncludeDocProperties: true,
+                            IgnorePrintAreas: false,
+                            OpenAfterPublish: false);
+
+                        _logger.Information("Successfully converted Excel to PDF");
+                        result.Success = true;
+                        result.OutputPath = outputPath;
                     }
-
-                    // Open the workbook
-                    workbook = _excelApp.Workbooks.Open(
-                        inputPath,
-                        ReadOnly: true,
-                        IgnoreReadOnlyRecommended: true,
-                        Notify: false);
-
-                    // Export as PDF (0 = xlTypePDF)
-                    workbook.ExportAsFixedFormat(
-                        Type: 0,
-                        Filename: outputPath,
-                        Quality: 0, // xlQualityStandard
-                        IncludeDocProperties: true,
-                        IgnorePrintAreas: false,
-                        OpenAfterPublish: false);
-
-                    _logger.Information("Successfully converted Excel to PDF");
-                    result.Success = true;
-                    result.OutputPath = outputPath;
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error(ex, "Failed to convert Excel to PDF");
-                    result.Success = false;
-                    result.ErrorMessage = $"Excel conversion failed: {ex.Message}";
-                }
-                finally
-                {
-                    // Clean up
-                    if (workbook != null)
+                    catch (Exception ex)
                     {
-                        try
+                        _logger.Error(ex, "Failed to convert Excel to PDF");
+                        result.Success = false;
+                        result.ErrorMessage = $"Excel conversion failed: {ex.Message}";
+                    }
+                    finally
+                    {
+                        // Clean up
+                        if (workbook != null)
                         {
-                            workbook.Close(false);
-                            Marshal.ReleaseComObject(workbook);
+                            try
+                            {
+                                workbook.Close(false);
+                                Marshal.FinalReleaseComObject(workbook);
+                                workbook = null;
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.Warning(ex, "Error closing Excel workbook");
+                            }
                         }
-                        catch (Exception ex)
-                        {
-                            _logger.Warning(ex, "Error closing Excel workbook");
-                        }
+                        
+                        // Force garbage collection after COM operations
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
                     }
                 }
 
@@ -249,34 +281,80 @@ namespace DocHandler.Services
                 // Clean up Word application
                 if (_wordApp != null)
                 {
-                    try
+                    lock (_wordLock)
                     {
-                        _wordApp.Quit();
-                        Marshal.ReleaseComObject(_wordApp);
-                        _wordApp = null;
-                        
-                        _logger.Information("Word application closed");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Warning(ex, "Error closing Word application");
+                        try
+                        {
+                            // Try to close all documents first
+                            try
+                            {
+                                var documents = _wordApp.Documents;
+                                if (documents != null && documents.Count > 0)
+                                {
+                                    foreach (dynamic doc in documents)
+                                    {
+                                        try
+                                        {
+                                            doc.Close(SaveChanges: false);
+                                            Marshal.FinalReleaseComObject(doc);
+                                        }
+                                        catch { }
+                                    }
+                                    Marshal.FinalReleaseComObject(documents);
+                                }
+                            }
+                            catch { }
+                            
+                            _wordApp.Quit();
+                            Marshal.FinalReleaseComObject(_wordApp);
+                            _wordApp = null;
+                            
+                            _logger.Information("Word application closed");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Error closing Word application");
+                        }
                     }
                 }
                 
                 // Clean up Excel application
                 if (_excelApp != null)
                 {
-                    try
+                    lock (_excelLock)
                     {
-                        _excelApp.Quit();
-                        Marshal.ReleaseComObject(_excelApp);
-                        _excelApp = null;
-                        
-                        _logger.Information("Excel application closed");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Warning(ex, "Error closing Excel application");
+                        try
+                        {
+                            // Try to close all workbooks first
+                            try
+                            {
+                                var workbooks = _excelApp.Workbooks;
+                                if (workbooks != null && workbooks.Count > 0)
+                                {
+                                    foreach (dynamic wb in workbooks)
+                                    {
+                                        try
+                                        {
+                                            wb.Close(false);
+                                            Marshal.FinalReleaseComObject(wb);
+                                        }
+                                        catch { }
+                                    }
+                                    Marshal.FinalReleaseComObject(workbooks);
+                                }
+                            }
+                            catch { }
+                            
+                            _excelApp.Quit();
+                            Marshal.FinalReleaseComObject(_excelApp);
+                            _excelApp = null;
+                            
+                            _logger.Information("Excel application closed");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Error closing Excel application");
+                        }
                     }
                 }
                 
@@ -287,6 +365,11 @@ namespace DocHandler.Services
                 
                 _disposed = true;
             }
+        }
+        
+        ~OfficeConversionService()
+        {
+            Dispose(false);
         }
     }
     
