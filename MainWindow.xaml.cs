@@ -479,13 +479,88 @@ namespace DocHandler
             OutlookAttachmentHelper.CleanupTempFiles();
         }
 
+        private void ScopeSearchTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            var vm = DataContext as ViewModels.MainViewModel;
+            var textBox = sender as TextBox;
+            
+            if (vm == null || textBox == null) return;
+            
+            // If user starts typing and there's a selected scope, clear the selection
+            // This allows them to search for a new scope
+            if (!string.IsNullOrEmpty(vm.SelectedScope) && 
+                textBox.Text != vm.SelectedScope && 
+                !string.IsNullOrEmpty(textBox.Text))
+            {
+                vm.SelectedScope = null;
+                // Update the ScopeSearchText to the current textbox content
+                vm.ScopeSearchText = textBox.Text;
+            }
+            else if (string.IsNullOrEmpty(vm.SelectedScope))
+            {
+                // When no scope is selected, sync the search text
+                vm.ScopeSearchText = textBox.Text;
+            }
+        }
+
+        private void ScopeSearchTextBox_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            var vm = DataContext as ViewModels.MainViewModel;
+            var textBox = sender as TextBox;
+            
+            if (vm == null || textBox == null) return;
+            
+            // If a scope is selected and user clicks the textbox, clear selection to enable search
+            if (!string.IsNullOrEmpty(vm.SelectedScope))
+            {
+                vm.SelectedScope = null;
+                vm.ScopeSearchText = "";
+                // Focus and select all text for immediate typing
+                textBox.Focus();
+                textBox.SelectAll();
+                e.Handled = true;
+            }
+        }
+
+        private void ScopeSearchTextBox_PreviewTextInput(object sender, TextCompositionEventArgs e)
+        {
+            var vm = DataContext as ViewModels.MainViewModel;
+            var textBox = sender as TextBox;
+            
+            if (vm == null || textBox == null) return;
+            
+            // If a scope is selected and user types, clear selection and start fresh
+            if (!string.IsNullOrEmpty(vm.SelectedScope))
+            {
+                vm.SelectedScope = null;
+                vm.ScopeSearchText = e.Text; // Start with the typed character
+                textBox.Clear();
+                textBox.Text = e.Text;
+                textBox.Select(e.Text.Length, 0); // Position cursor at end
+                e.Handled = true;
+            }
+        }
+
         private void ScopeSearchTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
         {
             var vm = DataContext as ViewModels.MainViewModel;
             var scopeSearchTextBox = sender as TextBox;
             var scopesListBox = GetCurrentScopesListBox();
             
-            if (vm == null || scopesListBox == null || scopesListBox.Items.Count == 0) return;
+            if (vm == null || scopesListBox == null) return;
+
+            // Handle Ctrl+Enter for processing files
+            if (e.Key == Key.Enter && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+            {
+                if (vm.CanProcess)
+                {
+                    vm.ProcessFilesCommand.Execute(null);
+                }
+                e.Handled = true;
+                return;
+            }
+
+            if (scopesListBox.Items.Count == 0) return;
 
             // Debug output
             System.Diagnostics.Debug.WriteLine($"PreviewKeyDown: {e.Key}, Items: {scopesListBox.Items.Count}");
@@ -507,16 +582,39 @@ namespace DocHandler
                     if (vm.SelectedScope != null)
                     {
                         vm.SelectScopeCommand.Execute(vm.SelectedScope);
-                        scopeSearchTextBox?.Clear();
+                        // Don't clear the search box - let the UI binding show the selected scope
+                        this.Title = "DocHandler Enterprise";
+                    }
+                    else if (vm.FilteredScopesOfWork.Count == 1)
+                    {
+                        // Auto-select the single filtered item
+                        vm.SelectedScope = vm.FilteredScopesOfWork[0];
+                        vm.SelectScopeCommand.Execute(vm.SelectedScope);
                         this.Title = "DocHandler Enterprise";
                     }
                     e.Handled = true;
                     break;
                     
                 case Key.Escape:
-                    scopeSearchTextBox?.Clear();
+                    // Clear both search and selection
+                    vm.ScopeSearchText = "";
                     vm.SelectedScope = null;
+                    this.Title = "DocHandler Enterprise";
                     e.Handled = true;
+                    break;
+                    
+                case Key.Delete:
+                case Key.Back:
+                    // If user starts deleting with a scope selected, clear selection and position cursor
+                    if (!string.IsNullOrEmpty(vm.SelectedScope))
+                    {
+                        vm.SelectedScope = null;
+                        vm.ScopeSearchText = "";
+                        // Position cursor at end for natural typing
+                        scopeSearchTextBox?.Focus();
+                        scopeSearchTextBox?.Select(0, 0); // Set cursor at beginning for immediate typing
+                        e.Handled = true;
+                    }
                     break;
             }
         }

@@ -177,6 +177,9 @@ namespace DocHandler.ViewModels
             // Load open folder preference
             OpenFolderAfterProcessing = _configService.Config.OpenFolderAfterProcessing ?? true;
             
+            // Load show recent scopes preference
+            ShowRecentScopes = _configService.Config.ShowRecentScopes;
+            
             // Update UI when files are added/removed
             PendingFiles.CollectionChanged += (s, e) => 
             {
@@ -1192,6 +1195,22 @@ namespace DocHandler.ViewModels
                         ? ModernWpf.ApplicationTheme.Dark
                         : ModernWpf.ApplicationTheme.Light;
                     _configService.UpdateTheme(value ? "Dark" : "Light");
+                }
+            }
+        }
+
+        // Property for showing recent scopes
+        private bool _showRecentScopes = true;
+        public bool ShowRecentScopes
+        {
+            get => _showRecentScopes;
+            set
+            {
+                if (SetProperty(ref _showRecentScopes, value))
+                {
+                    // Save the preference
+                    _configService.Config.ShowRecentScopes = value;
+                    _ = _configService.SaveConfiguration();
                 }
             }
         }
