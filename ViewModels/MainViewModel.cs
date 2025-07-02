@@ -1,3 +1,6 @@
+// Folder: ViewModels/
+// File: MainViewModel.cs
+// Enhanced with Fuzzy Search for Scopes
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -253,6 +256,7 @@ namespace DocHandler.ViewModels
             }
         }
 
+        // Enhanced fuzzy search implementation
         private void FilterScopes()
         {
             // Store current selection
@@ -261,13 +265,37 @@ namespace DocHandler.ViewModels
             FilteredScopesOfWork.Clear();
             
             var searchTerm = ScopeSearchText?.Trim() ?? "";
-            var filteredScopes = string.IsNullOrWhiteSpace(searchTerm) 
-                ? ScopesOfWork 
-                : ScopesOfWork.Where(s => s.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase) >= 0);
             
-            foreach (var scope in filteredScopes)
+            if (string.IsNullOrWhiteSpace(searchTerm))
             {
-                FilteredScopesOfWork.Add(scope);
+                // No search term - show all scopes
+                foreach (var scope in ScopesOfWork)
+                {
+                    FilteredScopesOfWork.Add(scope);
+                }
+            }
+            else
+            {
+                // Fuzzy search implementation
+                var searchWords = searchTerm.ToLowerInvariant().Split(new[] { ' ', '-' }, StringSplitOptions.RemoveEmptyEntries);
+                
+                var scoredScopes = new List<(string scope, double score)>();
+                
+                foreach (var scope in ScopesOfWork)
+                {
+                    double score = CalculateFuzzyScore(scope, searchTerm, searchWords);
+                    if (score > 0)
+                    {
+                        scoredScopes.Add((scope, score));
+                    }
+                }
+                
+                // Sort by score (highest first) and add to filtered collection
+                foreach (var (scope, score) in scoredScopes.OrderByDescending(x => x.score))
+                {
+                    FilteredScopesOfWork.Add(scope);
+                    _logger.Debug("Scope '{Scope}' matched with score {Score}", scope, score);
+                }
             }
             
             // Restore selection if it's still in the filtered list
@@ -275,6 +303,166 @@ namespace DocHandler.ViewModels
             {
                 SelectedScopeItem = currentSelection;
             }
+        }
+        
+        private double CalculateFuzzyScore(string scope, string searchTerm, string[] searchWords)
+        {
+            var scopeLower = scope.ToLowerInvariant();
+            var searchTermLower = searchTerm.ToLowerInvariant();
+            
+            // Split scope into code and description parts
+            var dashIndex = scope.IndexOf(" - ");
+            string code = dashIndex > 0 ? scope.Substring(0, dashIndex).ToLowerInvariant() : "";
+            string description = dashIndex > 0 ? scope.Substring(dashIndex + 3).ToLowerInvariant() : scopeLower;
+            
+            double score = 0;
+            
+            // 1. Exact match (highest score)
+            if (scopeLower == searchTermLower)
+            {
+                return 100;
+            }
+            
+            // 2. Exact code match
+            if (code == searchTermLower)
+            {
+                return 90;
+            }
+            
+            // 3. Code starts with search term
+            if (!string.IsNullOrEmpty(code) && code.StartsWith(searchTermLower))
+            {
+                score += 80 - (code.Length - searchTermLower.Length); // Closer matches score higher
+            }
+            
+            // 4. Code contains search term
+            else if (!string.IsNullOrEmpty(code) && code.Contains(searchTermLower))
+            {
+                score += 60;
+            }
+            
+            // 5. Description exact match
+            if (description == searchTermLower)
+            {
+                score += 85;
+            }
+            
+            // 6. Description starts with search term
+            else if (description.StartsWith(searchTermLower))
+            {
+                score += 70;
+            }
+            
+            // 7. Full scope contains exact search term
+            else if (scopeLower.Contains(searchTermLower))
+            {
+                score += 50;
+                // Bonus if it's at a word boundary
+                if (Regex.IsMatch(scopeLower, $@"\b{Regex.Escape(searchTermLower)}\b"))
+                {
+                    score += 10;
+                }
+            }
+            
+            // 8. All search words are found (in any order)
+            if (searchWords.Length > 1)
+            {
+                bool allWordsFound = true;
+                int wordsFoundCount = 0;
+                
+                foreach (var word in searchWords)
+                {
+                    if (scopeLower.Contains(word))
+                    {
+                        wordsFoundCount++;
+                    }
+                    else
+                    {
+                        allWordsFound = false;
+                    }
+                }
+                
+                if (allWordsFound)
+                {
+                    score += 40;
+                }
+                else if (wordsFoundCount > 0)
+                {
+                    // Partial match - score based on percentage of words found
+                    score += 20 * ((double)wordsFoundCount / searchWords.Length);
+                }
+            }
+            
+            // 9. Individual word matching (for single word searches)
+            else if (searchWords.Length == 1)
+            {
+                var searchWord = searchWords[0];
+                
+                // Check each word in the scope
+                var scopeWords = scopeLower.Split(new[] { ' ', '-', ',', '.' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var scopeWord in scopeWords)
+                {
+                    if (scopeWord == searchWord)
+                    {
+                        score += 35; // Exact word match
+                    }
+                    else if (scopeWord.StartsWith(searchWord))
+                    {
+                        score += 25; // Word starts with search
+                    }
+                    else if (scopeWord.Contains(searchWord))
+                    {
+                        score += 15; // Word contains search
+                    }
+                }
+            }
+            
+            // 10. Fuzzy matching for typos (Levenshtein distance)
+            if (score == 0 && searchTermLower.Length >= 3) // Only for searches 3+ chars
+            {
+                // Check description words for close matches
+                var descWords = description.Split(new[] { ' ', '-', ',', '.' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var word in descWords)
+                {
+                    var distance = LevenshteinDistance(searchTermLower, word);
+                    var maxLen = Math.Max(searchTermLower.Length, word.Length);
+                    var similarity = 1.0 - ((double)distance / maxLen);
+                    
+                    // If 80% similar or better, include it
+                    if (similarity >= 0.8)
+                    {
+                        score += 10 * similarity;
+                    }
+                }
+            }
+            
+            return score;
+        }
+        
+        // Simple Levenshtein distance implementation for fuzzy matching
+        private int LevenshteinDistance(string s1, string s2)
+        {
+            int[,] distance = new int[s1.Length + 1, s2.Length + 1];
+            
+            for (int i = 0; i <= s1.Length; i++)
+                distance[i, 0] = i;
+            
+            for (int j = 0; j <= s2.Length; j++)
+                distance[0, j] = j;
+            
+            for (int i = 1; i <= s1.Length; i++)
+            {
+                for (int j = 1; j <= s2.Length; j++)
+                {
+                    int cost = (s1[i - 1] == s2[j - 1]) ? 0 : 1;
+                    distance[i, j] = Math.Min(
+                        Math.Min(distance[i - 1, j] + 1, distance[i, j - 1] + 1),
+                        distance[i - 1, j - 1] + cost
+                    );
+                }
+            }
+            
+            return distance[s1.Length, s2.Length];
         }
         
         public void UpdateUI()

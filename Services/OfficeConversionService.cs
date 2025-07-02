@@ -1,3 +1,6 @@
+// Folder: Services/
+// File: OfficeConversionService.cs
+// Critical Fix #4: Proper COM object disposal to prevent memory leaks
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -48,6 +51,7 @@ namespace DocHandler.Services
                         {
                             try
                             {
+                                // CRITICAL FIX #4: Proper COM cleanup
                                 Marshal.ReleaseComObject(testApp);
                             }
                             catch { }
@@ -83,6 +87,7 @@ namespace DocHandler.Services
             var result = new ConversionResult();
             dynamic? doc = null;
             
+            // CRITICAL FIX #4: Thread-safe lock for Word operations
             lock (_wordLock)
             {
                 try
@@ -133,6 +138,7 @@ namespace DocHandler.Services
                 }
                 finally
                 {
+                    // CRITICAL FIX #4: Proper cleanup in finally block
                     // Clean up document
                     if (doc != null)
                     {
@@ -148,7 +154,7 @@ namespace DocHandler.Services
                         }
                     }
                     
-                    // Force garbage collection after COM operations
+                    // CRITICAL FIX #4: Force garbage collection after COM operations
                     GC.Collect();
                     GC.WaitForPendingFinalizers();
                 }
@@ -175,6 +181,7 @@ namespace DocHandler.Services
                 dynamic? workbook = null;
                 var result = new ConversionResult();
 
+                // CRITICAL FIX #4: Thread-safe lock for Excel operations
                 lock (_excelLock)
                 {
                     try
@@ -233,6 +240,7 @@ namespace DocHandler.Services
                     }
                     finally
                     {
+                        // CRITICAL FIX #4: Proper cleanup in finally block
                         // Clean up
                         if (workbook != null)
                         {
@@ -248,7 +256,7 @@ namespace DocHandler.Services
                             }
                         }
                         
-                        // Force garbage collection after COM operations
+                        // CRITICAL FIX #4: Force garbage collection after COM operations
                         GC.Collect();
                         GC.WaitForPendingFinalizers();
                     }
@@ -269,6 +277,7 @@ namespace DocHandler.Services
             GC.SuppressFinalize(this);
         }
         
+        // CRITICAL FIX #4: Comprehensive disposal pattern
         protected virtual void Dispose(bool disposing)
         {
             if (!_disposed)
@@ -358,6 +367,7 @@ namespace DocHandler.Services
                     }
                 }
                 
+                // CRITICAL FIX #4: Triple garbage collection to ensure COM cleanup
                 // Force garbage collection to release COM objects
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
@@ -367,6 +377,7 @@ namespace DocHandler.Services
             }
         }
         
+        // CRITICAL FIX #4: Finalizer for unmanaged resource cleanup
         ~OfficeConversionService()
         {
             Dispose(false);

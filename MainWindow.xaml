@@ -1,4 +1,8 @@
-﻿<Window x:Class="DocHandler.MainWindow"
+﻿<!-- Folder: / -->
+<!-- File: MainWindow.xaml -->
+<!-- Critical Fix #1: Added Clear Selected Scope button -->
+<!-- Critical Fix #2: Fixed search synchronization with SelectedItem binding -->
+<Window x:Class="DocHandler.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -367,7 +371,7 @@
                                               QueryIcon="Find"/>
                         </Grid>
                         
-                        <!-- Selected Scope Display -->
+                        <!-- Selected Scope Display - CRITICAL FIX #1: Added Clear Button -->
                         <Border Grid.Row="1" 
                                 Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
                                 BorderBrush="{DynamicResource SystemControlHighlightAccentBrush}"
@@ -409,7 +413,7 @@
                     </Grid>
                 </GroupBox>
                 
-                <!-- Scopes List -->
+                <!-- Scopes List - CRITICAL FIX #2: Fixed binding with SelectedScopeItem -->
                 <GroupBox Grid.Row="2" Header="Available Scopes">
                     <Grid>
                         <Grid.RowDefinitions>
