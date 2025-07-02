@@ -452,6 +452,8 @@ namespace DocHandler
             ViewModel.SavePreferences();
         }
         
+
+        
         private void MainWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
             // Save window position
@@ -465,6 +467,71 @@ namespace DocHandler
             
             // Clean up any remaining Outlook temp files
             OutlookAttachmentHelper.CleanupTempFiles();
+        }
+
+        private void ScopeSearchTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            var vm = DataContext as ViewModels.MainViewModel;
+            if (vm == null || ScopesListBox.Items.Count == 0) return;
+
+            // Debug output
+            System.Diagnostics.Debug.WriteLine($"PreviewKeyDown: {e.Key}, Items: {ScopesListBox.Items.Count}");
+            this.Title = $"DocHandler Enterprise - Key: {e.Key}";
+
+            switch (e.Key)
+            {
+                case Key.Down:
+                    NavigateDown(vm);
+                    e.Handled = true;
+                    break;
+                    
+                case Key.Up:
+                    NavigateUp(vm);
+                    e.Handled = true;
+                    break;
+                    
+                case Key.Enter:
+                    if (vm.SelectedScope != null)
+                    {
+                        vm.SelectScopeCommand.Execute(vm.SelectedScope);
+                        ScopeSearchTextBox.Clear();
+                        this.Title = "DocHandler Enterprise";
+                    }
+                    e.Handled = true;
+                    break;
+                    
+                case Key.Escape:
+                    ScopeSearchTextBox.Clear();
+                    vm.SelectedScope = null;
+                    e.Handled = true;
+                    break;
+            }
+        }
+
+        private void NavigateDown(ViewModels.MainViewModel vm)
+        {
+            var currentIndex = vm.FilteredScopesOfWork.IndexOf(vm.SelectedScope ?? "");
+            var nextIndex = currentIndex < vm.FilteredScopesOfWork.Count - 1 ? currentIndex + 1 : 0;
+            
+            if (vm.FilteredScopesOfWork.Count > nextIndex)
+            {
+                vm.SelectedScope = vm.FilteredScopesOfWork[nextIndex];
+                ScopesListBox.ScrollIntoView(vm.SelectedScope);
+                System.Diagnostics.Debug.WriteLine($"Down: Selected {vm.SelectedScope}");
+            }
+        }
+
+        private void NavigateUp(ViewModels.MainViewModel vm)
+        {
+            var currentIndex = vm.FilteredScopesOfWork.IndexOf(vm.SelectedScope ?? "");
+            var prevIndex = currentIndex > 0 ? currentIndex - 1 : vm.FilteredScopesOfWork.Count - 1;
+            
+            if (vm.FilteredScopesOfWork.Count > prevIndex && prevIndex >= 0)
+            {
+                vm.SelectedScope = vm.FilteredScopesOfWork[prevIndex];
+                ScopesListBox.ScrollIntoView(vm.SelectedScope);
+                System.Diagnostics.Debug.WriteLine($"Up: Selected {vm.SelectedScope}");
+            }
         }
     }
 }

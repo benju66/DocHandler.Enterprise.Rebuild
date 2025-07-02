@@ -364,10 +364,14 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <ui:AutoSuggestBox Grid.Column="0" 
-                                              PlaceholderText="Search scopes..."
-                                              Text="{Binding ScopeSearchText, UpdateSourceTrigger=PropertyChanged}"
-                                              QueryIcon="Find"/>
+                            <TextBox x:Name="ScopeSearchTextBox"
+                                     Grid.Column="0"
+                                     Text="{Binding ScopeSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                     ui:ControlHelper.PlaceholderText="Search scopes..."
+                                     FontSize="14"
+                                     Padding="8,6"
+                                     Margin="0,0,0,0"
+                                     PreviewKeyDown="ScopeSearchTextBox_PreviewKeyDown"/>
                         </Grid>
                         
                         <!-- Selected Scope Display with Clear Button -->
@@ -420,15 +424,53 @@
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
                         
-                        <ListBox Grid.Row="0"
-                                 x:Name="ScopesListBox"
+                        <ListBox x:Name="ScopesListBox"
                                  ItemsSource="{Binding FilteredScopesOfWork}"
                                  SelectedItem="{Binding SelectedScope, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+                                    <Setter Property="Padding" Value="5,3"/>
+                                    <Setter Property="Margin" Value="1"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ListBoxItem">
+                                                <Border x:Name="ItemBorder" 
+                                                        Background="{TemplateBinding Background}"
+                                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                                        Padding="{TemplateBinding Padding}"
+                                                        CornerRadius="3">
+                                                    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <!-- Always show selection highlight regardless of focus -->
+                                                    <Trigger Property="IsSelected" Value="True">
+                                                        <Setter TargetName="ItemBorder" Property="Background" Value="#0078D4"/>
+                                                        <Setter Property="Foreground" Value="White"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ItemBorder" Property="Background" Value="#E5E5E5"/>
+                                                    </Trigger>
+                                                    <!-- Override mouse over when selected -->
+                                                    <MultiTrigger>
+                                                        <MultiTrigger.Conditions>
+                                                            <Condition Property="IsSelected" Value="True"/>
+                                                            <Condition Property="IsMouseOver" Value="True"/>
+                                                        </MultiTrigger.Conditions>
+                                                        <Setter TargetName="ItemBorder" Property="Background" Value="#106EBE"/>
+                                                        <Setter Property="Foreground" Value="White"/>
+                                                    </MultiTrigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </ListBox.ItemContainerStyle>
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding}" 
-                                              Padding="5,3"
                                               ToolTip="{Binding}"/>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>

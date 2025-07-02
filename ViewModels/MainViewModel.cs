@@ -312,18 +312,24 @@ namespace DocHandler.ViewModels
                     }
                 }
                 
-                // Restore selection if it's still in the filtered list
-                if (currentSelection != null && FilteredScopesOfWork.Contains(currentSelection))
+                // Preserve selection more conservatively
+                if (currentSelection != null)
                 {
-                    if (SelectedScope != currentSelection)
+                    if (FilteredScopesOfWork.Contains(currentSelection))
                     {
-                        SelectedScope = currentSelection;
+                        // Keep existing selection if it's still in filtered results
+                        if (SelectedScope != currentSelection)
+                        {
+                            SelectedScope = currentSelection;
+                        }
                     }
-                }
-                else if (currentSelection != null && !FilteredScopesOfWork.Contains(currentSelection))
-                {
-                    // Clear selection only if the selected item is no longer in the filtered results
-                    SelectedScope = null;
+                    else if (string.IsNullOrWhiteSpace(searchTerm))
+                    {
+                        // Only clear selection if search is completely empty
+                        // This prevents clearing during navigation
+                        SelectedScope = null;
+                    }
+                    // Don't clear selection during active search - user might be navigating
                 }
             });
         }
@@ -806,6 +812,8 @@ namespace DocHandler.ViewModels
         {
             FilterScopes();
         }
+
+
 
         [RelayCommand]
         private async Task ClearRecentScopes()
