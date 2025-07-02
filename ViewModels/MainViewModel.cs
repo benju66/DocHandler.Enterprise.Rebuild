@@ -1,15 +1,18 @@
 // Folder: ViewModels/
 // File: MainViewModel.cs
 // Enhanced with Fuzzy Search for Scopes
+// Fixed: Save Quotes Mode default and Scope synchronization
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Data;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using DocHandler.Services;
@@ -77,6 +80,10 @@ namespace DocHandler.ViewModels
                 {
                     UpdateUI();
                     
+                    // Save the preference
+                    _configService.Config.SaveQuotesMode = value;
+                    _ = _configService.SaveConfiguration();
+                    
                     if (value)
                     {
                         StatusMessage = "Save Quotes Mode: Drop quote documents";
@@ -86,7 +93,6 @@ namespace DocHandler.ViewModels
                     {
                         StatusMessage = "Drop files here to begin";
                         SelectedScope = null;
-                        SelectedScopeItem = null;
                         CompanyNameInput = "";
                         DetectedCompanyName = "";
                     }
@@ -94,19 +100,15 @@ namespace DocHandler.ViewModels
             }
         }
 
-        [ObservableProperty]
         private string? _selectedScope;
-
-        // Separate property for ListBox binding to fix search synchronization
-        private string? _selectedScopeItem;
-        public string? SelectedScopeItem
+        public string? SelectedScope
         {
-            get => _selectedScopeItem;
+            get => _selectedScope;
             set
             {
-                if (SetProperty(ref _selectedScopeItem, value))
+                if (SetProperty(ref _selectedScope, value))
                 {
-                    SelectedScope = value;
+                    UpdateUI();
                 }
             }
         }
@@ -158,6 +160,9 @@ namespace DocHandler.ViewModels
             _officeConversionService = new OfficeConversionService();
             _companyNameService = new CompanyNameService();
             _scopeOfWorkService = new ScopeOfWorkService();
+            
+            // Load Save Quotes Mode from config
+            SaveQuotesMode = _configService.Config.SaveQuotesMode;
             
             // Load scopes of work
             LoadScopesOfWork();
@@ -244,6 +249,8 @@ namespace DocHandler.ViewModels
             {
                 ScopesOfWork.Add(_scopeOfWorkService.GetFormattedScope(scope));
             }
+            
+            // Initial filter
             FilterScopes();
         }
 
@@ -256,23 +263,21 @@ namespace DocHandler.ViewModels
             }
         }
 
-        // Enhanced fuzzy search implementation
+        // Enhanced fuzzy search implementation with better synchronization
         private void FilterScopes()
         {
-            // Store current selection
-            var currentSelection = SelectedScopeItem;
-            
-            FilteredScopesOfWork.Clear();
-            
             var searchTerm = ScopeSearchText?.Trim() ?? "";
+            
+            // Get current selection before filtering
+            var currentSelection = SelectedScope;
+            
+            // Build filtered list without clearing to minimize UI disruption
+            var filteredList = new List<string>();
             
             if (string.IsNullOrWhiteSpace(searchTerm))
             {
                 // No search term - show all scopes
-                foreach (var scope in ScopesOfWork)
-                {
-                    FilteredScopesOfWork.Add(scope);
-                }
+                filteredList.AddRange(ScopesOfWork);
             }
             else
             {
@@ -290,19 +295,37 @@ namespace DocHandler.ViewModels
                     }
                 }
                 
-                // Sort by score (highest first) and add to filtered collection
-                foreach (var (scope, score) in scoredScopes.OrderByDescending(x => x.score))
-                {
-                    FilteredScopesOfWork.Add(scope);
-                    _logger.Debug("Scope '{Scope}' matched with score {Score}", scope, score);
-                }
+                // Sort by score (highest first) and add to filtered list
+                filteredList.AddRange(scoredScopes.OrderByDescending(x => x.score).Select(x => x.scope));
             }
             
-            // Restore selection if it's still in the filtered list
-            if (currentSelection != null && FilteredScopesOfWork.Contains(currentSelection))
+            // Update the filtered collection efficiently
+            Application.Current.Dispatcher.Invoke(() =>
             {
-                SelectedScopeItem = currentSelection;
-            }
+                // Only update if the contents have changed
+                if (!filteredList.SequenceEqual(FilteredScopesOfWork))
+                {
+                    FilteredScopesOfWork.Clear();
+                    foreach (var scope in filteredList)
+                    {
+                        FilteredScopesOfWork.Add(scope);
+                    }
+                }
+                
+                // Restore selection if it's still in the filtered list
+                if (currentSelection != null && FilteredScopesOfWork.Contains(currentSelection))
+                {
+                    if (SelectedScope != currentSelection)
+                    {
+                        SelectedScope = currentSelection;
+                    }
+                }
+                else if (currentSelection != null && !FilteredScopesOfWork.Contains(currentSelection))
+                {
+                    // Clear selection only if the selected item is no longer in the filtered results
+                    SelectedScope = null;
+                }
+            });
         }
         
         private double CalculateFuzzyScore(string scope, string searchTerm, string[] searchWords)
@@ -762,7 +785,6 @@ namespace DocHandler.ViewModels
         public void SelectScope(string? scope)
         {
             SelectedScope = scope;
-            SelectedScopeItem = scope;
             if (!string.IsNullOrEmpty(scope))
             {
                 _ = _scopeOfWorkService.UpdateRecentScope(scope);
@@ -775,7 +797,6 @@ namespace DocHandler.ViewModels
         private void ClearSelectedScope()
         {
             SelectedScope = null;
-            SelectedScopeItem = null;
             // Don't clear the search text - user might want to search for another
             UpdateUI();
         }
@@ -1117,11 +1138,6 @@ namespace DocHandler.ViewModels
         }
         
         partial void OnDetectedCompanyNameChanged(string? value)
-        {
-            UpdateUI();
-        }
-        
-        partial void OnSelectedScopeChanged(string? value)
         {
             UpdateUI();
         }

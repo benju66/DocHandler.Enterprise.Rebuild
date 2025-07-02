@@ -68,7 +68,8 @@ namespace DocHandler.Services
                 WindowWidth = 800,
                 WindowHeight = 600,
                 WindowState = "Normal",
-                OpenFolderAfterProcessing = true
+                OpenFolderAfterProcessing = true,
+                SaveQuotesMode = true  // Added - default to true
             };
         }
         
@@ -149,5 +150,6 @@ namespace DocHandler.Services
         public double WindowHeight { get; set; }
         public string WindowState { get; set; } = "Normal";
         public bool? OpenFolderAfterProcessing { get; set; } = true;
+        public bool SaveQuotesMode { get; set; } = true;  // Added - default to true
     }
 }

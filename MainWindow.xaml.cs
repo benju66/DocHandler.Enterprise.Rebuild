@@ -439,19 +439,7 @@ namespace DocHandler
             if (sender is ListBoxItem item && item.DataContext is string scope)
             {
                 ViewModel.SelectedScope = scope;
-                ViewModel.SelectedScopeItem = scope;
                 ViewModel.ScopeSearchText = "";  // Clear search when selecting from recent
-                ViewModel.SelectScopeCommand.Execute(scope);
-            }
-        }
-        
-        /// <summary>
-        /// Handle selection of scope from main list
-        /// </summary>
-        private void ScopeItem_Selected(object sender, RoutedEventArgs e)
-        {
-            if (sender is ListBoxItem item && item.DataContext is string scope)
-            {
                 ViewModel.SelectScopeCommand.Execute(scope);
             }
         }
