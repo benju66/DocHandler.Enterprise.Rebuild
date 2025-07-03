@@ -191,7 +191,9 @@ namespace DocHandler.ViewModels
                 {
                     foreach (FileItem item in e.NewItems)
                     {
+                        // Scan the first file added for company names
                         _ = ScanForCompanyName(item.FilePath);
+                        break; // Only scan the first file to avoid multiple detections
                     }
                 }
             };
@@ -204,12 +206,16 @@ namespace DocHandler.ViewModels
         {
             // Don't scan if user has already typed a company name
             if (!SaveQuotesMode || IsDetectingCompany || !string.IsNullOrWhiteSpace(CompanyNameInput)) 
+            {
+                _logger.Debug("Skipping company name scan - SaveQuotesMode: {SaveQuotesMode}, IsDetecting: {IsDetecting}, HasInput: {HasInput}", 
+                    SaveQuotesMode, IsDetectingCompany, !string.IsNullOrWhiteSpace(CompanyNameInput));
                 return;
+            }
             
             try
             {
                 IsDetectingCompany = true;
-                _logger.Information("Scanning document for company name: {Path}", filePath);
+                _logger.Information("Starting company name detection for: {Path}", filePath);
                 
                 var detectedCompany = await _companyNameService.ScanDocumentForCompanyName(filePath);
                 
@@ -219,20 +225,39 @@ namespace DocHandler.ViewModels
                     if (string.IsNullOrWhiteSpace(CompanyNameInput))
                     {
                         DetectedCompanyName = detectedCompany;
-                        _logger.Information("Detected company name: {Company}", detectedCompany);
+                        _logger.Information("Successfully detected and set company name: {Company}", detectedCompany);
                         
                         // Force UI update after detection
                         UpdateUI();
+                    }
+                    else
+                    {
+                        _logger.Information("Company detected ({Company}) but user has already typed: {UserInput}", detectedCompany, CompanyNameInput);
+                    }
+                }
+                else
+                {
+                    _logger.Information("No company name detected in document: {Path}", filePath);
+                    // Clear any previous detection
+                    if (string.IsNullOrWhiteSpace(CompanyNameInput))
+                    {
+                        DetectedCompanyName = "";
                     }
                 }
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Failed to scan document for company name");
+                // Clear any partial detection on error
+                if (string.IsNullOrWhiteSpace(CompanyNameInput))
+                {
+                    DetectedCompanyName = "";
+                }
             }
             finally
             {
                 IsDetectingCompany = false;
+                _logger.Debug("Company name detection completed. DetectedCompanyName: '{DetectedName}'", DetectedCompanyName ?? "null");
                 UpdateUI(); // Ensure UI updates after detection completes
             }
         }
@@ -954,6 +979,44 @@ namespace DocHandler.ViewModels
                 MessageBoxImage.Information);
         }
 
+        [RelayCommand]
+        private async Task TestCompanyDetection()
+        {
+            // For debugging: manually test company detection
+            if (!SaveQuotesMode)
+            {
+                MessageBox.Show("Please enable Save Quotes Mode first.", "Test Company Detection", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "Select document to test company detection",
+                Filter = "All supported files|*.pdf;*.doc;*.docx;*.txt|PDF files|*.pdf|Word documents|*.doc;*.docx|Text files|*.txt|All files|*.*"
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                // Clear any existing input
+                CompanyNameInput = "";
+                DetectedCompanyName = "";
+                
+                _logger.Information("Manual company detection test started for: {Path}", dialog.FileName);
+                
+                // Test the detection
+                await ScanForCompanyName(dialog.FileName);
+                
+                // Show result
+                var result = string.IsNullOrEmpty(DetectedCompanyName) 
+                    ? "No company name detected." 
+                    : $"Detected company: {DetectedCompanyName}";
+                    
+                MessageBox.Show($"Detection test completed.\n\n{result}", "Company Detection Test", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
         private async Task ProcessSaveQuotes()
         {
             if (!SaveQuotesMode || string.IsNullOrEmpty(SelectedScope))
@@ -1148,7 +1211,7 @@ namespace DocHandler.ViewModels
             UpdateUI();
         }
         
-        partial void OnDetectedCompanyNameChanged(string? value)
+        partial void OnDetectedCompanyNameChanged(string value)
         {
             UpdateUI();
         }
@@ -1200,7 +1263,7 @@ namespace DocHandler.ViewModels
         }
 
         // Property for showing recent scopes
-        private bool _showRecentScopes = true;
+        private bool _showRecentScopes = false;
         public bool ShowRecentScopes
         {
             get => _showRecentScopes;

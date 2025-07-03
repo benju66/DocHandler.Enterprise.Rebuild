@@ -70,7 +70,7 @@ namespace DocHandler.Services
                 WindowState = "Normal",
                 OpenFolderAfterProcessing = true,
                 SaveQuotesMode = true,  // Added - default to true
-                ShowRecentScopes = true  // Added - default to true
+                ShowRecentScopes = false  // Added - default to false (hidden by default)
             };
         }
         
@@ -152,6 +152,6 @@ namespace DocHandler.Services
         public string WindowState { get; set; } = "Normal";
         public bool? OpenFolderAfterProcessing { get; set; } = true;
         public bool SaveQuotesMode { get; set; } = true;  // Added - default to true
-        public bool ShowRecentScopes { get; set; } = true;  // Added - default to true
+        public bool ShowRecentScopes { get; set; } = false;  // Added - default to false (hidden by default)
     }
 }

@@ -174,21 +174,48 @@ namespace DocHandler.Services
             {
                 _logger.Information("Scanning document for company names: {Path}", filePath);
                 
+                // Validate file exists and is accessible
+                if (!File.Exists(filePath))
+                {
+                    _logger.Warning("File does not exist: {Path}", filePath);
+                    return null;
+                }
+                
                 // Extract text from the document
                 string documentText = await ExtractTextFromDocument(filePath);
                 
                 if (string.IsNullOrWhiteSpace(documentText))
                 {
-                    _logger.Warning("No text extracted from document");
+                    _logger.Warning("No text extracted from document: {Path}", filePath);
                     return null;
                 }
+                
+                // Validate that we have meaningful text (more than just whitespace/special chars)
+                if (documentText.Trim().Length < 10)
+                {
+                    _logger.Warning("Insufficient text content for company detection: {Length} characters", documentText.Trim().Length);
+                    return null;
+                }
+                
+                _logger.Debug("Extracted {Length} characters from document for company detection", documentText.Length);
                 
                 // Convert to lowercase for comparison
                 string lowerText = documentText.ToLowerInvariant();
                 
+                // Check if we have any companies to search for
+                if (!_data.Companies.Any())
+                {
+                    _logger.Warning("No companies in database to search for");
+                    return null;
+                }
+                
                 // Check each company and its aliases, ordered by usage count for efficiency
                 foreach (var company in _data.Companies.OrderByDescending(c => c.UsageCount))
                 {
+                    // Skip companies with empty names
+                    if (string.IsNullOrWhiteSpace(company.Name))
+                        continue;
+                    
                     // Check main name
                     if (ContainsCompanyName(lowerText, company.Name))
                     {
@@ -209,12 +236,12 @@ namespace DocHandler.Services
                     }
                 }
                 
-                _logger.Information("No known company names found in document");
+                _logger.Information("No known company names found in document (searched {Count} companies)", _data.Companies.Count);
                 return null;
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Failed to scan document for company names");
+                _logger.Error(ex, "Failed to scan document for company names: {Path}", filePath);
                 return null;
             }
         }
@@ -223,15 +250,43 @@ namespace DocHandler.Services
         {
             try
             {
-                // Simple word boundary match - can be enhanced with better patterns
-                string pattern = $@"\b{Regex.Escape(companyName.ToLowerInvariant())}\b";
-                return Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase);
+                // Skip very short company names (likely to cause false positives)
+                if (companyName.Length < 3)
+                {
+                    _logger.Debug("Skipping very short company name: {Name}", companyName);
+                    return false;
+                }
+                
+                // Normalize the company name
+                var normalizedCompanyName = companyName.ToLowerInvariant().Trim();
+                
+                // First try exact word boundary match
+                string pattern = $@"\b{Regex.Escape(normalizedCompanyName)}\b";
+                if (Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase))
+                {
+                    return true;
+                }
+                
+                // For company names with special characters, also try without word boundaries
+                // This handles cases like "ABC, Inc." or "XYZ Corp"
+                if (normalizedCompanyName.Contains(",") || normalizedCompanyName.Contains(".") || 
+                    normalizedCompanyName.Contains("&") || normalizedCompanyName.Contains("-"))
+                {
+                    return text.Contains(normalizedCompanyName);
+                }
+                
+                return false;
             }
             catch (Exception ex)
             {
                 _logger.Warning(ex, "Regex match failed for company name: {Name}", companyName);
-                // Fallback to simple contains
-                return text.Contains(companyName.ToLowerInvariant());
+                // Fallback to simple contains for normalized names only
+                var normalizedCompanyName = companyName.ToLowerInvariant().Trim();
+                if (normalizedCompanyName.Length >= 3)
+                {
+                    return text.Contains(normalizedCompanyName);
+                }
+                return false;
             }
         }
         
@@ -248,6 +303,8 @@ namespace DocHandler.Services
                     case ".doc":
                     case ".docx":
                         return await ExtractTextFromWord(filePath);
+                    case ".txt":
+                        return await ExtractTextFromTextFile(filePath);
                     default:
                         _logger.Warning("Unsupported file type for text extraction: {Extension}", extension);
                         return string.Empty;
@@ -266,13 +323,30 @@ namespace DocHandler.Services
             {
                 try
                 {
+                    // Validate file before attempting to read
+                    var fileInfo = new FileInfo(filePath);
+                    if (!fileInfo.Exists)
+                    {
+                        _logger.Warning("PDF file does not exist: {Path}", filePath);
+                        return string.Empty;
+                    }
+                    
+                    if (fileInfo.Length == 0)
+                    {
+                        _logger.Warning("PDF file is empty: {Path}", filePath);
+                        return string.Empty;
+                    }
+                    
                     using (var reader = new PdfReader(filePath))
                     using (var pdfDoc = new PdfDocument(reader))
                     {
                         var text = new System.Text.StringBuilder();
                         
                         // Only extract first 3 pages for company detection (optimization)
-                        int maxPages = Math.Min(3, pdfDoc.GetNumberOfPages());
+                        int totalPages = pdfDoc.GetNumberOfPages();
+                        int maxPages = Math.Min(3, totalPages);
+                        
+                        _logger.Debug("Extracting text from PDF: {Pages} pages (max {Max})", totalPages, maxPages);
                         
                         for (int page = 1; page <= maxPages; page++)
                         {
@@ -280,7 +354,12 @@ namespace DocHandler.Services
                             {
                                 var strategy = new SimpleTextExtractionStrategy();
                                 var pageText = PdfTextExtractor.GetTextFromPage(pdfDoc.GetPage(page), strategy);
-                                text.AppendLine(pageText);
+                                
+                                if (!string.IsNullOrWhiteSpace(pageText))
+                                {
+                                    text.AppendLine(pageText);
+                                    _logger.Debug("Extracted {Length} characters from page {Page}", pageText.Length, page);
+                                }
                                 
                                 // If we've already found enough text (e.g., 5000 characters), stop scanning
                                 if (text.Length > 5000)
@@ -295,12 +374,14 @@ namespace DocHandler.Services
                             }
                         }
                         
-                        return text.ToString();
+                        var extractedText = text.ToString();
+                        _logger.Debug("Total text extracted from PDF: {Length} characters", extractedText.Length);
+                        return extractedText;
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error(ex, "Failed to extract text from PDF");
+                    _logger.Error(ex, "Failed to extract text from PDF: {Path}", filePath);
                     return string.Empty;
                 }
             });
@@ -312,6 +393,20 @@ namespace DocHandler.Services
             {
                 try
                 {
+                    // Validate file before attempting to read
+                    var fileInfo = new FileInfo(filePath);
+                    if (!fileInfo.Exists)
+                    {
+                        _logger.Warning("Word file does not exist: {Path}", filePath);
+                        return string.Empty;
+                    }
+                    
+                    if (fileInfo.Length == 0)
+                    {
+                        _logger.Warning("Word file is empty: {Path}", filePath);
+                        return string.Empty;
+                    }
+                    
                     // First, verify this is actually a Word document
                     if (!IsValidWordDocument(filePath))
                     {
@@ -324,40 +419,90 @@ namespace DocHandler.Services
                         var text = new System.Text.StringBuilder();
                         var body = doc.MainDocumentPart?.Document?.Body;
                         
-                        if (body != null)
+                        if (body == null)
                         {
-                            int charCount = 0;
-                            foreach (var paragraph in body.Elements<Paragraph>())
+                            _logger.Warning("Word document has no body content: {Path}", filePath);
+                            return string.Empty;
+                        }
+                        
+                        int charCount = 0;
+                        int paragraphCount = 0;
+                        
+                        foreach (var paragraph in body.Elements<Paragraph>())
+                        {
+                            try
                             {
-                                try
+                                var paraText = paragraph.InnerText;
+                                if (!string.IsNullOrWhiteSpace(paraText))
                                 {
-                                    var paraText = paragraph.InnerText;
                                     text.AppendLine(paraText);
                                     charCount += paraText.Length;
-                                    
-                                    // Stop after extracting enough text for company detection
-                                    if (charCount > 5000)
-                                    {
-                                        _logger.Debug("Sufficient text extracted for company detection");
-                                        break;
-                                    }
+                                    paragraphCount++;
                                 }
-                                catch (Exception paraEx)
+                                
+                                // Stop after extracting enough text for company detection
+                                if (charCount > 5000)
                                 {
-                                    _logger.Warning(paraEx, "Failed to extract text from paragraph");
+                                    _logger.Debug("Sufficient text extracted for company detection from {Count} paragraphs", paragraphCount);
+                                    break;
                                 }
+                            }
+                            catch (Exception paraEx)
+                            {
+                                _logger.Warning(paraEx, "Failed to extract text from paragraph");
                             }
                         }
                         
-                        return text.ToString();
+                        var extractedText = text.ToString();
+                        _logger.Debug("Total text extracted from Word document: {Length} characters from {Count} paragraphs", extractedText.Length, paragraphCount);
+                        return extractedText;
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error(ex, "Failed to extract text from Word document");
+                    _logger.Error(ex, "Failed to extract text from Word document: {Path}", filePath);
                     return string.Empty;
                 }
             });
+        }
+
+        private async Task<string> ExtractTextFromTextFile(string filePath)
+        {
+            try
+            {
+                // Validate file before attempting to read
+                var fileInfo = new FileInfo(filePath);
+                if (!fileInfo.Exists)
+                {
+                    _logger.Warning("Text file does not exist: {Path}", filePath);
+                    return string.Empty;
+                }
+                
+                if (fileInfo.Length == 0)
+                {
+                    _logger.Warning("Text file is empty: {Path}", filePath);
+                    return string.Empty;
+                }
+                
+                // Read the text file (limit to first 10KB for company detection)
+                var maxBytes = 10 * 1024; // 10KB
+                var text = await File.ReadAllTextAsync(filePath);
+                
+                // Truncate if too long for company detection
+                if (text.Length > maxBytes)
+                {
+                    text = text.Substring(0, maxBytes);
+                    _logger.Debug("Truncated text file content for company detection: {Length} characters", text.Length);
+                }
+                
+                _logger.Debug("Extracted text from file: {Length} characters", text.Length);
+                return text;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to extract text from text file: {Path}", filePath);
+                return string.Empty;
+            }
         }
 
         private bool IsValidWordDocument(string filePath)
