@@ -47,6 +47,14 @@
                         <ui:SymbolIcon Symbol="Save"/>
                     </MenuItem.Icon>
                 </MenuItem>
+                <Separator/>
+                <MenuItem Header="{Binding AutoScanCompanyNames, Converter={StaticResource AutoScanMenuHeaderConverter}}"
+                          IsCheckable="True"
+                          IsChecked="{Binding AutoScanCompanyNames}">
+                    <MenuItem.Icon>
+                        <ui:SymbolIcon Symbol="Find"/>
+                    </MenuItem.Icon>
+                </MenuItem>
             </MenuItem>
             
             <MenuItem Header="_View">
@@ -319,6 +327,42 @@
                                  Padding="8,6"
                                  Margin="0,2,0,0"
                                  BorderThickness="1">
+                            
+                            <!-- Context Menu -->
+                            <TextBox.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="{Binding AutoScanCompanyNames, Converter={StaticResource AutoScanMenuHeaderConverter}}"
+                                              IsCheckable="True"
+                                              IsChecked="{Binding AutoScanCompanyNames}">
+                                        <MenuItem.Icon>
+                                            <ui:SymbolIcon Symbol="Find"/>
+                                        </MenuItem.Icon>
+                                    </MenuItem>
+                                    <Separator/>
+                                    <MenuItem Header="Edit Company Names..." Command="{Binding EditCompanyNamesCommand}">
+                                        <MenuItem.Icon>
+                                            <ui:SymbolIcon Symbol="People"/>
+                                        </MenuItem.Icon>
+                                    </MenuItem>
+                                    <Separator/>
+                                    <MenuItem Header="Cut" Command="Cut">
+                                        <MenuItem.Icon>
+                                            <ui:SymbolIcon Symbol="Cut"/>
+                                        </MenuItem.Icon>
+                                    </MenuItem>
+                                    <MenuItem Header="Copy" Command="Copy">
+                                        <MenuItem.Icon>
+                                            <ui:SymbolIcon Symbol="Copy"/>
+                                        </MenuItem.Icon>
+                                    </MenuItem>
+                                    <MenuItem Header="Paste" Command="Paste">
+                                        <MenuItem.Icon>
+                                            <ui:SymbolIcon Symbol="Paste"/>
+                                        </MenuItem.Icon>
+                                    </MenuItem>
+                                </ContextMenu>
+                            </TextBox.ContextMenu>
+                            
                             <TextBox.Style>
                                 <Style TargetType="TextBox">
                                     <Setter Property="Background" Value="White"/>
@@ -337,7 +381,7 @@
                                                                       HorizontalScrollBarVisibility="Hidden" 
                                                                       VerticalScrollBarVisibility="Hidden"/>
                                                         <!-- Placeholder text -->
-                                                        <TextBlock Text="{Binding DetectedCompanyName, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        <TextBlock Text="{Binding DataContext.CompanyNamePlaceholder, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                    Foreground="#9E9E9E"
                                                                    FontSize="{TemplateBinding FontSize}"
                                                                    Margin="0,0,0,0"
@@ -351,7 +395,6 @@
                                                                             <MultiDataTrigger.Conditions>
                                                                                 <Condition Binding="{Binding Text, RelativeSource={RelativeSource TemplatedParent}}" Value=""/>
                                                                                 <Condition Binding="{Binding IsFocused, RelativeSource={RelativeSource TemplatedParent}}" Value="False"/>
-                                                                                <Condition Binding="{Binding DetectedCompanyName, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource StringNotEmptyConverter}}" Value="True"/>
                                                                             </MultiDataTrigger.Conditions>
                                                                             <Setter Property="Visibility" Value="Visible"/>
                                                                         </MultiDataTrigger>
@@ -380,6 +423,10 @@
                                     <Style.Triggers>
                                         <DataTrigger Binding="{Binding IsDetectingCompany}" Value="True">
                                             <Setter Property="IsEnabled" Value="False"/>
+                                        </DataTrigger>
+                                        <!-- Auto-scan enabled - green border matching process button -->
+                                        <DataTrigger Binding="{Binding AutoScanCompanyNames}" Value="True">
+                                            <Setter Property="BorderBrush" Value="#4CAF50"/>
                                         </DataTrigger>
                                     </Style.Triggers>
                                 </Style>

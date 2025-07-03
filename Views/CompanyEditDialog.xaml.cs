@@ -1,21 +1,44 @@
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 
 namespace DocHandler.Views
 {
-    public partial class CompanyEditDialog : Window
+    public partial class CompanyEditDialog : Window, INotifyPropertyChanged
     {
-        public string CompanyName { get; set; }
+        private string _companyName = string.Empty;
+        
+        public string CompanyName 
+        { 
+            get => _companyName;
+            set
+            {
+                if (_companyName != value)
+                {
+                    _companyName = value ?? string.Empty;
+                    OnPropertyChanged();
+                }
+            }
+        }
+        
         public ObservableCollection<string> Aliases { get; set; }
+        
+        public event PropertyChangedEventHandler? PropertyChanged;
+        
+        protected virtual void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
         
         public CompanyEditDialog(string companyName, List<string> aliases)
         {
             InitializeComponent();
             
-            CompanyName = companyName;
+            CompanyName = companyName ?? string.Empty;
             Aliases = new ObservableCollection<string>(aliases ?? new List<string>());
             
             DataContext = this;
@@ -59,7 +82,7 @@ namespace DocHandler.Views
         
         private void OkButton_Click(object sender, RoutedEventArgs e)
         {
-            CompanyName = CompanyName.Trim();
+            CompanyName = CompanyName?.Trim();
             DialogResult = true;
         }
         

@@ -66,10 +66,59 @@
                     Click="OkButton_Click"
                     MinWidth="80"
                     Margin="0,0,10,0"
-                    Padding="10,5">
+                    Padding="12,8"
+                    FontWeight="SemiBold">
                 <Button.IsEnabled>
                     <Binding Path="CompanyName" Converter="{StaticResource StringNotEmptyConverter}"/>
                 </Button.IsEnabled>
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <!-- Default state: Disabled/Grayed -->
+                        <Setter Property="Background" Value="#BDBDBD"/>
+                        <Setter Property="Foreground" Value="#757575"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Setter Property="Cursor" Value="Arrow"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                            CornerRadius="6"
+                                            Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <!-- Ready State: Blue when enabled -->
+                                        <Trigger Property="IsEnabled" Value="True">
+                                            <Setter Property="Background" Value="#1976D2"/>
+                                            <Setter Property="Foreground" Value="White"/>
+                                            <Setter Property="Cursor" Value="Hand"/>
+                                        </Trigger>
+                                        <!-- Hover State: Green on hover when enabled -->
+                                        <MultiTrigger>
+                                            <MultiTrigger.Conditions>
+                                                <Condition Property="IsEnabled" Value="True"/>
+                                                <Condition Property="IsMouseOver" Value="True"/>
+                                            </MultiTrigger.Conditions>
+                                            <Setter Property="Background" Value="#4CAF50"/>
+                                            <Setter Property="Foreground" Value="White"/>
+                                        </MultiTrigger>
+                                        <!-- Pressed State: Darker green when clicking -->
+                                        <MultiTrigger>
+                                            <MultiTrigger.Conditions>
+                                                <Condition Property="IsEnabled" Value="True"/>
+                                                <Condition Property="IsPressed" Value="True"/>
+                                            </MultiTrigger.Conditions>
+                                            <Setter Property="Background" Value="#388E3C"/>
+                                            <Setter Property="Foreground" Value="White"/>
+                                        </MultiTrigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </Button.Style>
             </Button>
             
             <Button Grid.Column="2" 

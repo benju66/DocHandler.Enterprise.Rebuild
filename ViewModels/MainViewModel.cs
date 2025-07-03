@@ -180,6 +180,9 @@ namespace DocHandler.ViewModels
             // Load show recent scopes preference
             ShowRecentScopes = _configService.Config.ShowRecentScopes;
             
+            // Load auto-scan company names preference
+            AutoScanCompanyNames = _configService.Config.AutoScanCompanyNames;
+            
             // Update UI when files are added/removed
             PendingFiles.CollectionChanged += (s, e) => 
             {
@@ -204,11 +207,11 @@ namespace DocHandler.ViewModels
         
         private async Task ScanForCompanyName(string filePath)
         {
-            // Don't scan if user has already typed a company name
-            if (!SaveQuotesMode || IsDetectingCompany || !string.IsNullOrWhiteSpace(CompanyNameInput)) 
+            // Don't scan if auto-scan is disabled, user has already typed a company name, or other conditions
+            if (!SaveQuotesMode || IsDetectingCompany || !string.IsNullOrWhiteSpace(CompanyNameInput) || !AutoScanCompanyNames) 
             {
-                _logger.Debug("Skipping company name scan - SaveQuotesMode: {SaveQuotesMode}, IsDetecting: {IsDetecting}, HasInput: {HasInput}", 
-                    SaveQuotesMode, IsDetectingCompany, !string.IsNullOrWhiteSpace(CompanyNameInput));
+                _logger.Debug("Skipping company name scan - SaveQuotesMode: {SaveQuotesMode}, IsDetecting: {IsDetecting}, HasInput: {HasInput}, AutoScan: {AutoScan}", 
+                    SaveQuotesMode, IsDetectingCompany, !string.IsNullOrWhiteSpace(CompanyNameInput), AutoScanCompanyNames);
                 return;
             }
             
@@ -841,8 +844,6 @@ namespace DocHandler.ViewModels
             FilterScopes();
         }
 
-
-
         [RelayCommand]
         private async Task ClearRecentScopes()
         {
@@ -1214,6 +1215,7 @@ namespace DocHandler.ViewModels
         partial void OnDetectedCompanyNameChanged(string value)
         {
             UpdateUI();
+            OnPropertyChanged(nameof(CompanyNamePlaceholder));
         }
         
         public void Cleanup()
@@ -1275,6 +1277,48 @@ namespace DocHandler.ViewModels
                     _configService.Config.ShowRecentScopes = value;
                     _ = _configService.SaveConfiguration();
                 }
+            }
+        }
+
+        private bool _autoScanCompanyNames = true;
+        public bool AutoScanCompanyNames
+        {
+            get => _autoScanCompanyNames;
+            set
+            {
+                if (SetProperty(ref _autoScanCompanyNames, value))
+                {
+                    // Save the preference
+                    _configService.Config.AutoScanCompanyNames = value;
+                    _ = _configService.SaveConfiguration();
+                    
+                    // Clear detected company name if auto-scan is disabled
+                    if (!value)
+                    {
+                        DetectedCompanyName = "";
+                    }
+                    
+                    // Update placeholder text
+                    OnPropertyChanged(nameof(CompanyNamePlaceholder));
+                }
+            }
+        }
+
+        public string CompanyNamePlaceholder
+        {
+            get
+            {
+                if (!AutoScanCompanyNames)
+                {
+                    return "Enter company name manually";
+                }
+                
+                if (!string.IsNullOrEmpty(DetectedCompanyName))
+                {
+                    return DetectedCompanyName;
+                }
+                
+                return "Scanning for company name...";
             }
         }
     }

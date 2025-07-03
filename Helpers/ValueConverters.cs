@@ -65,4 +65,21 @@ namespace DocHandler.Helpers
             throw new NotImplementedException();
         }
     }
+    
+    public class AutoScanMenuHeaderConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is bool isEnabled)
+            {
+                return isEnabled ? "✓ Auto-Scan Company Names" : "Auto-Scan Company Names";
+            }
+            return "Auto-Scan Company Names";
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            throw new NotImplementedException();
+        }
+    }
 }
