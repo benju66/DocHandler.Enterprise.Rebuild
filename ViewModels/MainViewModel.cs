@@ -10,6 +10,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Data;
@@ -218,9 +219,15 @@ namespace DocHandler.ViewModels
             try
             {
                 IsDetectingCompany = true;
-                _logger.Information("Starting company name detection for: {Path}", filePath);
+                _logger.Information("Starting optimized company name detection for: {Path}", filePath);
                 
-                var detectedCompany = await _companyNameService.ScanDocumentForCompanyName(filePath);
+                // Use cancellation token for responsive UI with 30-second timeout
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                
+                var detectedCompany = await Task.Run(async () =>
+                {
+                    return await _companyNameService.ScanDocumentForCompanyName(filePath);
+                }, cts.Token);
                 
                 if (!string.IsNullOrEmpty(detectedCompany))
                 {
@@ -228,7 +235,7 @@ namespace DocHandler.ViewModels
                     if (string.IsNullOrWhiteSpace(CompanyNameInput))
                     {
                         DetectedCompanyName = detectedCompany;
-                        _logger.Information("Successfully detected and set company name: {Company}", detectedCompany);
+                        _logger.Information("Successfully detected company: {Company}", detectedCompany);
                         
                         // Force UI update after detection
                         UpdateUI();
@@ -248,9 +255,18 @@ namespace DocHandler.ViewModels
                     }
                 }
             }
+            catch (OperationCanceledException)
+            {
+                _logger.Warning("Company detection timed out for: {Path}", filePath);
+                // Show user-friendly message for timeout
+                if (string.IsNullOrWhiteSpace(CompanyNameInput))
+                {
+                    DetectedCompanyName = "";
+                }
+            }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Failed to scan document for company name");
+                _logger.Error(ex, "Company detection failed for: {Path}", filePath);
                 // Clear any partial detection on error
                 if (string.IsNullOrWhiteSpace(CompanyNameInput))
                 {

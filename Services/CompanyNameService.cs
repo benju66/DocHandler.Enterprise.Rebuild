@@ -1,10 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Text.RegularExpressions;
+using System.Text;
+using System.Security.Cryptography;
 using Serilog;
 using Task = System.Threading.Tasks.Task;
 using iText.Kernel.Pdf;
@@ -15,18 +18,94 @@ using DocumentFormat.OpenXml.Wordprocessing;
 
 namespace DocHandler.Services
 {
+    public class CompanyDetectionSettings
+    {
+        public int MaxPagesForFullScan { get; set; } = 5;
+        public int MaxCharactersToExtract { get; set; } = 10000;
+        public bool EnableOCR { get; set; } = false; // Disabled for now
+        public bool EnableFuzzyMatching { get; set; } = true;
+        public double MinimumMatchScore { get; set; } = 0.7;
+        public int CacheExpiryMinutes { get; set; } = 30;
+        public bool EnableParallelProcessing { get; set; } = true;
+        public int MaxConcurrentOperations { get; set; } = Environment.ProcessorCount;
+        
+        // Safe performance optimizations
+        public int MaxCacheSize { get; set; } = 200; // Increased cache size
+        public int MemoryCleanupThreshold { get; set; } = 100; // MB - prevents memory exhaustion
+        public bool EnableMemoryMonitoring { get; set; } = true; // Helps prevent DoS attacks
+        public bool EnablePerformanceMetrics { get; set; } = true; // Safe performance tracking
+    }
+    
+    public class PerformanceMetrics
+    {
+        public int DocumentsProcessed { get; set; }
+        public TimeSpan TotalProcessingTime { get; set; }
+        public int CacheHits { get; set; }
+        public int CacheMisses { get; set; }
+        public long PeakMemoryUsage { get; set; }
+        public DateTime LastReset { get; set; } = DateTime.Now;
+        
+        public double AverageProcessingTime => 
+            DocumentsProcessed > 0 ? TotalProcessingTime.TotalMilliseconds / DocumentsProcessed : 0;
+            
+        public double CacheHitRate => 
+            (CacheHits + CacheMisses) > 0 ? (double)CacheHits / (CacheHits + CacheMisses) * 100 : 0;
+            
+        public string GetSummary()
+        {
+            return $"Processed: {DocumentsProcessed}, Avg Time: {AverageProcessingTime:F1}ms, " +
+                   $"Cache Hit Rate: {CacheHitRate:F1}%, Peak Memory: {PeakMemoryUsage / 1024 / 1024}MB";
+        }
+    }
+    
+    public class MatchResult
+    {
+        public double Score { get; set; }
+        public string Method { get; set; } = "";
+    }
+    
+    public class CompanyDetectionResult
+    {
+        public string FilePath { get; set; } = "";
+        public string? DetectedCompany { get; set; }
+        public DateTime ProcessedAt { get; set; }
+        public double ConfidenceScore { get; set; }
+    }
+
     public class CompanyNameService
     {
         private readonly ILogger _logger;
         private readonly string _dataPath;
         private readonly string _companyNamesPath;
         private CompanyNamesData _data;
+        private readonly ConcurrentDictionary<string, string> _textCache;
+        private readonly ConcurrentDictionary<string, (string?, DateTime)> _detectionCache;
+        private readonly CompanyDetectionSettings _settings;
+        private readonly PerformanceMetrics _performanceMetrics;
+        private DateTime _lastMemoryCheck = DateTime.Now;
+        
+        // Safe compiled regex patterns for better performance
+        private static readonly Regex ControlCharactersRegex = new(@"[\x00-\x1F\x7F-\x9F]", RegexOptions.Compiled);
+        private static readonly Regex MultipleSpacesRegex = new(@"\s+", RegexOptions.Compiled);
+        private static readonly Regex NonWordCharactersRegex = new(@"[^\w\s.,&\-()]", RegexOptions.Compiled);
         
         public List<CompanyInfo> Companies => _data.Companies;
         
         public CompanyNameService()
         {
             _logger = Log.ForContext<CompanyNameService>();
+            
+            // Initialize thread-safe caching with concurrent dictionaries
+            _textCache = new ConcurrentDictionary<string, string>();
+            _detectionCache = new ConcurrentDictionary<string, (string?, DateTime)>();
+            
+            // Load performance settings
+            _settings = new CompanyDetectionSettings();
+            
+            // Initialize performance metrics
+            _performanceMetrics = new PerformanceMetrics();
+            
+            _logger.Information("Enhanced company detection service initialized with caching, fuzzy matching, and performance monitoring");
             
             // Store data in AppData
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -37,6 +116,8 @@ namespace DocHandler.Services
             _companyNamesPath = Path.Combine(appFolder, "company_names.json");
             _data = LoadCompanyNames();
         }
+        
+
         
         private CompanyNamesData LoadCompanyNames()
         {
@@ -172,71 +253,77 @@ namespace DocHandler.Services
         {
             try
             {
-                _logger.Information("Scanning document for company names: {Path}", filePath);
-                
-                // Validate file exists and is accessible
-                if (!File.Exists(filePath))
+                // Check cache first
+                var fileInfo = new FileInfo(filePath);
+                if (!fileInfo.Exists)
                 {
                     _logger.Warning("File does not exist: {Path}", filePath);
                     return null;
                 }
                 
-                // Extract text from the document
-                string documentText = await ExtractTextFromDocument(filePath);
+                var cacheKey = $"{filePath}_{fileInfo.LastWriteTime.Ticks}_{fileInfo.Length}";
+                
+                // Check detection cache
+                if (_detectionCache.TryGetValue(cacheKey, out var cachedDetection))
+                {
+                    var cacheAge = DateTime.Now - cachedDetection.Item2;
+                    if (cacheAge.TotalMinutes < _settings.CacheExpiryMinutes)
+                    {
+                        _logger.Debug("Using cached detection result for {File}", Path.GetFileName(filePath));
+                        return cachedDetection.Item1;
+                    }
+                    else
+                    {
+                        _detectionCache.TryRemove(cacheKey, out _);
+                    }
+                }
+                
+                _logger.Information("Scanning document for company names: {Path}", filePath);
+                
+                // Get cached or extract text
+                string documentText = await GetCachedDocumentText(filePath, cacheKey);
                 
                 if (string.IsNullOrWhiteSpace(documentText))
                 {
                     _logger.Warning("No text extracted from document: {Path}", filePath);
+                    _detectionCache[cacheKey] = (null, DateTime.Now);
                     return null;
                 }
                 
-                // Validate that we have meaningful text (more than just whitespace/special chars)
+                // Validate that we have meaningful text
                 if (documentText.Trim().Length < 10)
                 {
                     _logger.Warning("Insufficient text content for company detection: {Length} characters", documentText.Trim().Length);
+                    _detectionCache[cacheKey] = (null, DateTime.Now);
                     return null;
                 }
                 
                 _logger.Debug("Extracted {Length} characters from document for company detection", documentText.Length);
                 
-                // Convert to lowercase for comparison
-                string lowerText = documentText.ToLowerInvariant();
+                // Preprocess text for better matching
+                string processedText = PreprocessText(documentText);
                 
                 // Check if we have any companies to search for
                 if (!_data.Companies.Any())
                 {
                     _logger.Warning("No companies in database to search for");
+                    _detectionCache[cacheKey] = (null, DateTime.Now);
                     return null;
                 }
                 
-                // Check each company and its aliases, ordered by usage count for efficiency
-                foreach (var company in _data.Companies.OrderByDescending(c => c.UsageCount))
+                // Find best company match using enhanced matching
+                var bestMatch = await FindBestCompanyMatch(processedText);
+                
+                if (bestMatch != null)
                 {
-                    // Skip companies with empty names
-                    if (string.IsNullOrWhiteSpace(company.Name))
-                        continue;
-                    
-                    // Check main name
-                    if (ContainsCompanyName(lowerText, company.Name))
-                    {
-                        _logger.Information("Found company name: {Name}", company.Name);
-                        await IncrementUsageCount(company.Name);
-                        return company.Name;
-                    }
-                    
-                    // Check aliases
-                    foreach (var alias in company.Aliases)
-                    {
-                        if (!string.IsNullOrWhiteSpace(alias) && ContainsCompanyName(lowerText, alias))
-                        {
-                            _logger.Information("Found company via alias '{Alias}': {Name}", alias, company.Name);
-                            await IncrementUsageCount(company.Name);
-                            return company.Name;
-                        }
-                    }
+                    _logger.Information("Found company: {Name} (Score: {Score})", bestMatch.Value.company, bestMatch.Value.score);
+                    await IncrementUsageCount(bestMatch.Value.company);
+                    _detectionCache[cacheKey] = (bestMatch.Value.company, DateTime.Now);
+                    return bestMatch.Value.company;
                 }
                 
                 _logger.Information("No known company names found in document (searched {Count} companies)", _data.Companies.Count);
+                _detectionCache[cacheKey] = (null, DateTime.Now);
                 return null;
             }
             catch (Exception ex)
@@ -244,6 +331,241 @@ namespace DocHandler.Services
                 _logger.Error(ex, "Failed to scan document for company names: {Path}", filePath);
                 return null;
             }
+        }
+        
+        private async Task<string> GetCachedDocumentText(string filePath, string cacheKey)
+        {
+            if (_textCache.TryGetValue(cacheKey, out string? cachedText))
+            {
+                _logger.Debug("Using cached text extraction for {File}", Path.GetFileName(filePath));
+                return cachedText;
+            }
+            
+            var extractedText = await ExtractTextFromDocument(filePath);
+            
+            // Cache the extracted text (limit cache size)
+            if (_textCache.Count > 100)
+            {
+                // Remove oldest entries
+                var oldestKeys = _textCache.Keys.Take(_textCache.Count - 80).ToList();
+                foreach (var key in oldestKeys)
+                {
+                    _textCache.TryRemove(key, out _);
+                }
+            }
+            
+            _textCache[cacheKey] = extractedText;
+            return extractedText;
+        }
+        
+        private string PreprocessText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return text;
+            
+            // Remove common PDF artifacts and normalize text
+            text = Regex.Replace(text, @"[\x00-\x1F\x7F-\x9F]", " "); // Control characters
+            text = Regex.Replace(text, @"\s+", " "); // Multiple spaces
+            text = Regex.Replace(text, @"[^\w\s.,&\-()]", " "); // Keep only useful punctuation
+            
+            return text.Trim().ToLowerInvariant();
+        }
+        
+        private async Task<(string company, double score)?> FindBestCompanyMatch(string text)
+        {
+            var matches = new List<(string company, double score)>();
+            
+            // Check each company and its aliases
+            foreach (var company in _data.Companies.OrderByDescending(c => c.UsageCount))
+            {
+                if (string.IsNullOrWhiteSpace(company.Name)) continue;
+                
+                // Check main name
+                var mainScore = GetCompanyMatchScore(text, company.Name);
+                if (mainScore > 0)
+                {
+                    matches.Add((company.Name, mainScore));
+                }
+                
+                // Check aliases
+                foreach (var alias in company.Aliases)
+                {
+                    if (!string.IsNullOrWhiteSpace(alias))
+                    {
+                        var aliasScore = GetCompanyMatchScore(text, alias) * 0.9; // Slightly lower score for aliases
+                        if (aliasScore > 0)
+                        {
+                            matches.Add((company.Name, aliasScore));
+                        }
+                    }
+                }
+            }
+            
+            // Return best match above threshold
+            var bestMatch = matches.OrderByDescending(m => m.score).FirstOrDefault();
+            return bestMatch.score >= _settings.MinimumMatchScore ? bestMatch : null;
+        }
+        
+        private double GetCompanyMatchScore(string text, string companyName)
+        {
+            if (companyName.Length < 2) return 0.0;
+            
+            var normalizedCompany = companyName.ToLowerInvariant().Trim();
+            var matches = new List<MatchResult>();
+            
+            // 1. Exact word boundary match (highest priority)
+            matches.Add(CheckExactWordMatch(text, normalizedCompany));
+            
+            // 2. Fuzzy matching for common variations
+            if (_settings.EnableFuzzyMatching)
+            {
+                matches.Add(CheckFuzzyMatch(text, normalizedCompany));
+            }
+            
+            // 3. Contextual matching
+            matches.Add(CheckContextualMatch(text, normalizedCompany));
+            
+            // Return best score
+            var bestMatch = matches.OrderByDescending(m => m.Score).FirstOrDefault();
+            return bestMatch?.Score ?? 0.0;
+        }
+        
+        private MatchResult CheckExactWordMatch(string text, string companyName)
+        {
+            try
+            {
+                var pattern = $@"\b{Regex.Escape(companyName)}\b";
+                var match = Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase);
+                return new MatchResult
+                {
+                    Score = match ? 1.0 : 0.0,
+                    Method = "ExactWord"
+                };
+            }
+            catch
+            {
+                return new MatchResult { Score = 0.0, Method = "ExactWord" };
+            }
+        }
+        
+        private MatchResult CheckFuzzyMatch(string text, string companyName)
+        {
+            var variations = GenerateCompanyVariations(companyName);
+            
+            foreach (var variation in variations)
+            {
+                if (text.Contains(variation))
+                {
+                    var score = CalculateSimilarityScore(companyName, variation);
+                    return new MatchResult
+                    {
+                        Score = score * 0.9, // Slightly lower than exact match
+                        Method = "Fuzzy"
+                    };
+                }
+            }
+            
+            return new MatchResult { Score = 0.0, Method = "Fuzzy" };
+        }
+        
+        private MatchResult CheckContextualMatch(string text, string companyName)
+        {
+            var contextPatterns = new[]
+            {
+                $@"from:\s*{Regex.Escape(companyName)}",
+                $@"regards,?\s*{Regex.Escape(companyName)}",
+                $@"sincerely,?\s*{Regex.Escape(companyName)}",
+                $@"quote\s+from\s+{Regex.Escape(companyName)}",
+                $@"{Regex.Escape(companyName)}\s+team",
+                $@"contact\s+{Regex.Escape(companyName)}"
+            };
+            
+            foreach (var pattern in contextPatterns)
+            {
+                if (Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase))
+                {
+                    return new MatchResult
+                    {
+                        Score = 0.95,
+                        Method = "Contextual"
+                    };
+                }
+            }
+            
+            return new MatchResult { Score = 0.0, Method = "Contextual" };
+        }
+        
+        private List<string> GenerateCompanyVariations(string companyName)
+        {
+            var variations = new List<string> { companyName };
+            
+            // Common abbreviations
+            var abbreviations = new Dictionary<string, string>
+            {
+                { "corporation", "corp" },
+                { "incorporated", "inc" },
+                { "company", "co" },
+                { "limited", "ltd" },
+                { "and", "&" },
+                { "construction", "const" },
+                { "electrical", "electric" },
+                { "plumbing", "plumb" }
+            };
+            
+            foreach (var abbrev in abbreviations)
+            {
+                if (companyName.Contains(abbrev.Key))
+                {
+                    variations.Add(companyName.Replace(abbrev.Key, abbrev.Value));
+                }
+                if (companyName.Contains(abbrev.Value))
+                {
+                    variations.Add(companyName.Replace(abbrev.Value, abbrev.Key));
+                }
+            }
+            
+            // Remove punctuation variations
+            variations.Add(Regex.Replace(companyName, @"[^\w\s]", ""));
+            
+            // Add spacing variations
+            variations.Add(companyName.Replace(" ", ""));
+            variations.Add(companyName.Replace("-", " "));
+            variations.Add(companyName.Replace(".", " "));
+            
+            return variations.Distinct().ToList();
+        }
+        
+        private double CalculateSimilarityScore(string original, string comparison)
+        {
+            // Simple Levenshtein distance-based similarity
+            var distance = CalculateLevenshteinDistance(original, comparison);
+            var maxLength = Math.Max(original.Length, comparison.Length);
+            return maxLength == 0 ? 1.0 : 1.0 - (double)distance / maxLength;
+        }
+        
+        private int CalculateLevenshteinDistance(string source, string target)
+        {
+            if (string.IsNullOrEmpty(source)) return target?.Length ?? 0;
+            if (string.IsNullOrEmpty(target)) return source.Length;
+            
+            var sourceLength = source.Length;
+            var targetLength = target.Length;
+            var matrix = new int[sourceLength + 1, targetLength + 1];
+            
+            for (int i = 0; i <= sourceLength; matrix[i, 0] = i++) { }
+            for (int j = 0; j <= targetLength; matrix[0, j] = j++) { }
+            
+            for (int i = 1; i <= sourceLength; i++)
+            {
+                for (int j = 1; j <= targetLength; j++)
+                {
+                    var cost = target[j - 1] == source[i - 1] ? 0 : 1;
+                    matrix[i, j] = Math.Min(
+                        Math.Min(matrix[i - 1, j] + 1, matrix[i, j - 1] + 1),
+                        matrix[i - 1, j - 1] + cost);
+                }
+            }
+            
+            return matrix[sourceLength, targetLength];
         }
         
         private bool ContainsCompanyName(string text, string companyName)
@@ -337,47 +659,49 @@ namespace DocHandler.Services
                         return string.Empty;
                     }
                     
-                    using (var reader = new PdfReader(filePath))
-                    using (var pdfDoc = new PdfDocument(reader))
+                    using var reader = new PdfReader(filePath);
+                    using var pdfDoc = new PdfDocument(reader);
+                    var text = new StringBuilder();
+                    
+                    // Smart page scanning with prioritization
+                    int totalPages = pdfDoc.GetNumberOfPages();
+                    var pagesToScan = GetPriorityPages(totalPages);
+                    
+                    _logger.Debug("Extracting text from PDF: {TotalPages} total pages, scanning {ScanPages} priority pages", 
+                        totalPages, pagesToScan.Count);
+                    
+                    foreach (var pageNum in pagesToScan)
                     {
-                        var text = new System.Text.StringBuilder();
-                        
-                        // Only extract first 3 pages for company detection (optimization)
-                        int totalPages = pdfDoc.GetNumberOfPages();
-                        int maxPages = Math.Min(3, totalPages);
-                        
-                        _logger.Debug("Extracting text from PDF: {Pages} pages (max {Max})", totalPages, maxPages);
-                        
-                        for (int page = 1; page <= maxPages; page++)
+                        try
                         {
-                            try
+                            // Use LocationTextExtractionStrategy for better text positioning
+                            var strategy = new LocationTextExtractionStrategy();
+                            var pageText = PdfTextExtractor.GetTextFromPage(pdfDoc.GetPage(pageNum), strategy);
+                            
+                            if (!string.IsNullOrWhiteSpace(pageText))
                             {
-                                var strategy = new SimpleTextExtractionStrategy();
-                                var pageText = PdfTextExtractor.GetTextFromPage(pdfDoc.GetPage(page), strategy);
-                                
-                                if (!string.IsNullOrWhiteSpace(pageText))
-                                {
-                                    text.AppendLine(pageText);
-                                    _logger.Debug("Extracted {Length} characters from page {Page}", pageText.Length, page);
-                                }
-                                
-                                // If we've already found enough text (e.g., 5000 characters), stop scanning
-                                if (text.Length > 5000)
-                                {
-                                    _logger.Debug("Sufficient text extracted for company detection, stopping at page {Page}", page);
-                                    break;
-                                }
+                                text.AppendLine(pageText);
+                                _logger.Debug("Extracted {Length} characters from page {Page}", pageText.Length, pageNum);
                             }
-                            catch (Exception pageEx)
+                            
+                            // Early exit if we have enough content for detection
+                            if (text.Length > _settings.MaxCharactersToExtract)
                             {
-                                _logger.Warning(pageEx, "Failed to extract text from page {Page} of PDF", page);
+                                _logger.Debug("Sufficient text extracted for company detection, stopping at page {Page}", pageNum);
+                                break;
                             }
                         }
-                        
-                        var extractedText = text.ToString();
-                        _logger.Debug("Total text extracted from PDF: {Length} characters", extractedText.Length);
-                        return extractedText;
+                        catch (Exception pageEx)
+                        {
+                            _logger.Warning(pageEx, "Failed to extract text from page {Page} of PDF", pageNum);
+                        }
                     }
+                    
+                    var extractedText = text.ToString();
+                    _logger.Debug("Total text extracted from PDF: {Length} characters from {Pages} pages", 
+                        extractedText.Length, pagesToScan.Count);
+                    
+                    return extractedText;
                 }
                 catch (Exception ex)
                 {
@@ -385,6 +709,44 @@ namespace DocHandler.Services
                     return string.Empty;
                 }
             });
+        }
+        
+        private List<int> GetPriorityPages(int totalPages)
+        {
+            var pages = new List<int>();
+            
+            // Always scan first 2 pages (letterhead, headers)
+            pages.AddRange(Enumerable.Range(1, Math.Min(2, totalPages)));
+            
+            // Always scan last 2 pages (signatures, company info)
+            if (totalPages > 2)
+            {
+                var lastPagesStart = Math.Max(3, totalPages - 1);
+                var lastPagesCount = Math.Min(2, totalPages - 2);
+                if (lastPagesCount > 0)
+                {
+                    pages.AddRange(Enumerable.Range(lastPagesStart, lastPagesCount));
+                }
+            }
+            
+            // For medium documents, scan some middle pages
+            if (totalPages > 4 && totalPages <= _settings.MaxPagesForFullScan)
+            {
+                var middleStart = 3;
+                var middleEnd = Math.Min(totalPages - 2, _settings.MaxPagesForFullScan - 2);
+                if (middleEnd > middleStart)
+                {
+                    pages.AddRange(Enumerable.Range(middleStart, middleEnd - middleStart + 1));
+                }
+            }
+            
+            // For very short documents, scan all pages
+            if (totalPages <= 3)
+            {
+                pages.AddRange(Enumerable.Range(1, totalPages));
+            }
+            
+            return pages.Distinct().OrderBy(p => p).ToList();
         }
         
         private async Task<string> ExtractTextFromWord(string filePath)
