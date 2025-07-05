@@ -625,6 +625,9 @@ namespace DocHandler.Services
                     case ".doc":
                     case ".docx":
                         return await ExtractTextFromWord(filePath);
+                    case ".xls":
+                    case ".xlsx":
+                        return await ExtractTextFromExcel(filePath);
                     case ".txt":
                         return await ExtractTextFromTextFile(filePath);
                     default:
@@ -751,24 +754,133 @@ namespace DocHandler.Services
         
         private async Task<string> ExtractTextFromWord(string filePath)
         {
+            try
+            {
+                // Validate file before processing
+                var fileInfo = new FileInfo(filePath);
+                if (!fileInfo.Exists)
+                {
+                    _logger.Warning("Word file does not exist: {Path}", filePath);
+                    return string.Empty;
+                }
+                
+                if (fileInfo.Length == 0)
+                {
+                    _logger.Warning("Word file is empty: {Path}", filePath);
+                    return string.Empty;
+                }
+                
+                // Enterprise security: reasonable file size limit (50MB) to prevent DoS attacks
+                const long maxFileSize = 50 * 1024 * 1024; // 50MB
+                if (fileInfo.Length > maxFileSize)
+                {
+                    _logger.Warning("Word file exceeds size limit: {Size} bytes (limit: {MaxSize} bytes)", 
+                        fileInfo.Length, maxFileSize);
+                    return string.Empty;
+                }
+                
+                _logger.Information("Converting Word to PDF for comprehensive text extraction: {Path}", filePath);
+                
+                // Create secure temporary directory with unique name
+                var tempFolderName = $"DocHandler_{Guid.NewGuid():N}";
+                var tempFolder = Path.Combine(Path.GetTempPath(), tempFolderName);
+                Directory.CreateDirectory(tempFolder);
+                
+                var tempPdfPath = Path.Combine(tempFolder, "word_conversion.pdf");
+                
+                try
+                {
+                    // Use existing, trusted Office conversion service
+                    var officeService = new OfficeConversionService();
+                    var conversionResult = await officeService.ConvertWordToPdf(filePath, tempPdfPath);
+                    
+                    if (!conversionResult.Success)
+                    {
+                        _logger.Warning("Failed to convert Word to PDF: {Error}", conversionResult.ErrorMessage);
+                        
+                        // Fallback to basic OpenXML extraction (body paragraphs only)
+                        _logger.Information("Falling back to basic text extraction for Word document: {Path}", filePath);
+                        return await ExtractTextFromWordBasic(filePath);
+                    }
+                    
+                    // Verify the PDF was created successfully
+                    if (!File.Exists(tempPdfPath))
+                    {
+                        _logger.Warning("PDF conversion completed but output file not found: {Path}", tempPdfPath);
+                        return await ExtractTextFromWordBasic(filePath);
+                    }
+                    
+                    // Additional security check on converted PDF
+                    var pdfInfo = new FileInfo(tempPdfPath);
+                    if (pdfInfo.Length == 0)
+                    {
+                        _logger.Warning("Converted PDF is empty: {Path}", tempPdfPath);
+                        return await ExtractTextFromWordBasic(filePath);
+                    }
+                    
+                    // Use existing, trusted PDF text extraction (captures headers, footers, images, etc.)
+                    var extractedText = await ExtractTextFromPdf(tempPdfPath);
+                    
+                    if (string.IsNullOrWhiteSpace(extractedText))
+                    {
+                        _logger.Warning("No text extracted from converted Word PDF: {Path}", filePath);
+                        return await ExtractTextFromWordBasic(filePath);
+                    }
+                    
+                    _logger.Information("Successfully extracted comprehensive text from Word via PDF: {Length} characters from {OriginalFile}", 
+                        extractedText.Length, Path.GetFileName(filePath));
+                    
+                    return extractedText;
+                }
+                finally
+                {
+                    // Enterprise-level cleanup: secure removal of temporary files
+                    try
+                    {
+                        if (Directory.Exists(tempFolder))
+                        {
+                            // Force delete all files in the temporary folder
+                            var tempFiles = Directory.GetFiles(tempFolder);
+                            foreach (var tempFile in tempFiles)
+                            {
+                                try
+                                {
+                                    File.SetAttributes(tempFile, FileAttributes.Normal);
+                                    File.Delete(tempFile);
+                                }
+                                catch (Exception fileEx)
+                                {
+                                    _logger.Warning(fileEx, "Failed to delete temporary file: {File}", tempFile);
+                                }
+                            }
+                            
+                            // Remove the temporary directory
+                            Directory.Delete(tempFolder, true);
+                            _logger.Debug("Successfully cleaned up temporary folder: {Path}", tempFolder);
+                        }
+                    }
+                    catch (Exception cleanupEx)
+                    {
+                        _logger.Warning(cleanupEx, "Failed to clean up temporary folder: {Path}", tempFolder);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to extract text from Word document: {Path}", filePath);
+                
+                // Final fallback to basic extraction
+                return await ExtractTextFromWordBasic(filePath);
+            }
+        }
+
+        // Keep the original method as a fallback for when PDF conversion fails
+        private async Task<string> ExtractTextFromWordBasic(string filePath)
+        {
             return await Task.Run(() =>
             {
                 try
                 {
-                    // Validate file before attempting to read
-                    var fileInfo = new FileInfo(filePath);
-                    if (!fileInfo.Exists)
-                    {
-                        _logger.Warning("Word file does not exist: {Path}", filePath);
-                        return string.Empty;
-                    }
-                    
-                    if (fileInfo.Length == 0)
-                    {
-                        _logger.Warning("Word file is empty: {Path}", filePath);
-                        return string.Empty;
-                    }
-                    
                     // First, verify this is actually a Word document
                     if (!IsValidWordDocument(filePath))
                     {
@@ -816,16 +928,134 @@ namespace DocHandler.Services
                         }
                         
                         var extractedText = text.ToString();
-                        _logger.Debug("Total text extracted from Word document: {Length} characters from {Count} paragraphs", extractedText.Length, paragraphCount);
+                        _logger.Debug("Basic text extraction from Word document: {Length} characters from {Count} paragraphs", 
+                            extractedText.Length, paragraphCount);
                         return extractedText;
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error(ex, "Failed to extract text from Word document: {Path}", filePath);
+                    _logger.Error(ex, "Failed basic text extraction from Word document: {Path}", filePath);
                     return string.Empty;
                 }
             });
+        }
+
+        private async Task<string> ExtractTextFromExcel(string filePath)
+        {
+            try
+            {
+                // Validate file before processing
+                var fileInfo = new FileInfo(filePath);
+                if (!fileInfo.Exists)
+                {
+                    _logger.Warning("Excel file does not exist: {Path}", filePath);
+                    return string.Empty;
+                }
+                
+                if (fileInfo.Length == 0)
+                {
+                    _logger.Warning("Excel file is empty: {Path}", filePath);
+                    return string.Empty;
+                }
+                
+                // Enterprise security: reasonable file size limit (50MB) to prevent DoS attacks
+                const long maxFileSize = 50 * 1024 * 1024; // 50MB
+                if (fileInfo.Length > maxFileSize)
+                {
+                    _logger.Warning("Excel file exceeds size limit: {Size} bytes (limit: {MaxSize} bytes)", 
+                        fileInfo.Length, maxFileSize);
+                    return string.Empty;
+                }
+                
+                _logger.Information("Converting Excel to PDF for text extraction: {Path}", filePath);
+                
+                // Create secure temporary directory with unique name
+                var tempFolderName = $"DocHandler_{Guid.NewGuid():N}";
+                var tempFolder = Path.Combine(Path.GetTempPath(), tempFolderName);
+                Directory.CreateDirectory(tempFolder);
+                
+                var tempPdfPath = Path.Combine(tempFolder, "excel_conversion.pdf");
+                
+                try
+                {
+                    // Use existing, trusted Office conversion service
+                    var officeService = new OfficeConversionService();
+                    var conversionResult = await officeService.ConvertExcelToPdf(filePath, tempPdfPath);
+                    
+                    if (!conversionResult.Success)
+                    {
+                        _logger.Warning("Failed to convert Excel to PDF: {Error}", conversionResult.ErrorMessage);
+                        return string.Empty;
+                    }
+                    
+                    // Verify the PDF was created successfully
+                    if (!File.Exists(tempPdfPath))
+                    {
+                        _logger.Warning("PDF conversion completed but output file not found: {Path}", tempPdfPath);
+                        return string.Empty;
+                    }
+                    
+                    // Additional security check on converted PDF
+                    var pdfInfo = new FileInfo(tempPdfPath);
+                    if (pdfInfo.Length == 0)
+                    {
+                        _logger.Warning("Converted PDF is empty: {Path}", tempPdfPath);
+                        return string.Empty;
+                    }
+                    
+                    // Use existing, trusted PDF text extraction
+                    var extractedText = await ExtractTextFromPdf(tempPdfPath);
+                    
+                    if (string.IsNullOrWhiteSpace(extractedText))
+                    {
+                        _logger.Warning("No text extracted from converted Excel PDF: {Path}", filePath);
+                        return string.Empty;
+                    }
+                    
+                    _logger.Information("Successfully extracted text from Excel via PDF: {Length} characters from {OriginalFile}", 
+                        extractedText.Length, Path.GetFileName(filePath));
+                    
+                    return extractedText;
+                }
+                finally
+                {
+                    // Enterprise-level cleanup: secure removal of temporary files
+                    try
+                    {
+                        if (Directory.Exists(tempFolder))
+                        {
+                            // Force delete all files in the temporary folder
+                            var tempFiles = Directory.GetFiles(tempFolder);
+                            foreach (var tempFile in tempFiles)
+                            {
+                                try
+                                {
+                                    File.SetAttributes(tempFile, FileAttributes.Normal);
+                                    File.Delete(tempFile);
+                                }
+                                catch (Exception fileEx)
+                                {
+                                    _logger.Warning(fileEx, "Failed to delete temporary file: {File}", tempFile);
+                                }
+                            }
+                            
+                            // Remove the temporary directory
+                            Directory.Delete(tempFolder, true);
+                            _logger.Debug("Successfully cleaned up temporary folder: {Path}", tempFolder);
+                        }
+                    }
+                    catch (Exception cleanupEx)
+                    {
+                        _logger.Warning(cleanupEx, "Failed to clean up temporary folder: {Path}", tempFolder);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to extract text from Excel document: {Path}", filePath);
+                return string.Empty;
+            }
         }
 
         private async Task<string> ExtractTextFromTextFile(string filePath)
