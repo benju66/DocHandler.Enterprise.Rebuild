@@ -22,13 +22,14 @@ using Serilog;
 using MessageBox = System.Windows.MessageBox;
 using Application = System.Windows.Application;
 using FolderBrowserDialog = Ookii.Dialogs.Wpf.VistaFolderBrowserDialog;
+using System.Windows.Threading;
 
 namespace DocHandler.ViewModels
 {
     public partial class MainViewModel : ObservableObject
     {
         private readonly ILogger _logger;
-        private readonly FileProcessingService _fileProcessingService;
+        private readonly OptimizedFileProcessingService _fileProcessingService;
         private readonly ConfigurationService _configService;
         private readonly OfficeConversionService _officeConversionService;
         private readonly CompanyNameService _companyNameService;
@@ -124,6 +125,10 @@ namespace DocHandler.ViewModels
         private ObservableCollection<string> _recentScopes = new();
 
         private string _scopeSearchText = "";
+        private DispatcherTimer _scopeSearchTimer;
+        private CancellationTokenSource _scopeSearchCancellation;
+        private const int ScopeSearchDelayMs = 300;
+        
         public string ScopeSearchText
         {
             get => _scopeSearchText;
@@ -131,7 +136,13 @@ namespace DocHandler.ViewModels
             {
                 if (SetProperty(ref _scopeSearchText, value))
                 {
-                    FilterScopes();
+                    // Cancel previous search
+                    _scopeSearchCancellation?.Cancel();
+                    _scopeSearchCancellation = new CancellationTokenSource();
+                    
+                    // Restart the timer for debouncing
+                    _scopeSearchTimer?.Stop();
+                    _scopeSearchTimer?.Start();
                 }
             }
         }
@@ -156,11 +167,22 @@ namespace DocHandler.ViewModels
         public MainViewModel()
         {
             _logger = Log.ForContext<MainViewModel>();
-            _fileProcessingService = new FileProcessingService();
+            _fileProcessingService = new OptimizedFileProcessingService();
             _configService = new ConfigurationService();
             _officeConversionService = new OfficeConversionService();
             _companyNameService = new CompanyNameService();
             _scopeOfWorkService = new ScopeOfWorkService();
+            
+            // Initialize scope search timer for debouncing
+            _scopeSearchTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(ScopeSearchDelayMs)
+            };
+            _scopeSearchTimer.Tick += (s, e) =>
+            {
+                _scopeSearchTimer.Stop();
+                FilterScopes();
+            };
             
             // Load Save Quotes Mode from config
             SaveQuotesMode = _configService.Config.SaveQuotesMode;
@@ -975,9 +997,28 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private void EditScopesOfWork()
         {
-            // TODO: Implement scopes of work editor window
-            MessageBox.Show("Edit Scopes of Work - Coming Soon", "Feature", 
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            var window = new Views.EditScopesOfWorkWindow(_scopeOfWorkService)
+            {
+                Owner = Application.Current.MainWindow
+            };
+            
+            if (window.ShowDialog() == true)
+            {
+                _logger.Information("Scopes of work were modified");
+                
+                // Reload scopes to reflect any changes
+                LoadScopesOfWork();
+                
+                // If we're in Save Quotes mode, refresh the scope list
+                if (SaveQuotesMode)
+                {
+                    // Clear any search to show all scopes
+                    ScopeSearchText = "";
+                    
+                    // Reload recent scopes in case they were modified
+                    LoadRecentScopes();
+                }
+            }
         }
 
         [RelayCommand]
@@ -1106,6 +1147,9 @@ namespace DocHandler.ViewModels
                                 await _companyNameService.IncrementUsageCount(DetectedCompanyName);
                             }
                             
+                            // Update scope usage
+                            await _scopeOfWorkService.IncrementUsageCount(SelectedScope);
+                            
                             // Add to company database if not already there (use original unsanitized name for database)
                             var originalCompanyName = !string.IsNullOrWhiteSpace(CompanyNameInput) 
                                 ? CompanyNameInput.Trim() 
@@ -1187,38 +1231,25 @@ namespace DocHandler.ViewModels
 
         private async Task<ProcessingResult> ProcessSingleQuoteFile(string inputPath, string outputPath)
         {
-            var extension = Path.GetExtension(inputPath).ToLowerInvariant();
+            // Use optimized single file conversion
+            var conversionResult = await _fileProcessingService.ConvertSingleFile(inputPath, outputPath);
             
-            if (extension == ".pdf")
+            if (conversionResult.Success)
             {
-                // Just copy the PDF
-                File.Copy(inputPath, outputPath, true);
-                return new ProcessingResult { Success = true, SuccessfulFiles = { outputPath } };
+                return new ProcessingResult 
+                { 
+                    Success = true, 
+                    SuccessfulFiles = { outputPath }
+                };
             }
             else
             {
-                // Convert to PDF first
-                var files = new List<string> { inputPath };
-                var tempDir = _fileProcessingService.CreateTempFolder();
-                
-                try
+                return new ProcessingResult
                 {
-                    var result = await _fileProcessingService.ProcessFiles(files, tempDir, true);
-                    
-                    if (result.Success && result.SuccessfulFiles.Any())
-                    {
-                        var convertedPdf = result.SuccessfulFiles.First();
-                        File.Move(convertedPdf, outputPath, true);
-                        result.SuccessfulFiles[0] = outputPath;
-                    }
-                    
-                    return result;
-                }
-                finally
-                {
-                    // Clean up temp folder
-                    try { Directory.Delete(tempDir, true); } catch { }
-                }
+                    Success = false,
+                    ErrorMessage = conversionResult.ErrorMessage,
+                    FailedFiles = { (inputPath, conversionResult.ErrorMessage ?? "Unknown error") }
+                };
             }
         }
         
@@ -1236,8 +1267,17 @@ namespace DocHandler.ViewModels
         
         public void Cleanup()
         {
-            _officeConversionService?.Dispose();
             CleanupTempFiles();
+            _scopeSearchTimer?.Stop();
+            _scopeSearchTimer = null;
+            _scopeSearchCancellation?.Cancel();
+            _scopeSearchCancellation?.Dispose();
+            _scopeSearchCancellation = null;
+            
+            // Dispose optimized services
+            _fileProcessingService?.Dispose();
+            
+            _logger.Information("MainViewModel cleanup completed");
         }
         
         public void SaveWindowState(double left, double top, double width, double height, string state)

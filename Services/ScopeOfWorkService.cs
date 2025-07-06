@@ -334,6 +334,27 @@ namespace DocHandler.Services
             _logger.Information("Cleared recent scopes");
         }
         
+        public async Task IncrementUsageCount(string scopeText)
+        {
+            try
+            {
+                var scope = _data.Scopes.FirstOrDefault(s => 
+                    GetFormattedScope(s).Equals(scopeText, StringComparison.OrdinalIgnoreCase));
+                
+                if (scope != null)
+                {
+                    scope.UsageCount++;
+                    scope.LastUsed = DateTime.Now;
+                    await SaveScopesOfWork();
+                    _logger.Information("Incremented usage count for scope: {Scope}", scopeText);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to increment usage count for scope: {Scope}", scopeText);
+            }
+        }
+        
         public string GetFormattedScope(ScopeOfWork scope)
         {
             return $"{scope.Code} - {scope.Description}";
@@ -491,6 +512,9 @@ namespace DocHandler.Services
         public DateTime DateAdded { get; set; } = DateTime.Now;
         public DateTime? LastUsed { get; set; }
         public int UsageCount { get; set; }
+        
+        public string LastUsedDisplay => LastUsed?.ToString("MMM d, yyyy") ?? "Never";
+        public string UsageDisplay => UsageCount == 1 ? "1 time" : $"{UsageCount} times";
     }
     
     public class RecentScopesData

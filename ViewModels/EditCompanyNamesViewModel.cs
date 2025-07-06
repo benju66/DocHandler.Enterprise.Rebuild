@@ -2,8 +2,10 @@ using System;
 using System.Collections.ObjectModel;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using DocHandler.Services;
@@ -15,6 +17,9 @@ namespace DocHandler.ViewModels
     {
         private readonly ILogger _logger;
         private readonly CompanyNameService _companyNameService;
+        private DispatcherTimer _searchTimer;
+        private CancellationTokenSource _searchCancellation;
+        private const int SearchDelayMs = 300; // Wait 300ms after user stops typing
         
         [ObservableProperty]
         private ObservableCollection<CompanyItemViewModel> _companies = new();
@@ -31,10 +36,24 @@ namespace DocHandler.ViewModels
         [ObservableProperty]
         private bool _hasChanges;
         
+        public int CompanyCount => Companies.Count;
+        public int FilteredCompanyCount => FilteredCompanies.Count;
+        
         public EditCompanyNamesViewModel(CompanyNameService companyNameService)
         {
             _logger = Log.ForContext<EditCompanyNamesViewModel>();
             _companyNameService = companyNameService;
+            
+            // Initialize search timer for debouncing
+            _searchTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(SearchDelayMs)
+            };
+            _searchTimer.Tick += async (s, e) =>
+            {
+                _searchTimer.Stop();
+                await FilterCompaniesAsync();
+            };
             
             LoadCompanies();
         }
@@ -52,28 +71,65 @@ namespace DocHandler.ViewModels
                 Companies.Add(vm);
             }
             
-            FilterCompanies();
+            _ = FilterCompaniesAsync();
+            OnPropertyChanged(nameof(CompanyCount));
         }
         
         partial void OnSearchTextChanged(string value)
         {
-            FilterCompanies();
+            // Cancel previous search
+            _searchCancellation?.Cancel();
+            _searchCancellation = new CancellationTokenSource();
+            
+            // Restart the timer for debouncing
+            _searchTimer.Stop();
+            _searchTimer.Start();
         }
         
-        private void FilterCompanies()
+        private async Task FilterCompaniesAsync()
         {
-            FilteredCompanies.Clear();
-            
-            var searchTerm = SearchText?.Trim() ?? "";
-            var filtered = string.IsNullOrWhiteSpace(searchTerm)
-                ? Companies
-                : Companies.Where(c => 
-                    c.Name.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
-                    c.AliasesDisplay.Contains(searchTerm, StringComparison.OrdinalIgnoreCase));
-            
-            foreach (var company in filtered.OrderBy(c => c.Name))
+            try
             {
-                FilteredCompanies.Add(company);
+                var cancellationToken = _searchCancellation?.Token ?? CancellationToken.None;
+                
+                var searchText = SearchText?.Trim() ?? "";
+                var filteredList = await Task.Run(() =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    
+                    if (string.IsNullOrWhiteSpace(searchText))
+                    {
+                        return Companies.ToList();
+                    }
+                    
+                    return Companies.Where(c => 
+                        c.Name.Contains(searchText, StringComparison.OrdinalIgnoreCase) ||
+                        c.AliasesDisplay.Contains(searchText, StringComparison.OrdinalIgnoreCase))
+                        .OrderBy(c => c.Name)
+                        .ToList();
+                }, cancellationToken);
+                
+                // Update UI on the UI thread
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    if (!cancellationToken.IsCancellationRequested)
+                    {
+                        FilteredCompanies.Clear();
+                        foreach (var company in filteredList)
+                        {
+                            FilteredCompanies.Add(company);
+                        }
+                        OnPropertyChanged(nameof(FilteredCompanyCount));
+                    }
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                // Search was cancelled, this is expected
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to filter companies");
             }
         }
         
@@ -166,8 +222,7 @@ namespace DocHandler.ViewModels
                 
                 if (success)
                 {
-                    Companies.Remove(company);
-                    FilteredCompanies.Remove(company);
+                    LoadCompanies();
                     HasChanges = true;
                     _logger.Information("Deleted company: {Name}", company.Name);
                 }
@@ -181,14 +236,33 @@ namespace DocHandler.ViewModels
         }
         
         [RelayCommand]
-        private async Task RefreshList()
+        private void RefreshList()
         {
-            await Task.Run(() => LoadCompanies());
+            try
+            {
+                LoadCompanies();
+                _logger.Information("Company list refreshed successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to refresh company list");
+                MessageBox.Show("Failed to refresh list. Please try again.", "Error", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
         
         public void MarkAsChanged()
         {
             HasChanges = true;
+        }
+        
+        public void Dispose()
+        {
+            _searchTimer?.Stop();
+            _searchTimer = null;
+            _searchCancellation?.Cancel();
+            _searchCancellation?.Dispose();
+            _searchCancellation = null;
         }
     }
     

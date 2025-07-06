@@ -20,6 +20,7 @@
             <helpers:IntToBoolConverter x:Key="IntToBoolConverter"/>
             <helpers:StringNotEmptyConverter x:Key="StringNotEmptyConverter"/>
             <helpers:AutoScanMenuHeaderConverter x:Key="AutoScanMenuHeaderConverter"/>
+            <helpers:MultiBooleanConverter x:Key="MultiBooleanConverter"/>
             
             <!-- Application Colors -->
             <SolidColorBrush x:Key="PrimaryAccentBrush" Color="{DynamicResource SystemAccentColor}"/>
