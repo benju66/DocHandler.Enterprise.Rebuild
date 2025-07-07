@@ -13,6 +13,40 @@
                 <ui:XamlControlsResources />
             </ResourceDictionary.MergedDictionaries>
             
+            <!-- Success Animation Colors -->
+            <Color x:Key="SuccessGreenColor">#4CAF50</Color>
+            <SolidColorBrush x:Key="SuccessBorderBrush" Color="{StaticResource SuccessGreenColor}"/>
+            <SolidColorBrush x:Key="SuccessBackgroundBrush" Color="#F1F8E9" Opacity="0.5"/>
+
+            <!-- Success Animation Storyboards -->
+            <Storyboard x:Key="SaveQuotesSuccessAnimation">
+                <!-- Border color animation -->
+                <ColorAnimation Storyboard.TargetProperty="(Border.BorderBrush).(SolidColorBrush.Color)"
+                                To="{StaticResource SuccessGreenColor}"
+                                Duration="0:0:0.2"
+                                AutoReverse="False"/>
+                
+                <!-- Gentle pulse scale -->
+                <DoubleAnimationUsingKeyFrames Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)">
+                    <LinearDoubleKeyFrame KeyTime="0:0:0" Value="1.0"/>
+                    <LinearDoubleKeyFrame KeyTime="0:0:0.2" Value="1.02"/>
+                    <LinearDoubleKeyFrame KeyTime="0:0:0.4" Value="1.0"/>
+                </DoubleAnimationUsingKeyFrames>
+                
+                <DoubleAnimationUsingKeyFrames Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)">
+                    <LinearDoubleKeyFrame KeyTime="0:0:0" Value="1.0"/>
+                    <LinearDoubleKeyFrame KeyTime="0:0:0.2" Value="1.02"/>
+                    <LinearDoubleKeyFrame KeyTime="0:0:0.4" Value="1.0"/>
+                </DoubleAnimationUsingKeyFrames>
+            </Storyboard>
+
+            <!-- Reset Animation -->
+            <Storyboard x:Key="SaveQuotesResetAnimation">
+                <ColorAnimation Storyboard.TargetProperty="(Border.BorderBrush).(SolidColorBrush.Color)"
+                                To="#1976D2"
+                                Duration="0:0:0.5"/>
+            </Storyboard>
+            
             <!-- Value Converters -->
             <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
             <helpers:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter"/>

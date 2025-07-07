@@ -206,7 +206,14 @@
                         DragEnter="Border_DragEnter"
                         DragLeave="Border_DragLeave"
                         Height="80"
-                        Margin="10,5,10,6">
+                        Margin="10,5,10,6"
+                        RenderTransformOrigin="0.5,0.5">
+                    
+                    <!-- Add RenderTransform for scale animation -->
+                    <Border.RenderTransform>
+                        <ScaleTransform ScaleX="1" ScaleY="1"/>
+                    </Border.RenderTransform>
+                    
                     <Border.Style>
                         <Style TargetType="Border">
                             <Setter Property="BorderBrush" Value="#1976D2"/>
@@ -223,15 +230,16 @@
                     
                     <Grid>
                         <!-- Drop Instructions (when no files) -->
-                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                        <StackPanel x:Name="DropInstructions" 
+                                    VerticalAlignment="Center" 
+                                    HorizontalAlignment="Center"
                                     Visibility="{Binding Path=PendingFiles.Count, Converter={StaticResource IntToVisibilityConverter}, ConverterParameter=0}">
                             <ui:SymbolIcon Symbol="OpenFile" Width="24" Height="24" 
                                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
                             <TextBlock Text="Drop quote documents here" 
-                                      TextAlignment="Center" 
-                                      Margin="8,4" 
+                                      Margin="0,4,0,0" 
                                       FontSize="14"
-                                      FontWeight="Bold"/>
+                                      Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
                         </StackPanel>
                         
                         <!-- Pending Files List (horizontal scrolling for multiple files) -->
@@ -312,6 +320,48 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                         </ScrollViewer>
+                        
+                        <!-- Enhanced Success Overlay with polish -->
+                        <Grid x:Name="SuccessOverlay" 
+                              Visibility="Collapsed"
+                              Background="Transparent"
+                              IsHitTestVisible="False">
+                            <!-- Add subtle background glow -->
+                            <Ellipse Width="120" Height="120"
+                                     Fill="{StaticResource SuccessBackgroundBrush}"
+                                     Opacity="0.3"
+                                     HorizontalAlignment="Center"
+                                     VerticalAlignment="Center">
+                                <Ellipse.Effect>
+                                    <BlurEffect Radius="30"/>
+                                </Ellipse.Effect>
+                            </Ellipse>
+                            
+                            <StackPanel VerticalAlignment="Center" 
+                                        HorizontalAlignment="Center"
+                                        Opacity="0">
+                                <ui:SymbolIcon x:Name="SuccessCheckmark"
+                                               Symbol="Accept" 
+                                               Width="48" 
+                                               Height="48" 
+                                               Foreground="{StaticResource SuccessBorderBrush}">
+                                    <!-- Add drop shadow for depth -->
+                                    <ui:SymbolIcon.Effect>
+                                        <DropShadowEffect Color="Green" 
+                                                          Opacity="0.3" 
+                                                          BlurRadius="10" 
+                                                          ShadowDepth="2"/>
+                                    </ui:SymbolIcon.Effect>
+                                </ui:SymbolIcon>
+                                <TextBlock x:Name="SuccessMessage"
+                                           Text="Successfully saved!" 
+                                           Margin="0,8,0,0" 
+                                           FontSize="16"
+                                           FontWeight="SemiBold"
+                                           Foreground="{StaticResource SuccessBorderBrush}"
+                                           HorizontalAlignment="Center"/>
+                            </StackPanel>
+                        </Grid>
                     </Grid>
                 </Border>
                 

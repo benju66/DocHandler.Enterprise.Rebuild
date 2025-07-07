@@ -2,14 +2,19 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using DocHandler.Helpers;
 using DocHandler.ViewModels;
 using Serilog;
 using DragEventArgs = System.Windows.DragEventArgs;
+using System.Threading.Tasks;
+using System.Diagnostics;
 
 namespace DocHandler
 {
@@ -81,6 +86,12 @@ namespace DocHandler
         
         private void Border_Drop(object sender, DragEventArgs e)
         {
+            // Cancel any running success animation immediately
+            if (ViewModel.IsShowingSuccessAnimation)
+            {
+                CancelSuccessAnimation();
+            }
+            
             try
             {
                 // Reset border appearance
@@ -461,11 +472,153 @@ namespace DocHandler
         {
             ViewModel.SavePreferences();
         }
-        
 
+        #region Save Quotes Success Animation
+
+        private Storyboard? _currentSuccessAnimation;
+        private DispatcherTimer? _animationResetTimer;
+
+        /// <summary>
+        /// Shows the success animation for Save Quotes mode
+        /// </summary>
+        public async Task ShowSaveQuotesSuccessAnimation(int savedCount = 1)
+        {
+            // Only show in Save Quotes mode
+            if (!ViewModel.SaveQuotesMode) return;
+            
+            // Verify UI elements exist
+            if (DropBorderSaveMode == null || SuccessOverlay == null || SuccessMessage == null)
+            {
+                _logger.Warning("Animation elements not found, skipping animation");
+                return;
+            }
+            
+            var stopwatch = Stopwatch.StartNew();
+            
+            // Cancel any existing animation
+            CancelSuccessAnimation();
+            
+            try
+            {
+                // Get the storyboard with null check
+                if (!(FindResource("SaveQuotesSuccessAnimation") is Storyboard successStoryboard))
+                {
+                    _logger.Warning("Animation storyboard not found");
+                    return;
+                }
+                
+                // Set animation state
+                ViewModel.IsShowingSuccessAnimation = true;
+                
+                // Update success message
+                SuccessMessage.Text = savedCount > 1 
+                    ? $"Successfully saved {savedCount} quotes!" 
+                    : "Successfully saved!";
+                
+                _currentSuccessAnimation = successStoryboard;
+                
+                // Show the success overlay
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    SuccessOverlay.Visibility = Visibility.Visible;
+                    
+                    // Fade in the checkmark and text
+                    var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(500));
+                    SuccessOverlay.Children[0].BeginAnimation(OpacityProperty, fadeIn);
+                });
+                
+                // Start the border animation
+                successStoryboard.Begin(DropBorderSaveMode);
+                
+                // Set up auto-reset timer (2.5 seconds total)
+                _animationResetTimer = new DispatcherTimer
+                {
+                    Interval = TimeSpan.FromMilliseconds(2000) // Hold for 2 seconds after fade-in
+                };
+                _animationResetTimer.Tick += AnimationResetTimer_Tick;
+                _animationResetTimer.Start();
+                
+                stopwatch.Stop();
+                if (stopwatch.ElapsedMilliseconds > 50)
+                {
+                    _logger.Warning("Animation startup took {Duration}ms", 
+                        stopwatch.ElapsedMilliseconds);
+                }
+            }
+            catch (ResourceReferenceKeyNotFoundException ex)
+            {
+                _logger.Error(ex, "Animation resource not found");
+                CancelSuccessAnimation();
+            }
+            catch (Exception ex)
+            {
+                // Log but don't crash on animation errors
+                _logger.Error(ex, "Animation error");
+                CancelSuccessAnimation();
+            }
+        }
+
+        /// <summary>
+        /// Cancels the current success animation immediately
+        /// </summary>
+        private void CancelSuccessAnimation()
+        {
+            // Stop any running animation
+            _currentSuccessAnimation?.Stop();
+            _currentSuccessAnimation = null;
+            
+            // Stop reset timer
+            _animationResetTimer?.Stop();
+            _animationResetTimer = null;
+            
+            // Reset visual state immediately
+            Dispatcher.Invoke(() =>
+            {
+                // Hide overlay
+                SuccessOverlay.Visibility = Visibility.Collapsed;
+                SuccessOverlay.Children[0].Opacity = 0;
+                
+                // Reset border color instantly
+                DropBorderSaveMode.BorderBrush = new SolidColorBrush(Color.FromRgb(0x19, 0x76, 0xD2));
+                
+                // Clear animation state
+                ViewModel.IsShowingSuccessAnimation = false;
+            });
+        }
+
+        /// <summary>
+        /// Timer callback to reset animation after display time
+        /// </summary>
+        private void AnimationResetTimer_Tick(object? sender, EventArgs e)
+        {
+            _animationResetTimer?.Stop();
+            
+            // Fade out and reset
+            Dispatcher.Invoke(async () =>
+            {
+                // Fade out the success overlay
+                var fadeOut = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(500));
+                fadeOut.Completed += (s, args) =>
+                {
+                    SuccessOverlay.Visibility = Visibility.Collapsed;
+                    ViewModel.IsShowingSuccessAnimation = false;
+                };
+                
+                SuccessOverlay.Children[0].BeginAnimation(OpacityProperty, fadeOut);
+                
+                // Animate border back to normal
+                var resetStoryboard = FindResource("SaveQuotesResetAnimation") as Storyboard;
+                resetStoryboard?.Begin(DropBorderSaveMode);
+            });
+        }
+
+        #endregion
         
         private void MainWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
+            // Cancel any running animation
+            CancelSuccessAnimation();
+            
             // Save window position
             ViewModel.SaveWindowState(Left, Top, Width, Height, WindowState.ToString());
             

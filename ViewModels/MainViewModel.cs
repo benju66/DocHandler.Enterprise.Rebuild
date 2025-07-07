@@ -166,6 +166,21 @@ namespace DocHandler.ViewModels
         // Performance tracking
         private int _processedFileCount = 0;
 
+        // Animation state tracking
+        private bool _isShowingSuccessAnimation;
+        public bool IsShowingSuccessAnimation
+        {
+            get => _isShowingSuccessAnimation;
+            set => SetProperty(ref _isShowingSuccessAnimation, value);
+        }
+
+        private CancellationTokenSource? _animationCancellation;
+
+        // Speed mode detection
+        private DateTime _lastProcessTime = DateTime.MinValue;
+        private bool _isSpeedMode = false;
+        private const int SpeedModeThresholdSeconds = 3;
+
         // Recent locations
         public ObservableCollection<string> RecentLocations => 
             new ObservableCollection<string>(_configService.Config.RecentLocations);
@@ -663,9 +678,10 @@ namespace DocHandler.ViewModels
             _logger.Debug("Added {Count} temp files for cleanup", tempFiles.Count);
         }
         
-        private void CleanupTempFiles()
+        private async Task CleanupTempFiles()
         {
-            foreach (var tempFile in _tempFilesToCleanup.Keys)
+            var tempFilesToRemove = _tempFilesToCleanup.Keys.ToList();
+            foreach (var tempFile in tempFilesToRemove)
             {
                 try
                 {
@@ -674,13 +690,13 @@ namespace DocHandler.ViewModels
                         File.Delete(tempFile);
                         _logger.Debug("Cleaned up temp file: {File}", tempFile);
                     }
+                    _tempFilesToCleanup.TryRemove(tempFile, out _);
                 }
                 catch (Exception ex)
                 {
                     _logger.Warning(ex, "Failed to cleanup temp file: {File}", tempFile);
                 }
             }
-            _tempFilesToCleanup.Clear();
         }
         
         /// <summary>
@@ -1091,43 +1107,68 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private async Task TestCompanyDetection()
         {
-            // For debugging: manually test company detection
-            if (!SaveQuotesMode)
+            if (PendingFiles.Count == 0)
             {
-                MessageBox.Show("Please enable Save Quotes Mode first.", "Test Company Detection", 
-                    MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("Please add at least one file to test company detection.", "No Files", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
-
-            var dialog = new Microsoft.Win32.OpenFileDialog
+            
+            IsDetectingCompany = true;
+            StatusMessage = "Testing company detection...";
+            
+            try
             {
-                Title = "Select document to test company detection",
-                Filter = "All supported files|*.pdf;*.doc;*.docx;*.txt|PDF files|*.pdf|Word documents|*.doc;*.docx|Text files|*.txt|All files|*.*"
-            };
-
-            if (dialog.ShowDialog() == true)
+                foreach (var file in PendingFiles)
+                {
+                    await ScanForCompanyName(file.FilePath);
+                }
+                
+                if (string.IsNullOrEmpty(DetectedCompanyName))
+                {
+                    MessageBox.Show(
+                        "No company name was detected in the selected files.\n\n" +
+                        "This could mean:\n" +
+                        "• The files don't contain recognizable company names\n" +
+                        "• The company names aren't in the configured list\n" +
+                        "• The files are image-based PDFs or unsupported formats\n\n" +
+                        "You can manually enter the company name or edit the company list.",
+                        "No Company Detected",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
+                else
+                {
+                    MessageBox.Show(
+                        $"Company detected: {DetectedCompanyName}",
+                        "Company Detection Test",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
+            }
+            catch (Exception ex)
             {
-                // Clear any existing input
-                CompanyNameInput = "";
-                DetectedCompanyName = "";
-                
-                _logger.Information("Manual company detection test started for: {Path}", dialog.FileName);
-                
-                // Test the detection
-                await ScanForCompanyName(dialog.FileName);
-                
-                // Show result
-                var result = string.IsNullOrEmpty(DetectedCompanyName) 
-                    ? "No company name detected." 
-                    : $"Detected company: {DetectedCompanyName}";
-                    
-                MessageBox.Show($"Detection test completed.\n\n{result}", "Company Detection Test", 
-                    MessageBoxButton.OK, MessageBoxImage.Information);
+                _logger.Error(ex, "Error during company detection test");
+                MessageBox.Show($"An error occurred during company detection:\n\n{ex.Message}", "Test Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                IsDetectingCompany = false;
+                UpdateUI();
             }
         }
 
         private async Task ProcessSaveQuotes()
         {
+            // Check if user is working fast
+            var timeSinceLastProcess = DateTime.Now - _lastProcessTime;
+            _isSpeedMode = timeSinceLastProcess.TotalSeconds < SpeedModeThresholdSeconds;
+            
+            // Log speed mode detection
+            if (_isSpeedMode)
+            {
+                _logger.Debug("Speed mode detected - skipping animation");
+            }
+            
             if (!SaveQuotesMode || string.IsNullOrEmpty(SelectedScope))
             {
                 MessageBox.Show("Please select a scope of work first.", "Save Quotes", 
@@ -1159,6 +1200,7 @@ namespace DocHandler.ViewModels
 
             IsProcessing = true;
             var processedCount = 0;
+            var totalFiles = PendingFiles.Count; // Store count before processing
             var failedFiles = new List<(string file, string error)>();
 
             try
@@ -1172,9 +1214,9 @@ namespace DocHandler.ViewModels
                     try
                     {
                         StatusMessage = $"Processing quote: {file.FileName}";
+                        ProgressValue = (processedCount / (double)totalFiles) * 100;
 
                         // Build the filename: [Scope] - [Company].pdf
-                        // Scope is already sanitized in the database
                         var outputFileName = $"{SelectedScope} - {companyName}.pdf";
                         var outputPath = Path.Combine(outputDir, outputFileName);
 
@@ -1201,7 +1243,7 @@ namespace DocHandler.ViewModels
                             // Update scope usage
                             await _scopeOfWorkService.IncrementUsageCount(SelectedScope);
                             
-                            // Add to company database if not already there (use original unsanitized name for database)
+                            // Add to company database if not already there
                             var originalCompanyName = !string.IsNullOrWhiteSpace(CompanyNameInput) 
                                 ? CompanyNameInput.Trim() 
                                 : DetectedCompanyName?.Trim();
@@ -1220,24 +1262,31 @@ namespace DocHandler.ViewModels
                     }
                     catch (Exception ex)
                     {
-                        _logger.Error(ex, "Failed to process quote: {File}", file.FileName);
                         failedFiles.Add((file.FileName, ex.Message));
+                        _logger.Error(ex, "Failed to process quote: {File}", file.FileName);
                     }
                 }
 
-                // Clean up any temp files
-                CleanupTempFiles();
-                
-                // Clear company name fields after processing
-                CompanyNameInput = "";
-                DetectedCompanyName = "";
-
-                // Update status
+                // Update status based on results
                 if (processedCount > 0)
                 {
-                    StatusMessage = $"Successfully processed {processedCount} quote(s)";
+                    StatusMessage = $"Successfully saved {processedCount} quote{(processedCount > 1 ? "s" : "")}";
                     
-                    // Update processed file count for performance metrics
+                    // Only show animation if not in speed mode
+                    if (!_isSpeedMode && Application.Current.MainWindow is MainWindow mainWindow)
+                    {
+                        await mainWindow.ShowSaveQuotesSuccessAnimation(processedCount);
+                    }
+                    
+                    // Update last process time
+                    _lastProcessTime = DateTime.Now;
+                    
+                    // Clear inputs for next batch
+                    CompanyNameInput = "";
+                    DetectedCompanyName = "";
+                    SelectedScope = null;
+                    
+                    // Increment processed file count
                     _processedFileCount += processedCount;
                     
                     // Update recent locations
@@ -1245,24 +1294,17 @@ namespace DocHandler.ViewModels
                     OnPropertyChanged(nameof(RecentLocations));
                     
                     // Open output folder if preference is set
-                    if (OpenFolderAfterProcessing)
+                    if (OpenFolderAfterProcessing && processedCount == totalFiles)
                     {
-                        try
-                        {
-                            Process.Start(new ProcessStartInfo
-                            {
-                                FileName = outputDir,
-                                UseShellExecute = true,
-                                Verb = "open"
-                            });
-                        }
-                        catch { }
+                        OpenOutputFolder(outputDir);
                     }
                 }
 
+                // Show errors if any
                 if (failedFiles.Any())
                 {
-                    var failedList = string.Join("\n", failedFiles.Select(f => $"• {f.file}: {f.error}"));
+                    var failedList = string.Join("\n", 
+                        failedFiles.Select(f => $"• {f.file}: {f.error}"));
                     MessageBox.Show(
                         $"The following quotes could not be processed:\n\n{failedList}",
                         "Processing Errors",
@@ -1279,10 +1321,32 @@ namespace DocHandler.ViewModels
             finally
             {
                 IsProcessing = false;
+                ProgressValue = 0;
                 UpdateUI();
+                
+                // Cleanup temp files
+                await CleanupTempFiles();
             }
         }
 
+        private void OpenOutputFolder(string outputDir)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = outputDir,
+                    UseShellExecute = true,
+                    Verb = "open"
+                });
+                _logger.Information("Opened output folder: {Dir}", outputDir);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to open output folder: {Dir}", outputDir);
+            }
+        }
+        
         private async Task<ProcessingResult> ProcessSingleQuoteFile(string inputPath, string outputPath)
         {
             var extension = Path.GetExtension(inputPath).ToLowerInvariant();
