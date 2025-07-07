@@ -3,6 +3,7 @@
 // Enhanced with Fuzzy Search for Scopes
 // Fixed: Save Quotes Mode default and Scope synchronization
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -36,7 +37,7 @@ namespace DocHandler.ViewModels
         private readonly ScopeOfWorkService _scopeOfWorkService;
         private readonly SessionAwareOfficeService _sessionOfficeService;
         private readonly object _conversionLock = new object();
-        private readonly List<string> _tempFilesToCleanup = new();
+        private readonly ConcurrentDictionary<string, byte> _tempFilesToCleanup = new();
         
         public ConfigurationService ConfigService => _configService;
         
@@ -655,13 +656,16 @@ namespace DocHandler.ViewModels
         /// </summary>
         public void AddTempFilesForCleanup(List<string> tempFiles)
         {
-            _tempFilesToCleanup.AddRange(tempFiles);
+            foreach (var tempFile in tempFiles)
+            {
+                _tempFilesToCleanup.TryAdd(tempFile, 0);
+            }
             _logger.Debug("Added {Count} temp files for cleanup", tempFiles.Count);
         }
         
         private void CleanupTempFiles()
         {
-            foreach (var tempFile in _tempFilesToCleanup)
+            foreach (var tempFile in _tempFilesToCleanup.Keys)
             {
                 try
                 {
@@ -845,7 +849,7 @@ namespace DocHandler.ViewModels
                 PendingFiles.Remove(fileItem);
                 
                 // If this was a temp file, clean it up immediately
-                if (_tempFilesToCleanup.Contains(fileItem.FilePath))
+                if (_tempFilesToCleanup.ContainsKey(fileItem.FilePath))
                 {
                     try
                     {
@@ -854,7 +858,7 @@ namespace DocHandler.ViewModels
                             File.Delete(fileItem.FilePath);
                             _logger.Debug("Cleaned up removed temp file: {File}", fileItem.FilePath);
                         }
-                        _tempFilesToCleanup.Remove(fileItem.FilePath);
+                        _tempFilesToCleanup.TryRemove(fileItem.FilePath, out _);
                     }
                     catch (Exception ex)
                     {
@@ -1284,6 +1288,18 @@ namespace DocHandler.ViewModels
             var extension = Path.GetExtension(inputPath).ToLowerInvariant();
             
             _logger.Debug("Processing single quote file: {File} ({Extension})", Path.GetFileName(inputPath), extension);
+            
+            // Add file existence check at the beginning
+            if (!File.Exists(inputPath))
+            {
+                _logger.Warning("File no longer exists: {File}", inputPath);
+                return new ProcessingResult
+                {
+                    Success = false,
+                    ErrorMessage = "File no longer exists",
+                    FailedFiles = { (inputPath, "File was deleted or moved") }
+                };
+            }
             
             // For PDFs, just copy
             if (extension == ".pdf")

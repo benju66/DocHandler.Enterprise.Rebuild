@@ -74,7 +74,7 @@
                                           VerticalAlignment="Center"/>
                             
                             <TextBlock Grid.Column="1" 
-                                      Text="{Binding DisplayPath}"
+                                      Text="{Binding FullPath, Converter={StaticResource PathDisplayConverter}}"
                                       VerticalAlignment="Center"
                                       ToolTip="{Binding FullPath}">
                                 <TextBlock.Style>
@@ -100,37 +100,117 @@
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             
+            <!-- Browse Button -->
             <Button Grid.Column="0" 
-                    Content="Browse..." 
                     Click="BrowseButton_Click"
-                    MinWidth="80"
-                    Padding="10,5">
-                <Button.Resources>
-                    <Style TargetType="ui:SymbolIcon">
-                        <Setter Property="Width" Value="16"/>
-                        <Setter Property="Height" Value="16"/>
+                    MinWidth="100"
+                    Padding="12,6"
+                    FontWeight="SemiBold"
+                    Margin="0,0,10,0">
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <!-- Secondary Action: Light gray → Blue hover -->
+                        <Setter Property="Background" Value="#F5F5F5"/>
+                        <Setter Property="Foreground" Value="#424242"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Setter Property="Cursor" Value="Hand"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                            CornerRadius="6"
+                                            Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <!-- Hover State: Blue -->
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="#1976D2"/>
+                                            <Setter Property="Foreground" Value="White"/>
+                                        </Trigger>
+                                        <!-- Pressed State: Darker blue -->
+                                        <Trigger Property="IsPressed" Value="True">
+                                            <Setter Property="Background" Value="#1565C0"/>
+                                            <Setter Property="Foreground" Value="White"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
                     </Style>
-                </Button.Resources>
+                </Button.Style>
+                <StackPanel Orientation="Horizontal">
+                    <ui:SymbolIcon Symbol="Folder" Width="16" Height="16" Margin="0,0,8,0"/>
+                    <TextBlock Text="Browse..."/>
+                </StackPanel>
             </Button>
             
+            <!-- Select Button -->
             <Button Grid.Column="2" 
-                    Content="Select" 
                     IsDefault="True"
                     Click="SelectButton_Click"
-                    MinWidth="80"
+                    MinWidth="100"
                     Margin="0,0,10,0"
-                    Padding="10,5"
-                    IsEnabled="{Binding ElementName=LocationsList, Path=SelectedItem, Converter={StaticResource StringNotEmptyConverter}}"/>
+                    Padding="12,6"
+                    FontWeight="SemiBold"
+                    IsEnabled="{Binding ElementName=LocationsList, Path=SelectedItem.FullPath, Converter={StaticResource StringNotEmptyConverter}}"
+                    Style="{StaticResource AccentButtonStyle}">
+                <StackPanel Orientation="Horizontal">
+                    <ui:SymbolIcon Symbol="Accept" Width="16" Height="16" Margin="0,0,8,0"/>
+                    <TextBlock Text="Select"/>
+                </StackPanel>
+            </Button>
             
+            <!-- Cancel Button -->
             <Button Grid.Column="3" 
-                    Content="Cancel" 
                     IsCancel="True"
                     Click="CancelButton_Click"
-                    MinWidth="80"
-                    Padding="10,5"/>
+                    MinWidth="100"
+                    Padding="12,6"
+                    FontWeight="SemiBold">
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <!-- Neutral Action: Light gray → Darker gray hover -->
+                        <Setter Property="Background" Value="#F5F5F5"/>
+                        <Setter Property="Foreground" Value="#424242"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Setter Property="Cursor" Value="Hand"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                            CornerRadius="6"
+                                            Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <!-- Hover State: Darker gray -->
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="#E0E0E0"/>
+                                            <Setter Property="Foreground" Value="#212121"/>
+                                        </Trigger>
+                                        <!-- Pressed State: Even darker gray -->
+                                        <Trigger Property="IsPressed" Value="True">
+                                            <Setter Property="Background" Value="#BDBDBD"/>
+                                            <Setter Property="Foreground" Value="#212121"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </Button.Style>
+                <StackPanel Orientation="Horizontal">
+                    <ui:SymbolIcon Symbol="Cancel" Width="16" Height="16" Margin="0,0,8,0"/>
+                    <TextBlock Text="Cancel"/>
+                </StackPanel>
+            </Button>
         </Grid>
     </Grid>
 </Window>

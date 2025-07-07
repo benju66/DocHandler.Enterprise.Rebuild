@@ -686,7 +686,7 @@
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
                         
-                        <!-- Save Location Path - Clickable with modern styling -->
+                        <!-- Save Location Path - Clickable with smart path display -->
                         <Button Grid.Row="0" 
                                 Command="{Binding OpenSaveLocationCommand}"
                                 HorizontalAlignment="Stretch"
@@ -694,8 +694,9 @@
                                 Background="Transparent"
                                 BorderThickness="1"
                                 BorderBrush="#E0E0E0"
-                                Padding="8,6"
-                                Cursor="Hand">
+                                Padding="4,6"
+                                Cursor="Hand"
+                                Margin="0,0,0,8">
                             <Button.Style>
                                 <Style TargetType="Button">
                                     <Setter Property="Template">
@@ -723,29 +724,28 @@
                                     </Setter>
                                 </Style>
                             </Button.Style>
-                            <TextBlock Text="{Binding SessionSaveLocation}" 
-                                       TextTrimming="CharacterEllipsis"
+                            <TextBlock Text="{Binding SessionSaveLocation, Converter={StaticResource PathDisplayConverter}}" 
                                        FontSize="12"
                                        Foreground="#1976D2"
                                        ToolTip="{Binding SessionSaveLocation}"/>
                         </Button>
                         
-                        <!-- Buttons Row - Updated with modern styling -->
+                        <!-- Action Buttons Row -->
                         <StackPanel Grid.Row="1" 
                                     Orientation="Horizontal" 
-                                    HorizontalAlignment="Center"
-                                    Margin="0,8,0,0">
+                                    HorizontalAlignment="Center">
                             <Button Command="{Binding SetSaveLocationCommand}"
                                     Content="Change Location"
-                                    Padding="12,6"
-                                    Margin="0,0,8,0"
-                                    Background="Transparent"
-                                    BorderThickness="1"
-                                    BorderBrush="#E0E0E0"
-                                    Foreground="#1976D2"
-                                    Cursor="Hand">
+                                    Padding="16,8"
+                                    Margin="0,0,10,0"
+                                    FontWeight="SemiBold">
                                 <Button.Style>
                                     <Style TargetType="Button">
+                                        <Setter Property="Background" Value="White"/>
+                                        <Setter Property="Foreground" Value="#424242"/>
+                                        <Setter Property="BorderThickness" Value="1"/>
+                                        <Setter Property="BorderBrush" Value="#E0E0E0"/>
+                                        <Setter Property="Cursor" Value="Hand"/>
                                         <Setter Property="Template">
                                             <Setter.Value>
                                                 <ControlTemplate TargetType="Button">
@@ -758,11 +758,14 @@
                                                     </Border>
                                                     <ControlTemplate.Triggers>
                                                         <Trigger Property="IsMouseOver" Value="True">
-                                                            <Setter Property="Background" Value="#F5F5F5"/>
-                                                            <Setter Property="BorderBrush" Value="#BDBDBD"/>
+                                                            <Setter Property="Background" Value="#1976D2"/>
+                                                            <Setter Property="Foreground" Value="White"/>
+                                                            <Setter Property="BorderBrush" Value="#1976D2"/>
                                                         </Trigger>
                                                         <Trigger Property="IsPressed" Value="True">
-                                                            <Setter Property="Background" Value="#E0E0E0"/>
+                                                            <Setter Property="Background" Value="#1565C0"/>
+                                                            <Setter Property="Foreground" Value="White"/>
+                                                            <Setter Property="BorderBrush" Value="#1565C0"/>
                                                         </Trigger>
                                                     </ControlTemplate.Triggers>
                                                 </ControlTemplate>
@@ -771,16 +774,18 @@
                                     </Style>
                                 </Button.Style>
                             </Button>
+                            
                             <Button Command="{Binding ShowRecentLocationsCommand}"
                                     Content="Recent"
-                                    Padding="12,6"
-                                    Background="Transparent"
-                                    BorderThickness="1"
-                                    BorderBrush="#E0E0E0"
-                                    Foreground="#1976D2"
-                                    Cursor="Hand">
+                                    Padding="16,8"
+                                    FontWeight="SemiBold">
                                 <Button.Style>
                                     <Style TargetType="Button">
+                                        <Setter Property="Background" Value="White"/>
+                                        <Setter Property="Foreground" Value="#424242"/>
+                                        <Setter Property="BorderThickness" Value="1"/>
+                                        <Setter Property="BorderBrush" Value="#E0E0E0"/>
+                                        <Setter Property="Cursor" Value="Hand"/>
                                         <Setter Property="Template">
                                             <Setter.Value>
                                                 <ControlTemplate TargetType="Button">
@@ -793,11 +798,14 @@
                                                     </Border>
                                                     <ControlTemplate.Triggers>
                                                         <Trigger Property="IsMouseOver" Value="True">
-                                                            <Setter Property="Background" Value="#F5F5F5"/>
-                                                            <Setter Property="BorderBrush" Value="#BDBDBD"/>
+                                                            <Setter Property="Background" Value="#1976D2"/>
+                                                            <Setter Property="Foreground" Value="White"/>
+                                                            <Setter Property="BorderBrush" Value="#1976D2"/>
                                                         </Trigger>
                                                         <Trigger Property="IsPressed" Value="True">
-                                                            <Setter Property="Background" Value="#E0E0E0"/>
+                                                            <Setter Property="Background" Value="#1565C0"/>
+                                                            <Setter Property="Foreground" Value="White"/>
+                                                            <Setter Property="BorderBrush" Value="#1565C0"/>
                                                         </Trigger>
                                                     </ControlTemplate.Triggers>
                                                 </ControlTemplate>

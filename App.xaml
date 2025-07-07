@@ -21,6 +21,7 @@
             <helpers:StringNotEmptyConverter x:Key="StringNotEmptyConverter"/>
             <helpers:AutoScanMenuHeaderConverter x:Key="AutoScanMenuHeaderConverter"/>
             <helpers:MultiBooleanConverter x:Key="MultiBooleanConverter"/>
+            <helpers:PathDisplayConverter x:Key="PathDisplayConverter"/>
             
             <!-- Application Colors -->
             <SolidColorBrush x:Key="PrimaryAccentBrush" Color="{DynamicResource SystemAccentColor}"/>

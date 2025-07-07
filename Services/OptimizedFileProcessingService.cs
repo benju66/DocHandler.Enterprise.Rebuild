@@ -41,14 +41,31 @@ namespace DocHandler.Services
             
             foreach (var file in files)
             {
-                if (File.Exists(file) && IsFileSupported(file))
+                var validationResult = DocHandler.Helpers.FileValidator.ValidateFile(file);
+                
+                if (validationResult.IsValid && IsFileSupported(file))
                 {
                     validFiles.Add(file);
                     _logger.Information("Valid file added: {FilePath}", file);
+                    
+                    // Log any warnings
+                    if (validationResult.Warnings.Any())
+                    {
+                        foreach (var warning in validationResult.Warnings)
+                        {
+                            _logger.Warning("File validation warning for {FilePath}: {Warning}", file, warning);
+                        }
+                    }
                 }
                 else
                 {
-                    _logger.Warning("Invalid or unsupported file: {FilePath}", file);
+                    var reason = !validationResult.IsValid ? validationResult.ErrorMessage : "Unsupported file type";
+                    _logger.Warning("Invalid or unsupported file: {FilePath} - {Reason}", file, reason);
+                    
+                    if (!validationResult.IsSecure)
+                    {
+                        _logger.Warning("Security concern with file: {FilePath} - {Reason}", file, reason);
+                    }
                 }
             }
             

@@ -19,7 +19,7 @@ namespace DocHandler.Views
         {
             InitializeComponent();
             
-            // Convert recent locations to LocationItems with display formatting
+            // Convert recent locations to LocationItems
             LocationItems = new ObservableCollection<LocationItem>();
             
             foreach (var location in recentLocations.Take(10)) // Show up to 10 recent locations
@@ -28,8 +28,7 @@ namespace DocHandler.Views
                 {
                     LocationItems.Add(new LocationItem 
                     { 
-                        FullPath = location, 
-                        DisplayPath = FormatPath(location) 
+                        FullPath = location
                     });
                 }
             }
@@ -43,20 +42,7 @@ namespace DocHandler.Views
             }
         }
 
-        private string FormatPath(string fullPath)
-        {
-            // Split the path into parts
-            var parts = fullPath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            
-            // If path has more than 5 parts, show only the last 5
-            if (parts.Length > 5)
-            {
-                var lastParts = parts.Skip(parts.Length - 5).ToArray();
-                return "...\\" + string.Join("\\", lastParts);
-            }
-            
-            return fullPath;
-        }
+
 
         private void LocationsList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
@@ -105,7 +91,6 @@ namespace DocHandler.Views
         private class LocationItem
         {
             public string FullPath { get; set; }
-            public string DisplayPath { get; set; }
         }
     }
 }
