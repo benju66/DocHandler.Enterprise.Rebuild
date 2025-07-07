@@ -84,6 +84,18 @@ namespace DocHandler.Services
         private readonly PerformanceMetrics _performanceMetrics;
         private DateTime _lastMemoryCheck = DateTime.Now;
         
+        // Performance metrics
+        private int _detectionCount = 0;
+        private readonly object _metricsLock = new object();
+        
+        // PDF caching for avoiding double conversion
+        private readonly ConcurrentDictionary<string, string> _convertedPdfCache = new();
+        private readonly ConcurrentDictionary<string, DateTime> _pdfCacheTimestamps = new();
+        private readonly ConcurrentDictionary<string, FileInfo> _pdfCacheFileInfo = new();
+        private readonly TimeSpan _cacheExpiration = TimeSpan.FromMinutes(30);
+        private Timer _cacheCleanupTimer;
+        private readonly object _cacheCleanupLock = new object();
+        
         // Safe compiled regex patterns for better performance
         private static readonly Regex ControlCharactersRegex = new(@"[\x00-\x1F\x7F-\x9F]", RegexOptions.Compiled);
         private static readonly Regex MultipleSpacesRegex = new(@"\s+", RegexOptions.Compiled);
@@ -115,6 +127,16 @@ namespace DocHandler.Services
             _dataPath = appFolder;
             _companyNamesPath = Path.Combine(appFolder, "company_names.json");
             _data = LoadCompanyNames();
+            
+            // Start periodic cache cleanup every 15 minutes
+            _cacheCleanupTimer = new Timer(
+                _ => CleanupPdfCache(), 
+                null, 
+                TimeSpan.FromMinutes(15), 
+                TimeSpan.FromMinutes(15)
+            );
+            
+            _logger.Information("PDF caching initialized with {Expiration} minute expiration", _cacheExpiration.TotalMinutes);
         }
         
 
@@ -251,6 +273,10 @@ namespace DocHandler.Services
         
         public async Task<string?> ScanDocumentForCompanyName(string filePath)
         {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            Interlocked.Increment(ref _detectionCount);
+            bool cachedDetection = false;
+            
             try
             {
                 // Check cache first
@@ -258,19 +284,36 @@ namespace DocHandler.Services
                 if (!fileInfo.Exists)
                 {
                     _logger.Warning("File does not exist: {Path}", filePath);
+                    
+                    stopwatch.Stop();
+                    lock (_metricsLock)
+                    {
+                        _performanceMetrics.DocumentsProcessed++;
+                        _performanceMetrics.TotalProcessingTime = _performanceMetrics.TotalProcessingTime.Add(stopwatch.Elapsed);
+                        _performanceMetrics.CacheMisses++;
+                    }
                     return null;
                 }
                 
                 var cacheKey = $"{filePath}_{fileInfo.LastWriteTime.Ticks}_{fileInfo.Length}";
                 
                 // Check detection cache
-                if (_detectionCache.TryGetValue(cacheKey, out var cachedDetection))
+                if (_detectionCache.TryGetValue(cacheKey, out var cachedDetectionValue))
                 {
-                    var cacheAge = DateTime.Now - cachedDetection.Item2;
+                    var cacheAge = DateTime.Now - cachedDetectionValue.Item2;
                     if (cacheAge.TotalMinutes < _settings.CacheExpiryMinutes)
                     {
                         _logger.Debug("Using cached detection result for {File}", Path.GetFileName(filePath));
-                        return cachedDetection.Item1;
+                        cachedDetection = true;
+                        
+                        stopwatch.Stop();
+                        lock (_metricsLock)
+                        {
+                            _performanceMetrics.DocumentsProcessed++;
+                            _performanceMetrics.TotalProcessingTime = _performanceMetrics.TotalProcessingTime.Add(stopwatch.Elapsed);
+                            _performanceMetrics.CacheHits++;
+                        }
+                        return cachedDetectionValue.Item1;
                     }
                     else
                     {
@@ -287,6 +330,14 @@ namespace DocHandler.Services
                 {
                     _logger.Warning("No text extracted from document: {Path}", filePath);
                     _detectionCache[cacheKey] = (null, DateTime.Now);
+                    
+                    stopwatch.Stop();
+                    lock (_metricsLock)
+                    {
+                        _performanceMetrics.DocumentsProcessed++;
+                        _performanceMetrics.TotalProcessingTime = _performanceMetrics.TotalProcessingTime.Add(stopwatch.Elapsed);
+                        _performanceMetrics.CacheMisses++;
+                    }
                     return null;
                 }
                 
@@ -295,6 +346,14 @@ namespace DocHandler.Services
                 {
                     _logger.Warning("Insufficient text content for company detection: {Length} characters", documentText.Trim().Length);
                     _detectionCache[cacheKey] = (null, DateTime.Now);
+                    
+                    stopwatch.Stop();
+                    lock (_metricsLock)
+                    {
+                        _performanceMetrics.DocumentsProcessed++;
+                        _performanceMetrics.TotalProcessingTime = _performanceMetrics.TotalProcessingTime.Add(stopwatch.Elapsed);
+                        _performanceMetrics.CacheMisses++;
+                    }
                     return null;
                 }
                 
@@ -308,6 +367,14 @@ namespace DocHandler.Services
                 {
                     _logger.Warning("No companies in database to search for");
                     _detectionCache[cacheKey] = (null, DateTime.Now);
+                    
+                    stopwatch.Stop();
+                    lock (_metricsLock)
+                    {
+                        _performanceMetrics.DocumentsProcessed++;
+                        _performanceMetrics.TotalProcessingTime = _performanceMetrics.TotalProcessingTime.Add(stopwatch.Elapsed);
+                        _performanceMetrics.CacheMisses++;
+                    }
                     return null;
                 }
                 
@@ -319,16 +386,40 @@ namespace DocHandler.Services
                     _logger.Information("Found company: {Name} (Score: {Score})", bestMatch.Value.company, bestMatch.Value.score);
                     await IncrementUsageCount(bestMatch.Value.company);
                     _detectionCache[cacheKey] = (bestMatch.Value.company, DateTime.Now);
+                    
+                    stopwatch.Stop();
+                    lock (_metricsLock)
+                    {
+                        _performanceMetrics.DocumentsProcessed++;
+                        _performanceMetrics.TotalProcessingTime = _performanceMetrics.TotalProcessingTime.Add(stopwatch.Elapsed);
+                        _performanceMetrics.CacheMisses++;
+                    }
                     return bestMatch.Value.company;
                 }
                 
                 _logger.Information("No known company names found in document (searched {Count} companies)", _data.Companies.Count);
                 _detectionCache[cacheKey] = (null, DateTime.Now);
+                
+                stopwatch.Stop();
+                lock (_metricsLock)
+                {
+                    _performanceMetrics.DocumentsProcessed++;
+                    _performanceMetrics.TotalProcessingTime = _performanceMetrics.TotalProcessingTime.Add(stopwatch.Elapsed);
+                    _performanceMetrics.CacheMisses++;
+                }
                 return null;
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Failed to scan document for company names: {Path}", filePath);
+                
+                stopwatch.Stop();
+                lock (_metricsLock)
+                {
+                    _performanceMetrics.DocumentsProcessed++;
+                    _performanceMetrics.TotalProcessingTime = _performanceMetrics.TotalProcessingTime.Add(stopwatch.Elapsed);
+                    _performanceMetrics.CacheMisses++;
+                }
                 return null;
             }
         }
@@ -752,10 +843,135 @@ namespace DocHandler.Services
             return pages.Distinct().OrderBy(p => p).ToList();
         }
         
+        private async Task<string> ExtractTextFromWordDirect(string filePath)
+        {
+            return await Task.Run(() =>
+            {
+                try
+                {
+                    using (var doc = WordprocessingDocument.Open(filePath, false))
+                    {
+                        var text = new StringBuilder();
+                        var body = doc.MainDocumentPart?.Document?.Body;
+                        
+                        if (body == null) 
+                        {
+                            _logger.Warning("Word document has no body content: {Path}", filePath);
+                            return string.Empty;
+                        }
+                        
+                        // Extract first 30 paragraphs (usually enough for company detection)
+                        var paragraphs = body.Elements<Paragraph>().Take(30);
+                        int paragraphCount = 0;
+                        
+                        foreach (var para in paragraphs)
+                        {
+                            var paraText = para.InnerText?.Trim();
+                            if (!string.IsNullOrWhiteSpace(paraText))
+                            {
+                                text.AppendLine(paraText);
+                                paragraphCount++;
+                            }
+                        }
+                        
+                        // Check headers where company info often appears
+                        foreach (var headerPart in doc.MainDocumentPart.HeaderParts)
+                        {
+                            var headerText = headerPart.Header?.InnerText?.Trim();
+                            if (!string.IsNullOrWhiteSpace(headerText))
+                            {
+                                text.AppendLine("HEADER: " + headerText);
+                            }
+                        }
+                        
+                        // Check footers
+                        foreach (var footerPart in doc.MainDocumentPart.FooterParts)
+                        {
+                            var footerText = footerPart.Footer?.InnerText?.Trim();
+                            if (!string.IsNullOrWhiteSpace(footerText))
+                            {
+                                text.AppendLine("FOOTER: " + footerText);
+                            }
+                        }
+                        
+                        // Also check first page for letterhead info
+                        var firstSection = body.Elements<SectionProperties>().FirstOrDefault();
+                        if (firstSection != null)
+                        {
+                            var titlePage = firstSection.Elements<TitlePage>().FirstOrDefault();
+                            if (titlePage != null)
+                            {
+                                _logger.Debug("Document has title page");
+                            }
+                        }
+                        
+                        var extractedText = text.ToString();
+                        _logger.Debug("OpenXML extraction successful: {Length} characters from {Paragraphs} paragraphs", 
+                            extractedText.Length, paragraphCount);
+                            
+                        return extractedText;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "OpenXML extraction failed for: {Path}", filePath);
+                    return string.Empty;
+                }
+            });
+        }
+
         private async Task<string> ExtractTextFromWord(string filePath)
         {
             try
             {
+                // Validate file before processing
+                var fileInfo = new FileInfo(filePath);
+                if (!fileInfo.Exists)
+                {
+                    _logger.Warning("Word file does not exist: {Path}", filePath);
+                    return string.Empty;
+                }
+                
+                if (fileInfo.Length == 0)
+                {
+                    _logger.Warning("Word file is empty: {Path}", filePath);
+                    return string.Empty;
+                }
+                
+                // Try fast OpenXML extraction first
+                _logger.Debug("Attempting OpenXML text extraction for: {Path}", filePath);
+                var text = await ExtractTextFromWordDirect(filePath);
+                
+                if (!string.IsNullOrWhiteSpace(text) && text.Length > 100)
+                {
+                    _logger.Information("Successfully extracted text using OpenXML: {Length} characters", text.Length);
+                    return text;
+                }
+                
+                _logger.Information("OpenXML extraction insufficient ({Length} chars), falling back to PDF conversion", text.Length);
+                
+                // Fall back to existing PDF conversion method
+                return await ExtractTextFromWordUsingPdfConversion(filePath);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to extract text from Word document: {Path}", filePath);
+                return string.Empty;
+            }
+        }
+
+        // Rename the existing ExtractTextFromWord content to this new method
+        private async Task<string> ExtractTextFromWordUsingPdfConversion(string filePath)
+        {
+            try
+            {
+                // Check if we already have a cached PDF
+                if (TryGetCachedPdf(filePath, out var cachedPdfPath) && cachedPdfPath != null)
+                {
+                    _logger.Information("Using cached PDF for text extraction: {Path}", cachedPdfPath);
+                    return await ExtractTextFromPdf(cachedPdfPath);
+                }
+                
                 // Validate file before processing
                 var fileInfo = new FileInfo(filePath);
                 if (!fileInfo.Exists)
@@ -786,7 +1002,7 @@ namespace DocHandler.Services
                 var tempFolder = Path.Combine(Path.GetTempPath(), tempFolderName);
                 Directory.CreateDirectory(tempFolder);
                 
-                var tempPdfPath = Path.Combine(tempFolder, "word_conversion.pdf");
+                var tempPdfPath = Path.Combine(tempFolder, $"{Path.GetFileNameWithoutExtension(filePath)}_scan.pdf");
                 
                 try
                 {
@@ -818,6 +1034,9 @@ namespace DocHandler.Services
                         return await ExtractTextFromWordBasic(filePath);
                     }
                     
+                    // Cache the converted PDF
+                    CachePdfConversion(filePath, tempPdfPath);
+                    
                     // Use existing, trusted PDF text extraction (captures headers, footers, images, etc.)
                     var extractedText = await ExtractTextFromPdf(tempPdfPath);
                     
@@ -832,37 +1051,19 @@ namespace DocHandler.Services
                     
                     return extractedText;
                 }
-                finally
+                catch (Exception)
                 {
-                    // Enterprise-level cleanup: secure removal of temporary files
+                    // Clean up on error
                     try
                     {
                         if (Directory.Exists(tempFolder))
                         {
-                            // Force delete all files in the temporary folder
-                            var tempFiles = Directory.GetFiles(tempFolder);
-                            foreach (var tempFile in tempFiles)
-                            {
-                                try
-                                {
-                                    File.SetAttributes(tempFile, FileAttributes.Normal);
-                                    File.Delete(tempFile);
-                                }
-                                catch (Exception fileEx)
-                                {
-                                    _logger.Warning(fileEx, "Failed to delete temporary file: {File}", tempFile);
-                                }
-                            }
-                            
-                            // Remove the temporary directory
                             Directory.Delete(tempFolder, true);
-                            _logger.Debug("Successfully cleaned up temporary folder: {Path}", tempFolder);
                         }
                     }
-                    catch (Exception cleanupEx)
-                    {
-                        _logger.Warning(cleanupEx, "Failed to clean up temporary folder: {Path}", tempFolder);
-                    }
+                    catch { }
+                    
+                    throw;
                 }
             }
             catch (Exception ex)
@@ -1153,6 +1354,228 @@ namespace DocHandler.Services
                            c.Aliases.Any(a => a.ToLowerInvariant().Contains(searchTerm)))
                 .OrderBy(c => c.Name)
                 .ToList();
+        }
+        
+        public string GetPerformanceSummary()
+        {
+            lock (_metricsLock)
+            {
+                var avgTime = _performanceMetrics.DocumentsProcessed > 0 
+                    ? _performanceMetrics.TotalProcessingTime.TotalMilliseconds / _performanceMetrics.DocumentsProcessed 
+                    : 0;
+                    
+                var cacheHitRate = (_performanceMetrics.CacheHits + _performanceMetrics.CacheMisses) > 0
+                    ? (double)_performanceMetrics.CacheHits / (_performanceMetrics.CacheHits + _performanceMetrics.CacheMisses) * 100
+                    : 0;
+                    
+                return $"Company Detection Performance: {_performanceMetrics.DocumentsProcessed} docs, " +
+                       $"Avg: {avgTime:F1}ms, Cache Hit: {cacheHitRate:F1}%, " +
+                       $"PDF Cache: {_convertedPdfCache.Count} entries";
+            }
+        }
+
+        /// <summary>
+        /// Checks if a cached PDF exists for the given file and returns its path
+        /// </summary>
+        public bool TryGetCachedPdf(string originalFilePath, out string? cachedPdfPath)
+        {
+            cachedPdfPath = null;
+            
+            try
+            {
+                // Check if we have a cached entry
+                if (!_convertedPdfCache.TryGetValue(originalFilePath, out var pdfPath))
+                {
+                    return false;
+                }
+                
+                // Verify the PDF still exists
+                if (!File.Exists(pdfPath))
+                {
+                    _logger.Debug("Cached PDF no longer exists: {Path}", pdfPath);
+                    RemoveFromCache(originalFilePath);
+                    return false;
+                }
+                
+                // Check if cache is expired
+                if (_pdfCacheTimestamps.TryGetValue(originalFilePath, out var timestamp))
+                {
+                    if (DateTime.Now - timestamp > _cacheExpiration)
+                    {
+                        _logger.Debug("Cached PDF expired for: {Path}", originalFilePath);
+                        RemoveFromCache(originalFilePath);
+                        return false;
+                    }
+                }
+                
+                // Check if original file has been modified
+                if (_pdfCacheFileInfo.TryGetValue(originalFilePath, out var cachedFileInfo))
+                {
+                    var currentFileInfo = new FileInfo(originalFilePath);
+                    if (currentFileInfo.LastWriteTime != cachedFileInfo.LastWriteTime ||
+                        currentFileInfo.Length != cachedFileInfo.Length)
+                    {
+                        _logger.Debug("Original file modified, cache invalidated: {Path}", originalFilePath);
+                        RemoveFromCache(originalFilePath);
+                        return false;
+                    }
+                }
+                
+                cachedPdfPath = pdfPath;
+                _logger.Debug("Using cached PDF for: {Path}", originalFilePath);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Error checking PDF cache for: {Path}", originalFilePath);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Caches a PDF conversion for later reuse
+        /// </summary>
+        private void CachePdfConversion(string originalPath, string pdfPath)
+        {
+            try
+            {
+                var fileInfo = new FileInfo(originalPath);
+                
+                _convertedPdfCache[originalPath] = pdfPath;
+                _pdfCacheTimestamps[originalPath] = DateTime.Now;
+                _pdfCacheFileInfo[originalPath] = fileInfo;
+                
+                _logger.Debug("Cached PDF conversion: {Original} -> {Pdf}", 
+                    Path.GetFileName(originalPath), Path.GetFileName(pdfPath));
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to cache PDF conversion");
+            }
+        }
+
+        /// <summary>
+        /// Removes an entry from the PDF cache
+        /// </summary>
+        private void RemoveFromCache(string originalPath)
+        {
+            if (_convertedPdfCache.TryRemove(originalPath, out var pdfPath))
+            {
+                try
+                {
+                    if (File.Exists(pdfPath))
+                    {
+                        File.Delete(pdfPath);
+                        _logger.Debug("Deleted cached PDF: {Path}", pdfPath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Failed to delete cached PDF: {Path}", pdfPath);
+                }
+            }
+            
+            _pdfCacheTimestamps.TryRemove(originalPath, out _);
+            _pdfCacheFileInfo.TryRemove(originalPath, out _);
+        }
+
+        /// <summary>
+        /// Cleans up expired PDF cache entries
+        /// </summary>
+        public void CleanupPdfCache()
+        {
+            lock (_cacheCleanupLock)
+            {
+                try
+                {
+                    _logger.Debug("Starting PDF cache cleanup");
+                    var now = DateTime.Now;
+                    var expiredCount = 0;
+                    var deletedCount = 0;
+                    
+                    // Find expired entries
+                    var expiredKeys = _pdfCacheTimestamps
+                        .Where(kvp => now - kvp.Value > _cacheExpiration)
+                        .Select(kvp => kvp.Key)
+                        .ToList();
+                    
+                    foreach (var key in expiredKeys)
+                    {
+                        expiredCount++;
+                        if (_convertedPdfCache.TryRemove(key, out var pdfPath))
+                        {
+                            try
+                            {
+                                if (File.Exists(pdfPath))
+                                {
+                                    File.Delete(pdfPath);
+                                    deletedCount++;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.Warning(ex, "Failed to delete expired PDF: {Path}", pdfPath);
+                            }
+                        }
+                        
+                        _pdfCacheTimestamps.TryRemove(key, out _);
+                        _pdfCacheFileInfo.TryRemove(key, out _);
+                    }
+                    
+                    // Also clean up orphaned PDFs (where original file no longer exists)
+                    var orphanedKeys = _convertedPdfCache
+                        .Where(kvp => !File.Exists(kvp.Key))
+                        .Select(kvp => kvp.Key)
+                        .ToList();
+                    
+                    foreach (var key in orphanedKeys)
+                    {
+                        RemoveFromCache(key);
+                        deletedCount++;
+                    }
+                    
+                    if (expiredCount > 0 || orphanedKeys.Count > 0)
+                    {
+                        _logger.Information("PDF cache cleanup: {Expired} expired, {Orphaned} orphaned, {Deleted} files deleted", 
+                            expiredCount, orphanedKeys.Count, deletedCount);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Error during PDF cache cleanup");
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                _cacheCleanupTimer?.Dispose();
+                
+                // Clean up all cached PDFs on disposal
+                _logger.Information("Cleaning up PDF cache on disposal");
+                
+                foreach (var kvp in _convertedPdfCache)
+                {
+                    try
+                    {
+                        if (File.Exists(kvp.Value))
+                        {
+                            File.Delete(kvp.Value);
+                        }
+                    }
+                    catch { }
+                }
+                
+                _convertedPdfCache.Clear();
+                _pdfCacheTimestamps.Clear();
+                _pdfCacheFileInfo.Clear();
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Error during CompanyNameService disposal");
+            }
         }
     }
     

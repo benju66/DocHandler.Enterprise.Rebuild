@@ -34,6 +34,8 @@ namespace DocHandler.ViewModels
         private readonly OfficeConversionService _officeConversionService;
         private readonly CompanyNameService _companyNameService;
         private readonly ScopeOfWorkService _scopeOfWorkService;
+        private readonly SessionAwareOfficeService _sessionOfficeService;
+        private readonly object _conversionLock = new object();
         private readonly List<string> _tempFilesToCleanup = new();
         
         public ConfigurationService ConfigService => _configService;
@@ -160,6 +162,9 @@ namespace DocHandler.ViewModels
         [ObservableProperty]
         private bool _isDetectingCompany;
 
+        // Performance tracking
+        private int _processedFileCount = 0;
+
         // Recent locations
         public ObservableCollection<string> RecentLocations => 
             new ObservableCollection<string>(_configService.Config.RecentLocations);
@@ -172,6 +177,10 @@ namespace DocHandler.ViewModels
             _officeConversionService = new OfficeConversionService();
             _companyNameService = new CompanyNameService();
             _scopeOfWorkService = new ScopeOfWorkService();
+            
+            // Initialize session-aware Office service for better performance
+            _sessionOfficeService = new SessionAwareOfficeService();
+            _logger.Information("Session-aware Office service initialized");
             
             // Initialize scope search timer for debouncing
             _scopeSearchTimer = new DispatcherTimer
@@ -241,6 +250,7 @@ namespace DocHandler.ViewModels
             try
             {
                 IsDetectingCompany = true;
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                 _logger.Information("Starting optimized company name detection for: {Path}", filePath);
                 
                 // Use cancellation token for responsive UI with 30-second timeout
@@ -251,25 +261,31 @@ namespace DocHandler.ViewModels
                     return await _companyNameService.ScanDocumentForCompanyName(filePath);
                 }, cts.Token);
                 
+                stopwatch.Stop();
+                _logger.Information("Company detection completed in {ElapsedMs}ms", stopwatch.ElapsedMilliseconds);
+                
                 if (!string.IsNullOrEmpty(detectedCompany))
                 {
                     // Only update if user still hasn't typed anything
                     if (string.IsNullOrWhiteSpace(CompanyNameInput))
                     {
                         DetectedCompanyName = detectedCompany;
-                        _logger.Information("Successfully detected company: {Company}", detectedCompany);
+                        _logger.Information("Successfully detected company: {Company} in {ElapsedMs}ms", 
+                            detectedCompany, stopwatch.ElapsedMilliseconds);
                         
                         // Force UI update after detection
                         UpdateUI();
                     }
                     else
                     {
-                        _logger.Information("Company detected ({Company}) but user has already typed: {UserInput}", detectedCompany, CompanyNameInput);
+                        _logger.Information("Company detected ({Company}) but user has already typed: {UserInput}", 
+                            detectedCompany, CompanyNameInput);
                     }
                 }
                 else
                 {
-                    _logger.Information("No company name detected in document: {Path}", filePath);
+                    _logger.Information("No company name detected in document: {Path} (took {ElapsedMs}ms)", 
+                        filePath, stopwatch.ElapsedMilliseconds);
                     // Clear any previous detection
                     if (string.IsNullOrWhiteSpace(CompanyNameInput))
                     {
@@ -298,7 +314,8 @@ namespace DocHandler.ViewModels
             finally
             {
                 IsDetectingCompany = false;
-                _logger.Debug("Company name detection completed. DetectedCompanyName: '{DetectedName}'", DetectedCompanyName ?? "null");
+                _logger.Debug("Company name detection completed. DetectedCompanyName: '{DetectedName}'", 
+                    DetectedCompanyName ?? "null");
                 UpdateUI(); // Ensure UI updates after detection completes
             }
         }
@@ -1036,6 +1053,36 @@ namespace DocHandler.ViewModels
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }
+        
+        [RelayCommand]
+        private void ShowPerformanceMetrics()
+        {
+            try
+            {
+                var companyMetrics = _companyNameService.GetPerformanceSummary();
+                var process = Process.GetCurrentProcess();
+                var workingSet = process.WorkingSet64 / (1024 * 1024);
+                var gcMemory = GC.GetTotalMemory(false) / (1024 * 1024);
+                
+                var message = $"DocHandler Performance Metrics\n\n" +
+                             $"{companyMetrics}\n\n" +
+                             $"Memory Usage:\n" +
+                             $"  Working Set: {workingSet:N0} MB\n" +
+                             $"  GC Memory: {gcMemory:N0} MB\n" +
+                             $"  Thread Count: {process.Threads.Count}\n\n" +
+                             $"Session Info:\n" +
+                             $"  Files Processed: {_processedFileCount}\n" +
+                             $"  Session Duration: {DateTime.Now - Process.GetCurrentProcess().StartTime:hh\\:mm\\:ss}";
+                
+                MessageBox.Show(message, "Performance Metrics", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to show performance metrics");
+                MessageBox.Show("Failed to retrieve performance metrics.", "Error", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
 
         [RelayCommand]
         private async Task TestCompanyDetection()
@@ -1186,6 +1233,9 @@ namespace DocHandler.ViewModels
                 {
                     StatusMessage = $"Successfully processed {processedCount} quote(s)";
                     
+                    // Update processed file count for performance metrics
+                    _processedFileCount += processedCount;
+                    
                     // Update recent locations
                     _configService.AddRecentLocation(outputDir);
                     OnPropertyChanged(nameof(RecentLocations));
@@ -1231,26 +1281,164 @@ namespace DocHandler.ViewModels
 
         private async Task<ProcessingResult> ProcessSingleQuoteFile(string inputPath, string outputPath)
         {
-            // Use optimized single file conversion
-            var conversionResult = await _fileProcessingService.ConvertSingleFile(inputPath, outputPath);
+            var extension = Path.GetExtension(inputPath).ToLowerInvariant();
             
-            if (conversionResult.Success)
+            _logger.Debug("Processing single quote file: {File} ({Extension})", Path.GetFileName(inputPath), extension);
+            
+            // For PDFs, just copy
+            if (extension == ".pdf")
             {
-                return new ProcessingResult 
-                { 
-                    Success = true, 
-                    SuccessfulFiles = { outputPath }
-                };
-            }
-            else
-            {
-                return new ProcessingResult
+                try
                 {
-                    Success = false,
-                    ErrorMessage = conversionResult.ErrorMessage,
-                    FailedFiles = { (inputPath, conversionResult.ErrorMessage ?? "Unknown error") }
-                };
+                    File.Copy(inputPath, outputPath, true);
+                    _logger.Information("Copied PDF directly: {File}", Path.GetFileName(outputPath));
+                    return new ProcessingResult 
+                    { 
+                        Success = true, 
+                        SuccessfulFiles = { outputPath }
+                    };
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Failed to copy PDF");
+                    return new ProcessingResult
+                    {
+                        Success = false,
+                        ErrorMessage = $"Failed to copy PDF: {ex.Message}",
+                        FailedFiles = { (inputPath, ex.Message) }
+                    };
+                }
             }
+            
+            // For Word documents, check if we have a cached PDF first
+            if (extension == ".doc" || extension == ".docx")
+            {
+                // Lock to prevent race conditions if user rapidly processes files
+                lock (_conversionLock)
+                {
+                    // Check for cached PDF from company detection
+                    if (_companyNameService.TryGetCachedPdf(inputPath, out var cachedPdfPath) && cachedPdfPath != null)
+                    {
+                        try
+                        {
+                            _logger.Information("Using cached PDF from company detection for: {File}", Path.GetFileName(inputPath));
+                            File.Copy(cachedPdfPath, outputPath, true);
+                            
+                            // Don't delete the cached PDF - let the cache manager handle it
+                            return new ProcessingResult 
+                            { 
+                                Success = true, 
+                                SuccessfulFiles = { outputPath }
+                            };
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Failed to use cached PDF, will convert fresh");
+                            // Fall through to fresh conversion
+                        }
+                    }
+                }
+                
+                // No cache available, use session-aware service for conversion
+                try
+                {
+                    _logger.Information("Converting Word document using session service: {File}", Path.GetFileName(inputPath));
+                    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                    
+                    var conversionResult = await _sessionOfficeService.ConvertWordToPdf(inputPath, outputPath);
+                    
+                    stopwatch.Stop();
+                    _logger.Information("Conversion completed in {ElapsedMs}ms", stopwatch.ElapsedMilliseconds);
+                    
+                    if (conversionResult.Success)
+                    {
+                        return new ProcessingResult 
+                        { 
+                            Success = true, 
+                            SuccessfulFiles = { outputPath }
+                        };
+                    }
+                    else
+                    {
+                        // If session service fails, try with regular service as fallback
+                        _logger.Warning("Session service failed, trying fallback: {Error}", conversionResult.ErrorMessage);
+                        
+                        var fallbackResult = await _officeConversionService.ConvertWordToPdf(inputPath, outputPath);
+                        
+                        if (fallbackResult.Success)
+                        {
+                            return new ProcessingResult 
+                            { 
+                                Success = true, 
+                                SuccessfulFiles = { outputPath }
+                            };
+                        }
+                        else
+                        {
+                            return new ProcessingResult
+                            {
+                                Success = false,
+                                ErrorMessage = fallbackResult.ErrorMessage ?? conversionResult.ErrorMessage,
+                                FailedFiles = { (inputPath, fallbackResult.ErrorMessage ?? conversionResult.ErrorMessage ?? "Unknown error") }
+                            };
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Word conversion failed");
+                    return new ProcessingResult
+                    {
+                        Success = false,
+                        ErrorMessage = $"Conversion failed: {ex.Message}",
+                        FailedFiles = { (inputPath, ex.Message) }
+                    };
+                }
+            }
+            
+            // For Excel, use existing service (can be optimized in future phase)
+            if (extension == ".xls" || extension == ".xlsx")
+            {
+                try
+                {
+                    _logger.Information("Converting Excel document: {File}", Path.GetFileName(inputPath));
+                    var conversionResult = await _officeConversionService.ConvertExcelToPdf(inputPath, outputPath);
+                    
+                    if (conversionResult.Success)
+                    {
+                        return new ProcessingResult 
+                        { 
+                            Success = true, 
+                            SuccessfulFiles = { outputPath }
+                        };
+                    }
+                    else
+                    {
+                        return new ProcessingResult
+                        {
+                            Success = false,
+                            ErrorMessage = conversionResult.ErrorMessage,
+                            FailedFiles = { (inputPath, conversionResult.ErrorMessage ?? "Unknown error") }
+                        };
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Excel conversion failed");
+                    return new ProcessingResult
+                    {
+                        Success = false,
+                        ErrorMessage = $"Excel conversion failed: {ex.Message}",
+                        FailedFiles = { (inputPath, ex.Message) }
+                    };
+                }
+            }
+            
+            return new ProcessingResult
+            {
+                Success = false,
+                ErrorMessage = $"Unsupported file type: {extension}"
+            };
         }
         
         // Command handlers
@@ -1274,7 +1462,29 @@ namespace DocHandler.ViewModels
             _scopeSearchCancellation?.Dispose();
             _scopeSearchCancellation = null;
             
-            // Dispose optimized services
+            // Cleanup session service
+            try
+            {
+                _sessionOfficeService?.Dispose();
+                _logger.Information("Session Office service disposed");
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Error disposing session Office service");
+            }
+            
+            // Cleanup PDF cache
+            try
+            {
+                _companyNameService?.CleanupPdfCache();
+                _logger.Information("PDF cache cleaned up");
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Error cleaning PDF cache");
+            }
+            
+            // Dispose other services
             _fileProcessingService?.Dispose();
             
             _logger.Information("MainViewModel cleanup completed");

@@ -95,6 +95,12 @@
             </MenuItem>
             
             <MenuItem Header="_Help">
+                <MenuItem Header="Performance Metrics..." Command="{Binding ShowPerformanceMetricsCommand}">
+                    <MenuItem.Icon>
+                        <ui:SymbolIcon Symbol="Repair"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
                 <MenuItem Header="Test Company Detection..." Command="{Binding TestCompanyDetectionCommand}">
                     <MenuItem.Icon>
                         <ui:SymbolIcon Symbol="Find"/>
