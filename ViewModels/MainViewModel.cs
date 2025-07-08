@@ -19,6 +19,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using DocHandler.Services;
 using DocHandler.Views;
+using DocHandler.Models;
 using Serilog;
 using MessageBox = System.Windows.MessageBox;
 using Application = System.Windows.Application;
@@ -753,8 +754,14 @@ namespace DocHandler.ViewModels
                 var hasCompanyName = !string.IsNullOrWhiteSpace(CompanyNameInput) || 
                                    !string.IsNullOrWhiteSpace(DetectedCompanyName);
                 
-                CanProcess = PendingFiles.Count > 0 && !IsProcessing && 
-                           !string.IsNullOrEmpty(SelectedScope) && hasCompanyName;
+                // Only enable processing if all files are valid
+                var allFilesValid = PendingFiles.All(f => f.ValidationStatus == ValidationStatus.Valid);
+                
+                CanProcess = PendingFiles.Count > 0 && 
+                            allFilesValid &&
+                            !IsProcessing && 
+                            !string.IsNullOrEmpty(SelectedScope) && 
+                            hasCompanyName;
                 
                 ProcessButtonText = PendingFiles.Count > 1 ? "Process All Quotes" : "Process Quote";
                 
@@ -769,7 +776,10 @@ namespace DocHandler.ViewModels
             }
             else
             {
-                CanProcess = PendingFiles.Count > 0 && !IsProcessing;
+                // Only enable processing if all files are valid
+                var allFilesValid = PendingFiles.All(f => f.ValidationStatus == ValidationStatus.Valid);
+                
+                CanProcess = PendingFiles.Count > 0 && allFilesValid && !IsProcessing;
                 ProcessButtonText = PendingFiles.Count > 1 ? "Merge and Save" : "Process Files";
                 
                 if (PendingFiles.Count == 0)
@@ -785,33 +795,106 @@ namespace DocHandler.ViewModels
         
         public void AddFiles(string[] filePaths)
         {
-            var validFiles = _fileProcessingService.ValidateDroppedFiles(filePaths);
+            var addedFiles = new List<FileItem>();
             
-            foreach (var file in validFiles)
+            foreach (var file in filePaths)
             {
-                // Check if file already added
+                // Quick validation only - existence and not already added
+                if (!File.Exists(file))
+                {
+                    _logger.Warning("File does not exist: {FilePath}", file);
+                    continue;
+                }
+                
                 if (PendingFiles.Any(f => f.FilePath == file))
                 {
                     _logger.Information("File already in list: {FilePath}", file);
                     continue;
                 }
                 
-                var fileItem = new FileItem
+                try
                 {
-                    FilePath = file,
-                    FileName = Path.GetFileName(file),
-                    FileSize = new FileInfo(file).Length,
-                    FileType = Path.GetExtension(file).ToUpperInvariant().TrimStart('.')
-                };
-                
-                PendingFiles.Add(fileItem);
+                    var fileInfo = new FileInfo(file);
+                    var fileItem = new FileItem
+                    {
+                        FilePath = file,
+                        FileName = Path.GetFileName(file),
+                        FileSize = fileInfo.Length,
+                        FileType = Path.GetExtension(file).ToUpperInvariant().TrimStart('.'),
+                        ValidationStatus = ValidationStatus.Pending
+                    };
+                    
+                    PendingFiles.Add(fileItem);
+                    addedFiles.Add(fileItem);
+                    
+                    _logger.Debug("File added instantly: {FileName}", fileItem.FileName);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Failed to add file: {FilePath}", file);
+                }
             }
             
-            if (validFiles.Count != filePaths.Length)
+            // Validate files in background
+            if (addedFiles.Any())
             {
-                var invalidCount = filePaths.Length - validFiles.Count;
-                MessageBox.Show($"{invalidCount} file(s) were not added because they are not supported.", 
-                    "Some Files Not Added", MessageBoxButton.OK, MessageBoxImage.Information);
+                _ = Task.Run(async () => await ValidateFilesAsync(addedFiles));
+            }
+            
+            UpdateUI();
+        }
+
+        private async Task ValidateFilesAsync(List<FileItem> files)
+        {
+            foreach (var fileItem in files)
+            {
+                try
+                {
+                    // Update status to validating
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        fileItem.ValidationStatus = ValidationStatus.Validating;
+                    });
+                    
+                    // Perform thorough validation
+                    var validationResult = await Task.Run(() => 
+                        DocHandler.Helpers.FileValidator.ValidateFile(fileItem.FilePath));
+                    
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        if (validationResult.IsValid)
+                        {
+                            fileItem.ValidationStatus = ValidationStatus.Valid;
+                            
+                            // If in Save Quotes mode and no company input yet, start scan
+                            if (SaveQuotesMode && string.IsNullOrWhiteSpace(CompanyNameInput) && 
+                                files.IndexOf(fileItem) == 0) // Only scan first file
+                            {
+                                StartCompanyNameScan(fileItem.FilePath);
+                            }
+                        }
+                        else
+                        {
+                            fileItem.ValidationStatus = ValidationStatus.Invalid;
+                            fileItem.ValidationError = validationResult.ErrorMessage;
+                            
+                            _logger.Warning("File validation failed: {File} - {Error}", 
+                                fileItem.FileName, validationResult.ErrorMessage);
+                        }
+                        
+                        UpdateUI();
+                    });
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Error validating file: {File}", fileItem.FileName);
+                    
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        fileItem.ValidationStatus = ValidationStatus.Invalid;
+                        fileItem.ValidationError = "Validation error occurred";
+                    });
+                }
             }
         }
         
@@ -895,6 +978,40 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private async Task ProcessFiles()
         {
+            // Ensure all files are validated
+            var pendingValidation = PendingFiles.Where(f => 
+                f.ValidationStatus == ValidationStatus.Pending || 
+                f.ValidationStatus == ValidationStatus.Validating).ToList();
+                
+            if (pendingValidation.Any())
+            {
+                MessageBox.Show("Please wait for file validation to complete.", 
+                    "Validation in Progress", 
+                    MessageBoxButton.OK, 
+                    MessageBoxImage.Information);
+                return;
+            }
+            
+            // Remove any invalid files
+            var invalidFiles = PendingFiles.Where(f => 
+                f.ValidationStatus == ValidationStatus.Invalid).ToList();
+                
+            if (invalidFiles.Any())
+            {
+                var message = $"The following files are invalid and will be skipped:\n\n" +
+                    string.Join("\n", invalidFiles.Select(f => $"• {f.FileName}: {f.ValidationError}"));
+                    
+                MessageBox.Show(message, "Invalid Files", 
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                    
+                foreach (var invalid in invalidFiles)
+                {
+                    PendingFiles.Remove(invalid);
+                }
+                
+                if (!PendingFiles.Any()) return;
+            }
+            
             if (SaveQuotesMode)
             {
                 await ProcessSaveQuotes();
@@ -1986,29 +2103,6 @@ namespace DocHandler.ViewModels
                 
                 return "Scanning for company name...";
             }
-        }
-    }
-    
-    public class FileItem
-    {
-        public string FilePath { get; set; } = "";
-        public string FileName { get; set; } = "";
-        public string FileType { get; set; } = "";
-        public long FileSize { get; set; }
-        
-        public string FileSizeDisplay => FormatFileSize(FileSize);
-        
-        private string FormatFileSize(long bytes)
-        {
-            string[] sizes = { "B", "KB", "MB", "GB" };
-            double len = bytes;
-            int order = 0;
-            while (len >= 1024 && order < sizes.Length - 1)
-            {
-                order++;
-                len = len / 1024;
-            }
-            return $"{len:0.##} {sizes[order]}";
         }
     }
 }

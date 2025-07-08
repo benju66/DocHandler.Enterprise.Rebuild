@@ -261,25 +261,66 @@
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="Auto"/>
                                                     <ColumnDefinition Width="*"/>
                                                     <ColumnDefinition Width="Auto"/>
                                                 </Grid.ColumnDefinitions>
                                                 
-                                                <TextBlock Grid.Column="0" Text="📄" FontSize="16" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                                <!-- Validation Status Icon -->
+                                                <ui:SymbolIcon Grid.Column="0" 
+                                                              Margin="0,0,6,0"
+                                                              VerticalAlignment="Center"
+                                                              Width="12" Height="12">
+                                                    <ui:SymbolIcon.Style>
+                                                        <Style TargetType="ui:SymbolIcon">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding ValidationStatus}" Value="Pending">
+                                                                    <Setter Property="Symbol" Value="More"/>
+                                                                    <Setter Property="Foreground" Value="Gray"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding ValidationStatus}" Value="Validating">
+                                                                    <Setter Property="Symbol" Value="Sync"/>
+                                                                    <Setter Property="Foreground" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+                                                                    <DataTrigger.EnterActions>
+                                                                        <BeginStoryboard>
+                                                                            <Storyboard RepeatBehavior="Forever">
+                                                                                <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                                               From="0" To="360" Duration="0:0:2"/>
+                                                                            </Storyboard>
+                                                                        </BeginStoryboard>
+                                                                    </DataTrigger.EnterActions>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding ValidationStatus}" Value="Valid">
+                                                                    <Setter Property="Symbol" Value="Accept"/>
+                                                                    <Setter Property="Foreground" Value="Green"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding ValidationStatus}" Value="Invalid">
+                                                                    <Setter Property="Symbol" Value="Cancel"/>
+                                                                    <Setter Property="Foreground" Value="Red"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </ui:SymbolIcon.Style>
+                                                    <ui:SymbolIcon.RenderTransform>
+                                                        <RotateTransform CenterX="6" CenterY="6"/>
+                                                    </ui:SymbolIcon.RenderTransform>
+                                                </ui:SymbolIcon>
                                                 
-                                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Grid.Column="1" Text="📄" FontSize="16" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                                
+                                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
                                                     <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" FontSize="11"/>
                                                     <TextBlock FontSize="9" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}">
                                                         <TextBlock.Text>
                                                             <MultiBinding StringFormat="{}{0} • {1}">
                                                                 <Binding Path="FileType"/>
-                                                                <Binding Path="FileSizeDisplay"/>
+                                                                <Binding Path="DisplayFileSize"/>
                                                             </MultiBinding>
                                                         </TextBlock.Text>
                                                     </TextBlock>
                                                 </StackPanel>
                                                 
-                                                <Button Grid.Column="2" 
+                                                <Button Grid.Column="3" 
                                                         Content="✕" 
                                                         FontSize="10"
                                                         Width="18" Height="18"
@@ -1021,26 +1062,67 @@
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="Auto"/>
                                                     <ColumnDefinition Width="*"/>
                                                     <ColumnDefinition Width="Auto"/>
                                                     <ColumnDefinition Width="Auto"/>
                                                 </Grid.ColumnDefinitions>
                                                 
-                                                <TextBlock Grid.Column="0" Text="📄" FontSize="24" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                                <!-- Validation Status Icon -->
+                                                <ui:SymbolIcon Grid.Column="0" 
+                                                              Margin="0,0,10,0"
+                                                              VerticalAlignment="Center"
+                                                              Width="20" Height="20">
+                                                    <ui:SymbolIcon.Style>
+                                                        <Style TargetType="ui:SymbolIcon">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding ValidationStatus}" Value="Pending">
+                                                                    <Setter Property="Symbol" Value="More"/>
+                                                                    <Setter Property="Foreground" Value="Gray"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding ValidationStatus}" Value="Validating">
+                                                                    <Setter Property="Symbol" Value="Sync"/>
+                                                                    <Setter Property="Foreground" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+                                                                    <DataTrigger.EnterActions>
+                                                                        <BeginStoryboard>
+                                                                            <Storyboard RepeatBehavior="Forever">
+                                                                                <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                                               From="0" To="360" Duration="0:0:2"/>
+                                                                            </Storyboard>
+                                                                        </BeginStoryboard>
+                                                                    </DataTrigger.EnterActions>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding ValidationStatus}" Value="Valid">
+                                                                    <Setter Property="Symbol" Value="Accept"/>
+                                                                    <Setter Property="Foreground" Value="Green"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding ValidationStatus}" Value="Invalid">
+                                                                    <Setter Property="Symbol" Value="Cancel"/>
+                                                                    <Setter Property="Foreground" Value="Red"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </ui:SymbolIcon.Style>
+                                                    <ui:SymbolIcon.RenderTransform>
+                                                        <RotateTransform CenterX="10" CenterY="10"/>
+                                                    </ui:SymbolIcon.RenderTransform>
+                                                </ui:SymbolIcon>
                                                 
-                                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Grid.Column="1" Text="📄" FontSize="24" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                                
+                                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
                                                     <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                                     <TextBlock FontSize="12" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}">
                                                         <TextBlock.Text>
                                                             <MultiBinding StringFormat="{}{0} • {1}">
                                                                 <Binding Path="FileType"/>
-                                                                <Binding Path="FileSizeDisplay"/>
+                                                                <Binding Path="DisplayFileSize"/>
                                                             </MultiBinding>
                                                         </TextBlock.Text>
                                                     </TextBlock>
                                                 </StackPanel>
                                                 
-                                                <Button Grid.Column="3" 
+                                                <Button Grid.Column="4" 
                                                         Content="✕" 
                                                         FontSize="16"
                                                         Width="30" Height="30"
