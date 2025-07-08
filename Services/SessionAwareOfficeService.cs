@@ -19,6 +19,8 @@ namespace DocHandler.Services
         private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(5);
         private bool _disposed;
         private bool? _officeAvailable;
+        private DateTime _lastHealthCheck = DateTime.Now;
+        private readonly TimeSpan _healthCheckInterval = TimeSpan.FromMinutes(5);
         
         public SessionAwareOfficeService()
         {
@@ -76,6 +78,12 @@ namespace DocHandler.Services
                         _wordApp.DisplayRecentFiles = false;
                         _wordApp.DisplayScrollBars = false;
                         _wordApp.DisplayStatusBar = false;
+                        
+                        // Minimize window to prevent any flashing
+                        _wordApp.WindowState = -2; // wdWindowStateMinimize
+                        
+                        // Set last health check time
+                        _lastHealthCheck = DateTime.Now;
                         
                         // Disable features that slow down conversion
                         try
@@ -136,6 +144,36 @@ namespace DocHandler.Services
                 }
             }
         }
+
+        private bool IsWordHealthy()
+        {
+            try
+            {
+                if (_wordApp == null) return false;
+                
+                // Try to access a property to verify Word is responsive
+                var _ = _wordApp.Version;
+                return true;
+            }
+            catch
+            {
+                _logger.Warning("Word health check failed - application may have crashed");
+                return false;
+            }
+        }
+
+        private void EnsureWordHealthy()
+        {
+            if (DateTime.Now - _lastHealthCheck > _healthCheckInterval)
+            {
+                if (!IsWordHealthy())
+                {
+                    _logger.Warning("Word unhealthy - reinitializing");
+                    DisposeWordApp();
+                }
+                _lastHealthCheck = DateTime.Now;
+            }
+        }
         
         public async Task<ConversionResult> ConvertWordToPdf(string inputPath, string outputPath)
         {
@@ -159,6 +197,9 @@ namespace DocHandler.Services
                     try
                     {
                         var wordApp = GetOrCreateWordApp();
+                        
+                        // Ensure Word is still healthy before conversion
+                        EnsureWordHealthy();
                         
                         _logger.Debug("Opening document: {Path}", inputPath);
                         
@@ -225,6 +266,18 @@ namespace DocHandler.Services
                     return result;
                 }
             });
+        }
+        
+        public void WarmUp()
+        {
+            lock (_wordLock)
+            {
+                if (_wordApp == null)
+                {
+                    GetOrCreateWordApp();
+                    _logger.Information("Word pre-warmed for Save Quotes Mode");
+                }
+            }
         }
         
         private void DisposeWordApp()

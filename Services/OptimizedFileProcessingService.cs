@@ -16,6 +16,7 @@ namespace DocHandler.Services
     {
         private readonly ILogger _logger = Log.ForContext<OptimizedFileProcessingService>();
         private readonly OfficeConversionService _optimizedOfficeService;
+        private readonly SessionAwareExcelService _excelService;
         private readonly PdfOperationsService _pdfOperationsService;
 
         private readonly HashSet<string> _supportedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -26,6 +27,7 @@ namespace DocHandler.Services
         public OptimizedFileProcessingService()
         {
             _optimizedOfficeService = new OfficeConversionService();
+            _excelService = new SessionAwareExcelService();
             _pdfOperationsService = new PdfOperationsService();
         }
 
@@ -292,41 +294,31 @@ namespace DocHandler.Services
         {
             var result = new ProcessingResult();
             
-            // For Excel, we'll use the original service for now
-            // This can be optimized later using a similar pooling approach
-            var originalService = new OfficeConversionService();
-            
-            try
+            // Use the new SessionAwareExcelService for better performance
+            foreach (var file in excelFiles)
             {
-                foreach (var file in excelFiles)
+                try
                 {
-                    try
+                    var outputPath = Path.Combine(outputDirectory, 
+                        Path.GetFileNameWithoutExtension(file) + ".pdf");
+                    
+                    var conversionResult = await _excelService.ConvertSpreadsheetToPdf(file, outputPath);
+                    
+                    if (conversionResult.Success)
                     {
-                        var outputPath = Path.Combine(outputDirectory, 
-                            Path.GetFileNameWithoutExtension(file) + ".pdf");
-                        
-                        var conversionResult = await originalService.ConvertExcelToPdf(file, outputPath);
-                        
-                        if (conversionResult.Success)
-                        {
-                            result.SuccessfulFiles.Add(outputPath);
-                            _logger.Information("Converted Excel to PDF: {File}", Path.GetFileName(file));
-                        }
-                        else
-                        {
-                            result.FailedFiles.Add((file, conversionResult.ErrorMessage ?? "Unknown error"));
-                        }
+                        result.SuccessfulFiles.Add(outputPath);
+                        _logger.Information("Converted Excel to PDF: {File}", Path.GetFileName(file));
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        result.FailedFiles.Add((file, ex.Message));
-                        _logger.Error(ex, "Failed to convert Excel file: {File}", file);
+                        result.FailedFiles.Add((file, conversionResult.ErrorMessage ?? "Unknown error"));
                     }
                 }
-            }
-            finally
-            {
-                originalService.Dispose();
+                catch (Exception ex)
+                {
+                    result.FailedFiles.Add((file, ex.Message));
+                    _logger.Error(ex, "Failed to convert Excel file: {File}", file);
+                }
             }
             
             return result;
@@ -408,9 +400,8 @@ namespace DocHandler.Services
             }
             else if (extension == ".xls" || extension == ".xlsx")
             {
-                // Use original Excel conversion for now
-                using var originalService = new OfficeConversionService();
-                return await originalService.ConvertExcelToPdf(inputPath, outputPath);
+                // Use SessionAwareExcelService for better performance
+                return await _excelService.ConvertSpreadsheetToPdf(inputPath, outputPath);
             }
             else
             {
@@ -424,6 +415,7 @@ namespace DocHandler.Services
 
         public void Dispose()
         {
+            _excelService?.Dispose();
             _logger.Information("Optimized file processing service disposed");
         }
     }

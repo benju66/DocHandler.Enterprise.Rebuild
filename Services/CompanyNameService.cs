@@ -95,6 +95,10 @@ namespace DocHandler.Services
         private readonly TimeSpan _cacheExpiration = TimeSpan.FromMinutes(30);
         private Timer _cacheCleanupTimer;
         private readonly object _cacheCleanupLock = new object();
+
+        // Services for conversion
+        private SessionAwareOfficeService? _sessionOfficeService;
+        private SessionAwareExcelService? _sessionExcelService;
         
         // Safe compiled regex patterns for better performance
         private static readonly Regex ControlCharactersRegex = new(@"[\x00-\x1F\x7F-\x9F]", RegexOptions.Compiled);
@@ -139,7 +143,12 @@ namespace DocHandler.Services
             _logger.Information("PDF caching initialized with {Expiration} minute expiration", _cacheExpiration.TotalMinutes);
         }
         
-
+        // Injected services setter
+        public void SetOfficeServices(SessionAwareOfficeService officeService, SessionAwareExcelService excelService)
+        {
+            _sessionOfficeService = officeService;
+            _sessionExcelService = excelService;
+        }
         
         private CompanyNamesData LoadCompanyNames()
         {
@@ -742,22 +751,109 @@ namespace DocHandler.Services
             
             try
             {
-                switch (extension)
+                // For PDFs, extract directly (already fast)
+                if (extension == ".pdf")
                 {
-                    case ".pdf":
-                        return await ExtractTextFromPdf(filePath, progress).ConfigureAwait(false);
-                    case ".doc":
-                    case ".docx":
-                        return await ExtractTextFromWord(filePath).ConfigureAwait(false);
-                    case ".xls":
-                    case ".xlsx":
-                        return await ExtractTextFromExcel(filePath).ConfigureAwait(false);
-                    case ".txt":
-                        return await ExtractTextFromTextFile(filePath).ConfigureAwait(false);
-                    default:
-                        _logger.Warning("Unsupported file type for text extraction: {Extension}", extension);
-                        return string.Empty;
+                    progress?.Report(20);
+                    return await ExtractTextFromPdf(filePath, progress);
                 }
+                
+                // For Office documents, convert to PDF first for faster text extraction
+                if (extension == ".docx" || extension == ".doc" || extension == ".xlsx" || extension == ".xls")
+                {
+                    progress?.Report(10); // Starting conversion
+                    
+                    // Check if we already have a converted PDF
+                    if (_convertedPdfCache.TryGetValue(filePath, out string? cachedPdfPath) && 
+                        File.Exists(cachedPdfPath))
+                    {
+                        _logger.Debug("Using cached PDF conversion for {File}", Path.GetFileName(filePath));
+                        progress?.Report(50);
+                        return await ExtractTextFromPdf(cachedPdfPath, progress);
+                    }
+                    
+                    // Convert to temporary PDF
+                    var tempPdf = Path.Combine(Path.GetTempPath(), $"DocHandler_{Guid.NewGuid()}.pdf");
+                    ConversionResult conversionResult;
+                    
+                    if (extension == ".docx" || extension == ".doc")
+                    {
+                        if (_sessionOfficeService == null)
+                        {
+                            _logger.Warning("Office service not available, falling back to original method");
+                            return await ExtractTextFromWord(filePath);
+                        }
+                        
+                        conversionResult = await _sessionOfficeService.ConvertWordToPdf(filePath, tempPdf);
+                    }
+                    else // Excel
+                    {
+                        if (_sessionExcelService == null)
+                        {
+                            _logger.Warning("Excel service not available, falling back to original method");
+                            return await ExtractTextFromExcel(filePath);
+                        }
+                        
+                        conversionResult = await _sessionExcelService.ConvertSpreadsheetToPdf(filePath, tempPdf);
+                    }
+                    
+                    progress?.Report(40); // Conversion complete
+                    
+                    if (!conversionResult.Success)
+                    {
+                        _logger.Warning("Failed to convert {File} to PDF: {Error}", 
+                            Path.GetFileName(filePath), conversionResult.ErrorMessage);
+                        
+                        // Fallback to original methods
+                        if (extension == ".docx" || extension == ".doc")
+                            return await ExtractTextFromWord(filePath);
+                        else
+                            return await ExtractTextFromExcel(filePath);
+                    }
+                    
+                    try
+                    {
+                        // Cache the converted PDF for reuse in final processing
+                        _convertedPdfCache[filePath] = tempPdf;
+                        _pdfCacheTimestamps[filePath] = DateTime.Now;
+                        _pdfCacheFileInfo[filePath] = new FileInfo(filePath);
+                        
+                        // Extract text from the PDF (much faster than Word interop!)
+                        progress?.Report(50);
+                        var text = await ExtractTextFromPdf(tempPdf, progress);
+                        
+                        _logger.Information("Extracted text via PDF conversion for {File} - {Length} chars", 
+                            Path.GetFileName(filePath), text.Length);
+                        
+                        return text;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Failed to extract text from converted PDF");
+                        
+                        // Clean up failed conversion
+                        if (File.Exists(tempPdf))
+                        {
+                            try { File.Delete(tempPdf); } catch { }
+                        }
+                        _convertedPdfCache.TryRemove(filePath, out _);
+                        
+                        // Fallback to original methods
+                        if (extension == ".docx" || extension == ".doc")
+                            return await ExtractTextFromWord(filePath);
+                        else
+                            return await ExtractTextFromExcel(filePath);
+                    }
+                }
+                
+                // Text files
+                if (extension == ".txt")
+                {
+                    return await ExtractTextFromTextFile(filePath);
+                }
+                
+                _logger.Warning("Unsupported file type for text extraction: {Extension}", extension);
+                return string.Empty;
             }
             catch (Exception ex)
             {
@@ -768,99 +864,50 @@ namespace DocHandler.Services
         
         private async Task<string> ExtractTextFromPdf(string filePath, IProgress<int>? progress = null)
         {
-            return await Task.Run(async () =>
+            try
             {
-                try
+                using var pdfReader = new PdfReader(filePath);
+                using var pdfDoc = new PdfDocument(pdfReader);
+                
+                var text = new StringBuilder();
+                var strategy = new SimpleTextExtractionStrategy();
+                
+                // Only read first few pages for company detection (huge speedup!)
+                int totalPages = pdfDoc.GetNumberOfPages();
+                int pagesToRead = Math.Min(3, totalPages);
+                
+                _logger.Debug("Reading {Pages} of {Total} pages from PDF for company detection", 
+                    pagesToRead, totalPages);
+                
+                for (int i = 1; i <= pagesToRead; i++)
                 {
-                    // Validate file before attempting to read
-                    var fileInfo = new FileInfo(filePath);
-                    if (!fileInfo.Exists)
+                    var page = pdfDoc.GetPage(i);
+                    var pageText = PdfTextExtractor.GetTextFromPage(page, strategy);
+                    text.AppendLine(pageText);
+                    
+                    // Update progress if provided
+                    if (progress != null)
                     {
-                        _logger.Warning("PDF file does not exist: {Path}", filePath);
-                        return string.Empty;
+                        int progressValue = 50 + (i * 40 / pagesToRead);
+                        progress.Report(progressValue);
                     }
                     
-                    if (fileInfo.Length == 0)
+                    // Early termination if we have enough text (5KB should be plenty)
+                    if (text.Length > 5000)
                     {
-                        _logger.Warning("PDF file is empty: {Path}", filePath);
-                        return string.Empty;
+                        _logger.Debug("Early termination - sufficient text extracted ({Length} chars)", text.Length);
+                        break;
                     }
-                    
-                    // Early exit for very large PDFs
-                    var fileSizeMB = fileInfo.Length / (1024.0 * 1024.0);
-                    if (fileSizeMB > 20) // Skip PDFs larger than 20MB
-                    {
-                        _logger.Warning("Skipping very large PDF ({Size:F1}MB): {Path}", fileSizeMB, filePath);
-                        return string.Empty;
-                    }
-                    
-                    progress?.Report(45); // Starting PDF processing
-                    
-                    using var reader = new PdfReader(filePath);
-                    using var pdfDoc = new PdfDocument(reader);
-                    var text = new StringBuilder();
-                    
-                    // Smart page scanning with prioritization
-                    int totalPages = pdfDoc.GetNumberOfPages();
-                    var pagesToScan = GetPriorityPages(totalPages);
-                    
-                    _logger.Debug("Extracting text from PDF: {TotalPages} total pages, scanning {ScanPages} priority pages", 
-                        totalPages, pagesToScan.Count);
-                    
-                    progress?.Report(50); // PDF opened, starting page processing
-                    
-                    int processedPages = 0;
-                    foreach (var pageNum in pagesToScan)
-                    {
-                        try
-                        {
-                            // Use LocationTextExtractionStrategy for better text positioning
-                            var strategy = new LocationTextExtractionStrategy();
-                            var pageText = PdfTextExtractor.GetTextFromPage(pdfDoc.GetPage(pageNum), strategy);
-                            
-                            if (!string.IsNullOrWhiteSpace(pageText))
-                            {
-                                text.AppendLine(pageText);
-                                _logger.Debug("Extracted {Length} characters from page {Page}", pageText.Length, pageNum);
-                            }
-                            
-                            processedPages++;
-                            
-                            // Report progress based on pages processed (50-55% range)
-                            var pageProgress = 50 + (int)((processedPages / (double)pagesToScan.Count) * 5);
-                            progress?.Report(Math.Min(pageProgress, 55));
-                            
-                            // Yield control periodically for responsiveness
-                            if (processedPages % 3 == 0)
-                            {
-                                await Task.Delay(1).ConfigureAwait(false);
-                            }
-                            
-                            // Early exit if we have enough content for detection
-                            if (text.Length > _settings.MaxCharactersToExtract)
-                            {
-                                _logger.Debug("Sufficient text extracted for company detection, stopping at page {Page}", pageNum);
-                                break;
-                            }
-                        }
-                        catch (Exception pageEx)
-                        {
-                            _logger.Warning(pageEx, "Failed to extract text from page {Page} of PDF", pageNum);
-                        }
-                    }
-                    
-                    var extractedText = text.ToString();
-                    _logger.Debug("Total text extracted from PDF: {Length} characters from {Pages} pages", 
-                        extractedText.Length, processedPages);
-                    
-                    return extractedText;
                 }
-                catch (Exception ex)
-                {
-                    _logger.Error(ex, "Failed to extract text from PDF: {Path}", filePath);
-                    return string.Empty;
-                }
-            }).ConfigureAwait(false);
+                
+                progress?.Report(90);
+                return text.ToString();
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to extract text from PDF: {Path}", filePath);
+                return string.Empty;
+            }
         }
         
         private List<int> GetPriorityPages(int totalPages)
@@ -1603,6 +1650,56 @@ namespace DocHandler.Services
                     _logger.Error(ex, "Error during PDF cache cleanup");
                 }
             }
+        }
+
+        // Add method to get cached PDF if available
+        public string? GetCachedPdfPath(string originalFilePath)
+        {
+            if (_convertedPdfCache.TryGetValue(originalFilePath, out string? pdfPath) && 
+                File.Exists(pdfPath))
+            {
+                // Check if original file hasn't changed
+                var currentInfo = new FileInfo(originalFilePath);
+                if (_pdfCacheFileInfo.TryGetValue(originalFilePath, out var cachedInfo) &&
+                    currentInfo.LastWriteTime == cachedInfo.LastWriteTime &&
+                    currentInfo.Length == cachedInfo.Length)
+                {
+                    return pdfPath;
+                }
+                else
+                {
+                    // Original file changed, invalidate cache
+                    _convertedPdfCache.TryRemove(originalFilePath, out _);
+                    if (File.Exists(pdfPath))
+                    {
+                        try { File.Delete(pdfPath); } catch { }
+                    }
+                }
+            }
+            
+            return null;
+        }
+
+        // Add method to remove cached PDF
+        public void RemoveCachedPdf(string originalFilePath)
+        {
+            if (_convertedPdfCache.TryRemove(originalFilePath, out string? pdfPath))
+            {
+                if (File.Exists(pdfPath))
+                {
+                    try 
+                    { 
+                        File.Delete(pdfPath);
+                        _logger.Debug("Removed cached PDF for {File}", Path.GetFileName(originalFilePath));
+                    } 
+                    catch (Exception ex) 
+                    { 
+                        _logger.Warning(ex, "Failed to delete cached PDF: {Path}", pdfPath);
+                    }
+                }
+            }
+            _pdfCacheTimestamps.TryRemove(originalFilePath, out _);
+            _pdfCacheFileInfo.TryRemove(originalFilePath, out _);
         }
 
         public void Dispose()

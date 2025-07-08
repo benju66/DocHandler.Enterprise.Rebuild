@@ -200,6 +200,9 @@ namespace DocHandler.ViewModels
             // Initialize session-aware Office service for better performance
             _sessionOfficeService = new SessionAwareOfficeService();
             _logger.Information("Session-aware Office service initialized");
+
+            // Add this line to inject services into CompanyNameService
+            _companyNameService.SetOfficeServices(_sessionOfficeService, new SessionAwareExcelService());
             
             // Initialize scope search timer for debouncing
             _scopeSearchTimer = new DispatcherTimer
@@ -1057,6 +1060,9 @@ namespace DocHandler.ViewModels
             {
                 PendingFiles.Remove(fileItem);
                 
+                // Clean up any cached PDF from company detection
+                _companyNameService.RemoveCachedPdf(fileItem.FilePath);
+                
                 // If this was a temp file, clean it up immediately
                 if (_tempFilesToCleanup.ContainsKey(fileItem.FilePath))
                 {
@@ -1611,6 +1617,33 @@ namespace DocHandler.ViewModels
             var extension = Path.GetExtension(inputPath).ToLowerInvariant();
             
             _logger.Debug("Processing single quote file: {File} ({Extension})", Path.GetFileName(inputPath), extension);
+            
+            // Check if we have a cached PDF from company detection
+            var cachedPdf = _companyNameService.GetCachedPdfPath(inputPath);
+            if (!string.IsNullOrEmpty(cachedPdf) && File.Exists(cachedPdf))
+            {
+                try
+                {
+                    _logger.Information("Using cached PDF from company detection for {File}", Path.GetFileName(inputPath));
+                    
+                    // Just copy the already-converted PDF
+                    File.Copy(cachedPdf, outputPath, overwrite: true);
+                    
+                    // Clean up the cached PDF
+                    _companyNameService.RemoveCachedPdf(inputPath);
+                    
+                    return new ProcessingResult 
+                    { 
+                        Success = true,
+                        SuccessfulFiles = { outputPath }
+                    };
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Failed to use cached PDF, will reconvert");
+                    // Fall through to normal conversion
+                }
+            }
             
             // Add file existence check at the beginning
             if (!File.Exists(inputPath))
