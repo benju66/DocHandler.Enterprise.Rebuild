@@ -894,7 +894,7 @@ namespace DocHandler.ViewModels
         {
             if (SaveQuotesMode)
             {
-                await ProcessSaveQuotes().ConfigureAwait(false);
+                await ProcessSaveQuotes();
                 return;
             }
 
@@ -1524,9 +1524,15 @@ namespace DocHandler.ViewModels
                     });
                     
                     // Only show animation if not in speed mode
-                    if (!_isSpeedMode && Application.Current.MainWindow is MainWindow mainWindow)
+                    if (!_isSpeedMode)
                     {
-                        await mainWindow.ShowSaveQuotesSuccessAnimation(processedCount).ConfigureAwait(false);
+                        await Application.Current.Dispatcher.InvokeAsync(async () =>
+                        {
+                            if (Application.Current.MainWindow is MainWindow mainWindow)
+                            {
+                                await mainWindow.ShowSaveQuotesSuccessAnimation(processedCount);
+                            }
+                        });
                     }
                     
                     // Update last process time
@@ -1537,7 +1543,10 @@ namespace DocHandler.ViewModels
                     
                     // Update recent locations
                     _configService.AddRecentLocation(outputDir);
-                    OnPropertyChanged(nameof(RecentLocations));
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        OnPropertyChanged(nameof(RecentLocations));
+                    });
                     
                     // Open output folder if preference is set
                     if (uiValues.OpenFolderAfterProcessing && processedCount == totalFiles)
