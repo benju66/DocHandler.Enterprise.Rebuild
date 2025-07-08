@@ -39,6 +39,11 @@ namespace DocHandler.ViewModels
         private readonly object _conversionLock = new object();
         private readonly ConcurrentDictionary<string, byte> _tempFilesToCleanup = new();
         
+        // Add concurrent scan protection
+        private volatile int _activeScanCount = 0;
+        private readonly SemaphoreSlim _scanSemaphore = new SemaphoreSlim(1, 1);
+        private CancellationTokenSource? _currentScanCancellation;
+        
         public ConfigurationService ConfigService => _configService;
         
         [ObservableProperty]
@@ -174,8 +179,6 @@ namespace DocHandler.ViewModels
             set => SetProperty(ref _isShowingSuccessAnimation, value);
         }
 
-        private CancellationTokenSource? _animationCancellation;
-
         // Speed mode detection
         private DateTime _lastProcessTime = DateTime.MinValue;
         private bool _isSpeedMode = false;
@@ -234,16 +237,20 @@ namespace DocHandler.ViewModels
             // Update UI when files are added/removed
             PendingFiles.CollectionChanged += (s, e) => 
             {
-                UpdateUI();
+                // Always update UI on the UI thread
+                Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    UpdateUI();
+                });
                 
                 // When files are added in Save Quotes mode, scan for company names
                 // ONLY if user hasn't already entered a company name
                 if (SaveQuotesMode && e.NewItems != null && string.IsNullOrWhiteSpace(CompanyNameInput))
                 {
+                    // Use a safer approach to start the scan
                     foreach (FileItem item in e.NewItems)
                     {
-                        // Scan the first file added for company names
-                        _ = ScanForCompanyName(item.FilePath);
+                        StartCompanyNameScan(item.FilePath);
                         break; // Only scan the first file to avoid multiple detections
                     }
                 }
@@ -253,7 +260,7 @@ namespace DocHandler.ViewModels
             CheckOfficeAvailability();
         }
         
-        private async Task ScanForCompanyName(string filePath)
+        private async Task ScanForCompanyName(string filePath, CancellationToken cancellationToken = default)
         {
             // Don't scan if auto-scan is disabled, user has already typed a company name, or other conditions
             if (!SaveQuotesMode || IsDetectingCompany || !string.IsNullOrWhiteSpace(CompanyNameInput) || !AutoScanCompanyNames) 
@@ -262,78 +269,207 @@ namespace DocHandler.ViewModels
                     SaveQuotesMode, IsDetectingCompany, !string.IsNullOrWhiteSpace(CompanyNameInput), AutoScanCompanyNames);
                 return;
             }
+
+            // Use semaphore to prevent concurrent scans and safer cancellation
+            await _scanSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
             
             try
             {
-                IsDetectingCompany = true;
+                // Cancel any previous scan safely
+                var previousCts = Interlocked.Exchange(ref _currentScanCancellation, null);
+                if (previousCts != null)
+                {
+                    previousCts.Cancel();
+                    // Dispose safely in background without blocking
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(200); // Give more time for cleanup
+                        previousCts?.Dispose();
+                    });
+                }
+
+                // Create a new cancellation token for this scan
+                var localCts = new CancellationTokenSource();
+                _currentScanCancellation = localCts;
+
+                // Combine with method parameter and add timeout
+                using var combinedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken, 
+                    localCts.Token);
+
+                combinedCts.CancelAfter(TimeSpan.FromSeconds(30));
+            
+            try
+            {
+                // Update UI on UI thread
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    IsDetectingCompany = true;
+                });
+                
                 var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                 _logger.Information("Starting optimized company name detection for: {Path}", filePath);
                 
-                // Use cancellation token for responsive UI with 30-second timeout
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                // Create progress reporter for UI updates - use InvokeAsync consistently
+                var progress = new Progress<int>(percentage =>
+                {
+                    // Use InvokeAsync instead of BeginInvoke for consistency
+                    _ = Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        try
+                        {
+                            if (percentage <= 30)
+                            {
+                                StatusMessage = "Scanning document...";
+                            }
+                            else if (percentage <= 60)
+                            {
+                                StatusMessage = "Extracting text...";
+                            }
+                            else if (percentage <= 90)
+                            {
+                                StatusMessage = "Detecting company name...";
+                            }
+                            else
+                            {
+                                StatusMessage = "Finalizing detection...";
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Error updating progress UI");
+                        }
+                    });
+                });
                 
+                // Wrap the entire company name service operation in Task.Run with proper signature
                 var detectedCompany = await Task.Run(async () =>
                 {
-                    return await _companyNameService.ScanDocumentForCompanyName(filePath);
-                }, cts.Token);
+                    // Now using the correct signature with progress reporting
+                    return await _companyNameService.ScanDocumentForCompanyName(filePath, progress).ConfigureAwait(false);
+                }, combinedCts.Token).ConfigureAwait(false);
                 
                 stopwatch.Stop();
                 _logger.Information("Company detection completed in {ElapsedMs}ms", stopwatch.ElapsedMilliseconds);
                 
-                if (!string.IsNullOrEmpty(detectedCompany))
+                // Update UI on UI thread
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
-                    // Only update if user still hasn't typed anything
-                    if (string.IsNullOrWhiteSpace(CompanyNameInput))
+                    if (!string.IsNullOrEmpty(detectedCompany))
                     {
-                        DetectedCompanyName = detectedCompany;
-                        _logger.Information("Successfully detected company: {Company} in {ElapsedMs}ms", 
-                            detectedCompany, stopwatch.ElapsedMilliseconds);
-                        
-                        // Force UI update after detection
-                        UpdateUI();
+                        // Only update if user still hasn't typed anything
+                        if (string.IsNullOrWhiteSpace(CompanyNameInput))
+                        {
+                            DetectedCompanyName = detectedCompany;
+                            _logger.Information("Successfully detected company: {Company} in {ElapsedMs}ms", 
+                                detectedCompany, stopwatch.ElapsedMilliseconds);
+                            
+                            // Force UI update after detection
+                            UpdateUI();
+                        }
+                        else
+                        {
+                            _logger.Information("Company detected ({Company}) but user has already typed: {UserInput}", 
+                                detectedCompany, CompanyNameInput);
+                        }
                     }
                     else
                     {
-                        _logger.Information("Company detected ({Company}) but user has already typed: {UserInput}", 
-                            detectedCompany, CompanyNameInput);
+                        _logger.Information("No company name detected in document: {Path} (took {ElapsedMs}ms)", 
+                            filePath, stopwatch.ElapsedMilliseconds);
+                        // Clear any previous detection
+                        if (string.IsNullOrWhiteSpace(CompanyNameInput))
+                        {
+                            DetectedCompanyName = "";
+                        }
                     }
-                }
-                else
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.Warning("Company detection cancelled/timed out for: {Path}", filePath);
+                // Show user-friendly message for timeout on UI thread
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
-                    _logger.Information("No company name detected in document: {Path} (took {ElapsedMs}ms)", 
-                        filePath, stopwatch.ElapsedMilliseconds);
-                    // Clear any previous detection
                     if (string.IsNullOrWhiteSpace(CompanyNameInput))
                     {
                         DetectedCompanyName = "";
                     }
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.Warning("Company detection timed out for: {Path}", filePath);
-                // Show user-friendly message for timeout
-                if (string.IsNullOrWhiteSpace(CompanyNameInput))
-                {
-                    DetectedCompanyName = "";
-                }
+                    StatusMessage = "Company detection timed out";
+                });
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Company detection failed for: {Path}", filePath);
-                // Clear any partial detection on error
-                if (string.IsNullOrWhiteSpace(CompanyNameInput))
+                // Clear any partial detection on error on UI thread
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
-                    DetectedCompanyName = "";
-                }
+                    if (string.IsNullOrWhiteSpace(CompanyNameInput))
+                    {
+                        DetectedCompanyName = "";
+                    }
+                    StatusMessage = "Company detection failed";
+                });
             }
             finally
             {
-                IsDetectingCompany = false;
-                _logger.Debug("Company name detection completed. DetectedCompanyName: '{DetectedName}'", 
-                    DetectedCompanyName ?? "null");
-                UpdateUI(); // Ensure UI updates after detection completes
+                // Update UI on UI thread
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    IsDetectingCompany = false;
+                    StatusMessage = "";
+                    _logger.Debug("Company name detection completed. DetectedCompanyName: '{DetectedName}'", 
+                        DetectedCompanyName ?? "null");
+                    UpdateUI(); // Ensure UI updates after detection completes
+                });
             }
+        }
+        finally
+        {
+            _scanSemaphore.Release();
+        }
+    }
+        
+        // Add a new safe wrapper method
+        private async Task ScanForCompanyNameSafely(string filePath)
+        {
+            // Prevent multiple concurrent scans
+            if (_activeScanCount > 0)
+            {
+                _logger.Debug("Skipping scan - another scan is already in progress");
+                return;
+            }
+
+            try
+            {
+                Interlocked.Increment(ref _activeScanCount);
+                await ScanForCompanyName(filePath, CancellationToken.None);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _activeScanCount);
+            }
+        }
+
+        private void StartCompanyNameScan(string filePath)
+        {
+            // Use a safer approach to start the scan without fire-and-forget
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await ScanForCompanyNameSafely(filePath);
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Application is shutting down, ignore
+                    _logger.Debug("Scan cancelled - application shutting down");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Error during auto-scan for file: {FilePath}", filePath);
+                }
+            });
         }
         
         private void CheckOfficeAvailability()
@@ -366,31 +502,34 @@ namespace DocHandler.ViewModels
         }
 
         // Enhanced fuzzy search implementation with better synchronization
-        private void FilterScopes()
+        private async void FilterScopes()
         {
-            var searchTerm = ScopeSearchText?.Trim() ?? "";
-            
-            // Get current selection before filtering
-            var currentSelection = SelectedScope;
+            // CRITICAL FIX: Capture all UI values on the UI thread FIRST
+            var uiValues = await Application.Current.Dispatcher.InvokeAsync(() => new
+            {
+                SearchTerm = ScopeSearchText?.Trim() ?? "",
+                CurrentSelection = SelectedScope,
+                ScopesOfWorkList = ScopesOfWork.ToList() // Create a safe copy
+            });
             
             // Build filtered list without clearing to minimize UI disruption
             var filteredList = new List<string>();
             
-            if (string.IsNullOrWhiteSpace(searchTerm))
+            if (string.IsNullOrWhiteSpace(uiValues.SearchTerm))
             {
                 // No search term - show all scopes
-                filteredList.AddRange(ScopesOfWork);
+                filteredList.AddRange(uiValues.ScopesOfWorkList);
             }
             else
             {
                 // Fuzzy search implementation
-                var searchWords = searchTerm.ToLowerInvariant().Split(new[] { ' ', '-' }, StringSplitOptions.RemoveEmptyEntries);
+                var searchWords = uiValues.SearchTerm.ToLowerInvariant().Split(new[] { ' ', '-' }, StringSplitOptions.RemoveEmptyEntries);
                 
                 var scoredScopes = new List<(string scope, double score)>();
                 
-                foreach (var scope in ScopesOfWork)
+                foreach (var scope in uiValues.ScopesOfWorkList)
                 {
-                    double score = CalculateFuzzyScore(scope, searchTerm, searchWords);
+                    double score = CalculateFuzzyScore(scope, uiValues.SearchTerm, searchWords);
                     if (score > 0)
                     {
                         scoredScopes.Add((scope, score));
@@ -401,8 +540,8 @@ namespace DocHandler.ViewModels
                 filteredList.AddRange(scoredScopes.OrderByDescending(x => x.score).Select(x => x.scope));
             }
             
-            // Update the filtered collection efficiently
-            Application.Current.Dispatcher.Invoke(() =>
+            // Update the filtered collection efficiently using ASYNC dispatcher
+            await Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 // Only update if the contents have changed
                 if (!filteredList.SequenceEqual(FilteredScopesOfWork))
@@ -415,17 +554,17 @@ namespace DocHandler.ViewModels
                 }
                 
                 // Preserve selection more conservatively
-                if (currentSelection != null)
+                if (uiValues.CurrentSelection != null)
                 {
-                    if (FilteredScopesOfWork.Contains(currentSelection))
+                    if (FilteredScopesOfWork.Contains(uiValues.CurrentSelection))
                     {
                         // Keep existing selection if it's still in filtered results
-                        if (SelectedScope != currentSelection)
+                        if (SelectedScope != uiValues.CurrentSelection)
                         {
-                            SelectedScope = currentSelection;
+                            SelectedScope = uiValues.CurrentSelection;
                         }
                     }
-                    else if (string.IsNullOrWhiteSpace(searchTerm))
+                    else if (string.IsNullOrWhiteSpace(uiValues.SearchTerm))
                     {
                         // Only clear selection if search is completely empty
                         // This prevents clearing during navigation
@@ -598,6 +737,13 @@ namespace DocHandler.ViewModels
         
         public void UpdateUI()
         {
+            // Ensure this method is always called on the UI thread
+            if (!Application.Current.Dispatcher.CheckAccess())
+            {
+                Application.Current.Dispatcher.InvokeAsync(() => UpdateUI());
+                return;
+            }
+            
             if (SaveQuotesMode)
             {
                 // Need both a scope and either typed or detected company name
@@ -681,22 +827,30 @@ namespace DocHandler.ViewModels
         private async Task CleanupTempFiles()
         {
             var tempFilesToRemove = _tempFilesToCleanup.Keys.ToList();
-            foreach (var tempFile in tempFilesToRemove)
+            
+            if (tempFilesToRemove.Count == 0)
+                return;
+            
+            // Move file operations to background thread to avoid blocking UI
+            await Task.Run(() =>
             {
-                try
+                foreach (var tempFile in tempFilesToRemove)
                 {
-                    if (File.Exists(tempFile))
+                    try
                     {
-                        File.Delete(tempFile);
-                        _logger.Debug("Cleaned up temp file: {File}", tempFile);
+                        if (File.Exists(tempFile))
+                        {
+                            File.Delete(tempFile);
+                            _logger.Debug("Cleaned up temp file: {File}", tempFile);
+                        }
+                        _tempFilesToCleanup.TryRemove(tempFile, out _);
                     }
-                    _tempFilesToCleanup.TryRemove(tempFile, out _);
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Failed to cleanup temp file: {File}", tempFile);
+                    }
                 }
-                catch (Exception ex)
-                {
-                    _logger.Warning(ex, "Failed to cleanup temp file: {File}", tempFile);
-                }
-            }
+            }).ConfigureAwait(false);
         }
         
         /// <summary>
@@ -740,53 +894,78 @@ namespace DocHandler.ViewModels
         {
             if (SaveQuotesMode)
             {
-                await ProcessSaveQuotes();
+                await ProcessSaveQuotes().ConfigureAwait(false);
                 return;
             }
 
-            if (!PendingFiles.Any())
+            // Capture UI values on UI thread first
+            var uiValues = await Application.Current.Dispatcher.InvokeAsync(() => new
             {
-                StatusMessage = "No files selected";
+                HasFiles = PendingFiles.Any(),
+                FileCount = PendingFiles.Count,
+                FilePaths = PendingFiles.Select(f => f.FilePath).ToList(),
+                OpenFolderAfterProcessing = this.OpenFolderAfterProcessing
+            });
+
+            if (!uiValues.HasFiles)
+            {
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = "No files selected";
+                });
                 return;
             }
 
-            IsProcessing = true;
-            StatusMessage = PendingFiles.Count > 1 ? "Merging and processing files..." : "Processing file...";
+            await Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                IsProcessing = true;
+                StatusMessage = uiValues.FileCount > 1 ? "Merging and processing files..." : "Processing file...";
+            });
 
             try
             {
-                var filePaths = PendingFiles.Select(f => f.FilePath).ToList();
                 var outputDir = _configService.Config.DefaultSaveLocation;
 
                 // Create output folder with timestamp
                 outputDir = _fileProcessingService.CreateOutputFolder(outputDir);
 
-                var result = await _fileProcessingService.ProcessFiles(filePaths, outputDir, ConvertOfficeToPdf);
+                var result = await _fileProcessingService.ProcessFiles(uiValues.FilePaths, outputDir, ConvertOfficeToPdf).ConfigureAwait(false);
 
                 if (result.Success)
                 {
+                    // Update UI on UI thread
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        if (result.IsMerged)
+                        {
+                            StatusMessage = $"Successfully merged {uiValues.FilePaths.Count} files into {Path.GetFileName(result.SuccessfulFiles.First())}";
+                        }
+                        else
+                        {
+                            StatusMessage = $"Successfully processed {result.SuccessfulFiles.Count} file(s)";
+                        }
+
+                        // Clear the file list after successful processing
+                        PendingFiles.Clear();
+                    });
+
                     if (result.IsMerged)
                     {
-                        StatusMessage = $"Successfully merged {filePaths.Count} files into {Path.GetFileName(result.SuccessfulFiles.First())}";
                         _logger.Information("Files merged successfully");
                     }
                     else
                     {
-                        StatusMessage = $"Successfully processed {result.SuccessfulFiles.Count} file(s)";
                         _logger.Information("Files processed successfully");
                     }
-
-                    // Clear the file list after successful processing
-                    PendingFiles.Clear();
                     
                     // Clean up any temp files
-                    CleanupTempFiles();
+                    await CleanupTempFiles().ConfigureAwait(false);
 
                     // Update configuration with recent location
                     _configService.AddRecentLocation(outputDir);
 
                     // Open the output folder if preference is set
-                    if (OpenFolderAfterProcessing)
+                    if (uiValues.OpenFolderAfterProcessing)
                     {
                         try
                         {
@@ -809,7 +988,12 @@ namespace DocHandler.ViewModels
                         ? result.ErrorMessage 
                         : "Processing failed";
                     
-                    StatusMessage = $"Error: {errorMessage}";
+                    // Update UI on UI thread
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        StatusMessage = $"Error: {errorMessage}";
+                    });
+                    
                     _logger.Error("File processing failed: {Error}", errorMessage);
 
                     if (result.FailedFiles.Any())
@@ -827,7 +1011,12 @@ namespace DocHandler.ViewModels
             }
             catch (Exception ex)
             {
-                StatusMessage = $"Error: {ex.Message}";
+                // Update UI on UI thread
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = $"Error: {ex.Message}";
+                });
+                
                 _logger.Error(ex, "Unexpected error during file processing");
                 MessageBox.Show(
                     $"An unexpected error occurred:\n\n{ex.Message}",
@@ -837,9 +1026,13 @@ namespace DocHandler.ViewModels
             }
             finally
             {
-                IsProcessing = false;
-                ProgressValue = 0;
-                UpdateUI();
+                // Ensure all UI updates happen on the UI thread
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    IsProcessing = false;
+                    ProgressValue = 0;
+                    UpdateUI();
+                });
             }
         }
         
@@ -922,7 +1115,7 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private async Task ClearRecentScopes()
         {
-            await _scopeOfWorkService.ClearRecentScopes();
+            await _scopeOfWorkService.ClearRecentScopes().ConfigureAwait(false);
             LoadRecentScopes();
         }
 
@@ -1026,7 +1219,19 @@ namespace DocHandler.ViewModels
                     var firstFile = PendingFiles.First();
                     CompanyNameInput = "";
                     DetectedCompanyName = "";
-                    _ = ScanForCompanyName(firstFile.FilePath);
+                    
+                    // Use the safe wrapper instead of fire-and-forget
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await ScanForCompanyNameSafely(firstFile.FilePath);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Error(ex, "Error during rescan after company names edit");
+                        }
+                    });
                 }
             }
         }
@@ -1109,7 +1314,8 @@ namespace DocHandler.ViewModels
         {
             if (PendingFiles.Count == 0)
             {
-                MessageBox.Show("Please add at least one file to test company detection.", "No Files", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("Please add at least one file to test company detection.", "No Files", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
             
@@ -1120,7 +1326,8 @@ namespace DocHandler.ViewModels
             {
                 foreach (var file in PendingFiles)
                 {
-                    await ScanForCompanyName(file.FilePath);
+                    // Use the updated signature with proper cancellation
+                    await ScanForCompanyName(file.FilePath, CancellationToken.None);
                 }
                 
                 if (string.IsNullOrEmpty(DetectedCompanyName))
@@ -1148,7 +1355,8 @@ namespace DocHandler.ViewModels
             catch (Exception ex)
             {
                 _logger.Error(ex, "Error during company detection test");
-                MessageBox.Show($"An error occurred during company detection:\n\n{ex.Message}", "Test Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"An error occurred during company detection:\n\n{ex.Message}", 
+                    "Test Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally
             {
@@ -1159,6 +1367,18 @@ namespace DocHandler.ViewModels
 
         private async Task ProcessSaveQuotes()
         {
+            // STEP 1: Capture all UI values on the UI thread FIRST
+            var uiValues = await Application.Current.Dispatcher.InvokeAsync(() => new
+            {
+                SaveQuotesMode = this.SaveQuotesMode,
+                SelectedScope = this.SelectedScope,
+                CompanyNameInput = this.CompanyNameInput,
+                DetectedCompanyName = this.DetectedCompanyName,
+                PendingFilesList = this.PendingFiles.ToList(), // Create a copy
+                SessionSaveLocation = this.SessionSaveLocation,
+                OpenFolderAfterProcessing = this.OpenFolderAfterProcessing
+            });
+
             // Check if user is working fast
             var timeSinceLastProcess = DateTime.Now - _lastProcessTime;
             _isSpeedMode = timeSinceLastProcess.TotalSeconds < SpeedModeThresholdSeconds;
@@ -1169,17 +1389,18 @@ namespace DocHandler.ViewModels
                 _logger.Debug("Speed mode detected - skipping animation");
             }
             
-            if (!SaveQuotesMode || string.IsNullOrEmpty(SelectedScope))
+            // Now use captured values instead of direct UI access
+            if (!uiValues.SaveQuotesMode || string.IsNullOrEmpty(uiValues.SelectedScope))
             {
                 MessageBox.Show("Please select a scope of work first.", "Save Quotes", 
                     MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
-            // Get company name - use typed value first, then detected value
-            var companyName = !string.IsNullOrWhiteSpace(CompanyNameInput) 
-                ? CompanyNameInput.Trim() 
-                : DetectedCompanyName?.Trim();
+            // Get company name - use typed value first, then detected value  
+            var companyName = !string.IsNullOrWhiteSpace(uiValues.CompanyNameInput) 
+                ? uiValues.CompanyNameInput.Trim() 
+                : uiValues.DetectedCompanyName?.Trim();
             
             if (string.IsNullOrWhiteSpace(companyName))
             {
@@ -1192,32 +1413,43 @@ namespace DocHandler.ViewModels
             // Sanitize company name for use in filename
             companyName = SanitizeFileName(companyName);
 
-            if (!PendingFiles.Any())
+            if (!uiValues.PendingFilesList.Any())
             {
-                StatusMessage = "No quote documents to process";
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = "No quote documents to process";
+                });
                 return;
             }
 
-            IsProcessing = true;
+            await Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                IsProcessing = true;
+            });
+            
             var processedCount = 0;
-            var totalFiles = PendingFiles.Count; // Store count before processing
+            var totalFiles = uiValues.PendingFilesList.Count;
             var failedFiles = new List<(string file, string error)>();
 
             try
             {
-                var outputDir = !string.IsNullOrEmpty(SessionSaveLocation) 
-                    ? SessionSaveLocation 
+                var outputDir = !string.IsNullOrEmpty(uiValues.SessionSaveLocation) 
+                    ? uiValues.SessionSaveLocation 
                     : _configService.Config.DefaultSaveLocation;
 
-                foreach (var file in PendingFiles.ToList())
+                foreach (var file in uiValues.PendingFilesList)
                 {
                     try
                     {
-                        StatusMessage = $"Processing quote: {file.FileName}";
-                        ProgressValue = (processedCount / (double)totalFiles) * 100;
+                        // Update progress on UI thread
+                        await Application.Current.Dispatcher.InvokeAsync(() =>
+                        {
+                            StatusMessage = $"Processing quote: {file.FileName}";
+                            ProgressValue = (processedCount / (double)totalFiles) * 100;
+                        });
 
                         // Build the filename: [Scope] - [Company].pdf
-                        var outputFileName = $"{SelectedScope} - {companyName}.pdf";
+                        var outputFileName = $"{uiValues.SelectedScope} - {companyName}.pdf";
                         var outputPath = Path.Combine(outputDir, outputFileName);
 
                         // Ensure unique filename
@@ -1225,34 +1457,44 @@ namespace DocHandler.ViewModels
                             _fileProcessingService.GetUniqueFileName(outputDir, outputFileName));
 
                         // Process the file (convert if needed and save)
-                        var processResult = await ProcessSingleQuoteFile(file.FilePath, outputPath);
+                        var processResult = await ProcessSingleQuoteFile(file.FilePath, outputPath).ConfigureAwait(false);
                         
                         if (processResult.Success)
                         {
                             processedCount++;
-                            PendingFiles.Remove(file);
+                            
+                            // Update UI on UI thread - remove from actual UI collection
+                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                            {
+                                var itemToRemove = PendingFiles.FirstOrDefault(f => f.FilePath == file.FilePath);
+                                if (itemToRemove != null)
+                                {
+                                    PendingFiles.Remove(itemToRemove);
+                                }
+                            });
+                            
                             _logger.Information("Saved quote as: {FileName}", outputFileName);
                             
                             // Update company usage if it was detected
-                            if (!string.IsNullOrWhiteSpace(DetectedCompanyName) && 
-                                companyName.Equals(SanitizeFileName(DetectedCompanyName), StringComparison.OrdinalIgnoreCase))
+                            if (!string.IsNullOrWhiteSpace(uiValues.DetectedCompanyName) && 
+                                companyName.Equals(SanitizeFileName(uiValues.DetectedCompanyName), StringComparison.OrdinalIgnoreCase))
                             {
-                                await _companyNameService.IncrementUsageCount(DetectedCompanyName);
+                                await _companyNameService.IncrementUsageCount(uiValues.DetectedCompanyName).ConfigureAwait(false);
                             }
                             
                             // Update scope usage
-                            await _scopeOfWorkService.IncrementUsageCount(SelectedScope);
+                            await _scopeOfWorkService.IncrementUsageCount(uiValues.SelectedScope).ConfigureAwait(false);
                             
                             // Add to company database if not already there
-                            var originalCompanyName = !string.IsNullOrWhiteSpace(CompanyNameInput) 
-                                ? CompanyNameInput.Trim() 
-                                : DetectedCompanyName?.Trim();
+                            var originalCompanyName = !string.IsNullOrWhiteSpace(uiValues.CompanyNameInput) 
+                                ? uiValues.CompanyNameInput.Trim() 
+                                : uiValues.DetectedCompanyName?.Trim();
                                 
                             if (!string.IsNullOrWhiteSpace(originalCompanyName) &&
                                 !_companyNameService.Companies.Any(c => 
                                     c.Name.Equals(originalCompanyName, StringComparison.OrdinalIgnoreCase)))
                             {
-                                await _companyNameService.AddCompanyName(originalCompanyName);
+                                await _companyNameService.AddCompanyName(originalCompanyName).ConfigureAwait(false);
                             }
                         }
                         else
@@ -1270,21 +1512,25 @@ namespace DocHandler.ViewModels
                 // Update status based on results
                 if (processedCount > 0)
                 {
-                    StatusMessage = $"Successfully saved {processedCount} quote{(processedCount > 1 ? "s" : "")}";
+                    // Update UI elements on UI thread
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        StatusMessage = $"Successfully saved {processedCount} quote{(processedCount > 1 ? "s" : "")}";
+                        
+                        // Clear inputs for next batch
+                        CompanyNameInput = "";
+                        DetectedCompanyName = "";
+                        SelectedScope = null;
+                    });
                     
                     // Only show animation if not in speed mode
                     if (!_isSpeedMode && Application.Current.MainWindow is MainWindow mainWindow)
                     {
-                        await mainWindow.ShowSaveQuotesSuccessAnimation(processedCount);
+                        await mainWindow.ShowSaveQuotesSuccessAnimation(processedCount).ConfigureAwait(false);
                     }
                     
                     // Update last process time
                     _lastProcessTime = DateTime.Now;
-                    
-                    // Clear inputs for next batch
-                    CompanyNameInput = "";
-                    DetectedCompanyName = "";
-                    SelectedScope = null;
                     
                     // Increment processed file count
                     _processedFileCount += processedCount;
@@ -1294,7 +1540,7 @@ namespace DocHandler.ViewModels
                     OnPropertyChanged(nameof(RecentLocations));
                     
                     // Open output folder if preference is set
-                    if (OpenFolderAfterProcessing && processedCount == totalFiles)
+                    if (uiValues.OpenFolderAfterProcessing && processedCount == totalFiles)
                     {
                         OpenOutputFolder(outputDir);
                     }
@@ -1320,12 +1566,16 @@ namespace DocHandler.ViewModels
             }
             finally
             {
-                IsProcessing = false;
-                ProgressValue = 0;
-                UpdateUI();
+                // Ensure all UI updates happen on the UI thread
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    IsProcessing = false;
+                    ProgressValue = 0;
+                    UpdateUI();
+                });
                 
-                // Cleanup temp files
-                await CleanupTempFiles();
+                // Cleanup temp files (can be done on background thread)
+                await CleanupTempFiles().ConfigureAwait(false);
             }
         }
 
@@ -1425,7 +1675,7 @@ namespace DocHandler.ViewModels
                     _logger.Information("Converting Word document using session service: {File}", Path.GetFileName(inputPath));
                     var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                     
-                    var conversionResult = await _sessionOfficeService.ConvertWordToPdf(inputPath, outputPath);
+                    var conversionResult = await _sessionOfficeService.ConvertWordToPdf(inputPath, outputPath).ConfigureAwait(false);
                     
                     stopwatch.Stop();
                     _logger.Information("Conversion completed in {ElapsedMs}ms", stopwatch.ElapsedMilliseconds);
@@ -1443,7 +1693,7 @@ namespace DocHandler.ViewModels
                         // If session service fails, try with regular service as fallback
                         _logger.Warning("Session service failed, trying fallback: {Error}", conversionResult.ErrorMessage);
                         
-                        var fallbackResult = await _officeConversionService.ConvertWordToPdf(inputPath, outputPath);
+                        var fallbackResult = await _officeConversionService.ConvertWordToPdf(inputPath, outputPath).ConfigureAwait(false);
                         
                         if (fallbackResult.Success)
                         {
@@ -1482,7 +1732,7 @@ namespace DocHandler.ViewModels
                 try
                 {
                     _logger.Information("Converting Excel document: {File}", Path.GetFileName(inputPath));
-                    var conversionResult = await _officeConversionService.ConvertExcelToPdf(inputPath, outputPath);
+                    var conversionResult = await _officeConversionService.ConvertExcelToPdf(inputPath, outputPath).ConfigureAwait(false);
                     
                     if (conversionResult.Success)
                     {
@@ -1533,41 +1783,69 @@ namespace DocHandler.ViewModels
             OnPropertyChanged(nameof(CompanyNamePlaceholder));
         }
         
-        public void Cleanup()
+        public async void Cleanup()
         {
-            CleanupTempFiles();
-            _scopeSearchTimer?.Stop();
-            _scopeSearchTimer = null;
-            _scopeSearchCancellation?.Cancel();
-            _scopeSearchCancellation?.Dispose();
-            _scopeSearchCancellation = null;
-            
-            // Cleanup session service
             try
             {
-                _sessionOfficeService?.Dispose();
-                _logger.Information("Session Office service disposed");
+                // Cancel any active scans safely
+                var currentScan = Interlocked.Exchange(ref _currentScanCancellation, null);
+                if (currentScan != null)
+                {
+                    currentScan.Cancel();
+                    // Give some time for operations to complete
+                    await Task.Delay(500);
+                    currentScan.Dispose();
+                }
+                
+                // Dispose semaphore
+                _scanSemaphore?.Dispose();
+                
+                await CleanupTempFiles().ConfigureAwait(false);
+                
+                // Stop and dispose scope search timer
+                _scopeSearchTimer?.Stop();
+                _scopeSearchTimer = null;
+                
+                                 // Handle scope search cancellation safely
+                 var scopeSearchCancellation = Interlocked.Exchange(ref _scopeSearchCancellation, null);
+                 if (scopeSearchCancellation != null)
+                 {
+                     scopeSearchCancellation.Cancel();
+                     await Task.Delay(100);
+                     scopeSearchCancellation.Dispose();
+                 }
+            
+                // Cleanup session service
+                try
+                {
+                    _sessionOfficeService?.Dispose();
+                    _logger.Information("Session Office service disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing session Office service");
+                }
+                
+                // Cleanup PDF cache
+                try
+                {
+                    _companyNameService?.CleanupPdfCache();
+                    _logger.Information("PDF cache cleaned up");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error cleaning PDF cache");
+                }
+                
+                // Dispose other services
+                _fileProcessingService?.Dispose();
+                
+                _logger.Information("MainViewModel cleanup completed");
             }
             catch (Exception ex)
             {
-                _logger.Warning(ex, "Error disposing session Office service");
+                _logger.Error(ex, "Error during cleanup");
             }
-            
-            // Cleanup PDF cache
-            try
-            {
-                _companyNameService?.CleanupPdfCache();
-                _logger.Information("PDF cache cleaned up");
-            }
-            catch (Exception ex)
-            {
-                _logger.Warning(ex, "Error cleaning PDF cache");
-            }
-            
-            // Dispose other services
-            _fileProcessingService?.Dispose();
-            
-            _logger.Information("MainViewModel cleanup completed");
         }
         
         public void SaveWindowState(double left, double top, double width, double height, string state)

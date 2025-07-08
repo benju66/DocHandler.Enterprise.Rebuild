@@ -202,7 +202,7 @@ namespace DocHandler.Services
                 };
                 
                 var json = JsonSerializer.Serialize(_data, options);
-                await File.WriteAllTextAsync(_companyNamesPath, json);
+                await File.WriteAllTextAsync(_companyNamesPath, json).ConfigureAwait(false);
                 
                 _logger.Information("Company names saved to {Path}", _companyNamesPath);
             }
@@ -236,7 +236,7 @@ namespace DocHandler.Services
                 _data.Companies.Add(company);
                 _data.Companies = _data.Companies.OrderBy(c => c.Name).ToList();
                 
-                await SaveCompanyNames();
+                await SaveCompanyNames().ConfigureAwait(false);
                 _logger.Information("Added new company: {Name}", name);
                 return true;
             }
@@ -257,7 +257,7 @@ namespace DocHandler.Services
                 if (company != null)
                 {
                     _data.Companies.Remove(company);
-                    await SaveCompanyNames();
+                    await SaveCompanyNames().ConfigureAwait(false);
                     _logger.Information("Removed company: {Name}", name);
                     return true;
                 }
@@ -271,7 +271,7 @@ namespace DocHandler.Services
             }
         }
         
-        public async Task<string?> ScanDocumentForCompanyName(string filePath)
+        public async Task<string?> ScanDocumentForCompanyName(string filePath, IProgress<int>? progress = null)
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             Interlocked.Increment(ref _detectionCount);
@@ -279,6 +279,8 @@ namespace DocHandler.Services
             
             try
             {
+                progress?.Report(10); // Starting scan
+                
                 // Check cache first
                 var fileInfo = new FileInfo(filePath);
                 if (!fileInfo.Exists)
@@ -295,7 +297,17 @@ namespace DocHandler.Services
                     return null;
                 }
                 
+                // Early exit for very large files
+                var fileSizeMB = fileInfo.Length / (1024.0 * 1024.0);
+                if (fileSizeMB > 50) // Skip files larger than 50MB
+                {
+                    _logger.Warning("Skipping very large file ({Size:F1}MB): {Path}", fileSizeMB, filePath);
+                    return null;
+                }
+                
                 var cacheKey = $"{filePath}_{fileInfo.LastWriteTime.Ticks}_{fileInfo.Length}";
+                
+                progress?.Report(20); // Checking cache
                 
                 // Check detection cache
                 if (_detectionCache.TryGetValue(cacheKey, out var cachedDetectionValue))
@@ -305,6 +317,8 @@ namespace DocHandler.Services
                     {
                         _logger.Debug("Using cached detection result for {File}", Path.GetFileName(filePath));
                         cachedDetection = true;
+                        
+                        progress?.Report(100); // Complete from cache
                         
                         stopwatch.Stop();
                         lock (_metricsLock)
@@ -323,8 +337,12 @@ namespace DocHandler.Services
                 
                 _logger.Information("Scanning document for company names: {Path}", filePath);
                 
+                progress?.Report(30); // Starting text extraction
+                
                 // Get cached or extract text
-                string documentText = await GetCachedDocumentText(filePath, cacheKey);
+                string documentText = await GetCachedDocumentText(filePath, cacheKey, progress).ConfigureAwait(false);
+                
+                progress?.Report(60); // Text extraction complete
                 
                 if (string.IsNullOrWhiteSpace(documentText))
                 {
@@ -359,6 +377,8 @@ namespace DocHandler.Services
                 
                 _logger.Debug("Extracted {Length} characters from document for company detection", documentText.Length);
                 
+                progress?.Report(70); // Starting company matching
+                
                 // Preprocess text for better matching
                 string processedText = PreprocessText(documentText);
                 
@@ -378,14 +398,20 @@ namespace DocHandler.Services
                     return null;
                 }
                 
+                progress?.Report(80); // Finding best match
+                
                 // Find best company match using enhanced matching
-                var bestMatch = await FindBestCompanyMatch(processedText);
+                var bestMatch = await FindBestCompanyMatch(processedText).ConfigureAwait(false);
+                
+                progress?.Report(90); // Processing results
                 
                 if (bestMatch != null)
                 {
                     _logger.Information("Found company: {Name} (Score: {Score})", bestMatch.Value.company, bestMatch.Value.score);
-                    await IncrementUsageCount(bestMatch.Value.company);
+                    await IncrementUsageCount(bestMatch.Value.company).ConfigureAwait(false);
                     _detectionCache[cacheKey] = (bestMatch.Value.company, DateTime.Now);
+                    
+                    progress?.Report(100); // Complete
                     
                     stopwatch.Stop();
                     lock (_metricsLock)
@@ -399,6 +425,8 @@ namespace DocHandler.Services
                 
                 _logger.Information("No known company names found in document (searched {Count} companies)", _data.Companies.Count);
                 _detectionCache[cacheKey] = (null, DateTime.Now);
+                
+                progress?.Report(100); // Complete
                 
                 stopwatch.Stop();
                 lock (_metricsLock)
@@ -424,15 +452,20 @@ namespace DocHandler.Services
             }
         }
         
-        private async Task<string> GetCachedDocumentText(string filePath, string cacheKey)
+        private async Task<string> GetCachedDocumentText(string filePath, string cacheKey, IProgress<int>? progress = null)
         {
             if (_textCache.TryGetValue(cacheKey, out string? cachedText))
             {
                 _logger.Debug("Using cached text extraction for {File}", Path.GetFileName(filePath));
+                progress?.Report(60); // Update progress for cached text
                 return cachedText;
             }
             
-            var extractedText = await ExtractTextFromDocument(filePath);
+            progress?.Report(40); // Starting text extraction
+            
+            var extractedText = await ExtractTextFromDocument(filePath, progress).ConfigureAwait(false);
+            
+            progress?.Report(55); // Text extraction complete, caching
             
             // Cache the extracted text (limit cache size)
             if (_textCache.Count > 100)
@@ -703,7 +736,7 @@ namespace DocHandler.Services
             }
         }
         
-        private async Task<string> ExtractTextFromDocument(string filePath)
+        private async Task<string> ExtractTextFromDocument(string filePath, IProgress<int>? progress = null)
         {
             var extension = Path.GetExtension(filePath).ToLowerInvariant();
             
@@ -712,15 +745,15 @@ namespace DocHandler.Services
                 switch (extension)
                 {
                     case ".pdf":
-                        return await ExtractTextFromPdf(filePath);
+                        return await ExtractTextFromPdf(filePath, progress).ConfigureAwait(false);
                     case ".doc":
                     case ".docx":
-                        return await ExtractTextFromWord(filePath);
+                        return await ExtractTextFromWord(filePath).ConfigureAwait(false);
                     case ".xls":
                     case ".xlsx":
-                        return await ExtractTextFromExcel(filePath);
+                        return await ExtractTextFromExcel(filePath).ConfigureAwait(false);
                     case ".txt":
-                        return await ExtractTextFromTextFile(filePath);
+                        return await ExtractTextFromTextFile(filePath).ConfigureAwait(false);
                     default:
                         _logger.Warning("Unsupported file type for text extraction: {Extension}", extension);
                         return string.Empty;
@@ -733,9 +766,9 @@ namespace DocHandler.Services
             }
         }
         
-        private async Task<string> ExtractTextFromPdf(string filePath)
+        private async Task<string> ExtractTextFromPdf(string filePath, IProgress<int>? progress = null)
         {
-            return await Task.Run(() =>
+            return await Task.Run(async () =>
             {
                 try
                 {
@@ -753,6 +786,16 @@ namespace DocHandler.Services
                         return string.Empty;
                     }
                     
+                    // Early exit for very large PDFs
+                    var fileSizeMB = fileInfo.Length / (1024.0 * 1024.0);
+                    if (fileSizeMB > 20) // Skip PDFs larger than 20MB
+                    {
+                        _logger.Warning("Skipping very large PDF ({Size:F1}MB): {Path}", fileSizeMB, filePath);
+                        return string.Empty;
+                    }
+                    
+                    progress?.Report(45); // Starting PDF processing
+                    
                     using var reader = new PdfReader(filePath);
                     using var pdfDoc = new PdfDocument(reader);
                     var text = new StringBuilder();
@@ -764,6 +807,9 @@ namespace DocHandler.Services
                     _logger.Debug("Extracting text from PDF: {TotalPages} total pages, scanning {ScanPages} priority pages", 
                         totalPages, pagesToScan.Count);
                     
+                    progress?.Report(50); // PDF opened, starting page processing
+                    
+                    int processedPages = 0;
                     foreach (var pageNum in pagesToScan)
                     {
                         try
@@ -776,6 +822,18 @@ namespace DocHandler.Services
                             {
                                 text.AppendLine(pageText);
                                 _logger.Debug("Extracted {Length} characters from page {Page}", pageText.Length, pageNum);
+                            }
+                            
+                            processedPages++;
+                            
+                            // Report progress based on pages processed (50-55% range)
+                            var pageProgress = 50 + (int)((processedPages / (double)pagesToScan.Count) * 5);
+                            progress?.Report(Math.Min(pageProgress, 55));
+                            
+                            // Yield control periodically for responsiveness
+                            if (processedPages % 3 == 0)
+                            {
+                                await Task.Delay(1).ConfigureAwait(false);
                             }
                             
                             // Early exit if we have enough content for detection
@@ -793,7 +851,7 @@ namespace DocHandler.Services
                     
                     var extractedText = text.ToString();
                     _logger.Debug("Total text extracted from PDF: {Length} characters from {Pages} pages", 
-                        extractedText.Length, pagesToScan.Count);
+                        extractedText.Length, processedPages);
                     
                     return extractedText;
                 }
@@ -802,7 +860,7 @@ namespace DocHandler.Services
                     _logger.Error(ex, "Failed to extract text from PDF: {Path}", filePath);
                     return string.Empty;
                 }
-            });
+            }).ConfigureAwait(false);
         }
         
         private List<int> GetPriorityPages(int totalPages)
@@ -917,7 +975,7 @@ namespace DocHandler.Services
                     _logger.Warning(ex, "OpenXML extraction failed for: {Path}", filePath);
                     return string.Empty;
                 }
-            });
+            }).ConfigureAwait(false);
         }
 
         private async Task<string> ExtractTextFromWord(string filePath)
@@ -940,7 +998,7 @@ namespace DocHandler.Services
                 
                 // Try fast OpenXML extraction first
                 _logger.Debug("Attempting OpenXML text extraction for: {Path}", filePath);
-                var text = await ExtractTextFromWordDirect(filePath);
+                var text = await ExtractTextFromWordDirect(filePath).ConfigureAwait(false);
                 
                 if (!string.IsNullOrWhiteSpace(text) && text.Length > 100)
                 {
@@ -951,7 +1009,7 @@ namespace DocHandler.Services
                 _logger.Information("OpenXML extraction insufficient ({Length} chars), falling back to PDF conversion", text.Length);
                 
                 // Fall back to existing PDF conversion method
-                return await ExtractTextFromWordUsingPdfConversion(filePath);
+                return await ExtractTextFromWordUsingPdfConversion(filePath).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -969,7 +1027,7 @@ namespace DocHandler.Services
                 if (TryGetCachedPdf(filePath, out var cachedPdfPath) && cachedPdfPath != null)
                 {
                     _logger.Information("Using cached PDF for text extraction: {Path}", cachedPdfPath);
-                    return await ExtractTextFromPdf(cachedPdfPath);
+                    return await ExtractTextFromPdf(cachedPdfPath).ConfigureAwait(false);
                 }
                 
                 // Validate file before processing
@@ -1008,7 +1066,7 @@ namespace DocHandler.Services
                 {
                     // Use existing, trusted Office conversion service
                     var officeService = new OfficeConversionService();
-                    var conversionResult = await officeService.ConvertWordToPdf(filePath, tempPdfPath);
+                    var conversionResult = await officeService.ConvertWordToPdf(filePath, tempPdfPath).ConfigureAwait(false);
                     
                     if (!conversionResult.Success)
                     {
@@ -1016,14 +1074,14 @@ namespace DocHandler.Services
                         
                         // Fallback to basic OpenXML extraction (body paragraphs only)
                         _logger.Information("Falling back to basic text extraction for Word document: {Path}", filePath);
-                        return await ExtractTextFromWordBasic(filePath);
+                        return await ExtractTextFromWordBasic(filePath).ConfigureAwait(false);
                     }
                     
                     // Verify the PDF was created successfully
                     if (!File.Exists(tempPdfPath))
                     {
                         _logger.Warning("PDF conversion completed but output file not found: {Path}", tempPdfPath);
-                        return await ExtractTextFromWordBasic(filePath);
+                        return await ExtractTextFromWordBasic(filePath).ConfigureAwait(false);
                     }
                     
                     // Additional security check on converted PDF
@@ -1031,19 +1089,19 @@ namespace DocHandler.Services
                     if (pdfInfo.Length == 0)
                     {
                         _logger.Warning("Converted PDF is empty: {Path}", tempPdfPath);
-                        return await ExtractTextFromWordBasic(filePath);
+                        return await ExtractTextFromWordBasic(filePath).ConfigureAwait(false);
                     }
                     
                     // Cache the converted PDF
                     CachePdfConversion(filePath, tempPdfPath);
                     
                     // Use existing, trusted PDF text extraction (captures headers, footers, images, etc.)
-                    var extractedText = await ExtractTextFromPdf(tempPdfPath);
+                    var extractedText = await ExtractTextFromPdf(tempPdfPath).ConfigureAwait(false);
                     
                     if (string.IsNullOrWhiteSpace(extractedText))
                     {
                         _logger.Warning("No text extracted from converted Word PDF: {Path}", filePath);
-                        return await ExtractTextFromWordBasic(filePath);
+                        return await ExtractTextFromWordBasic(filePath).ConfigureAwait(false);
                     }
                     
                     _logger.Information("Successfully extracted comprehensive text from Word via PDF: {Length} characters from {OriginalFile}", 
@@ -1071,7 +1129,7 @@ namespace DocHandler.Services
                 _logger.Error(ex, "Failed to extract text from Word document: {Path}", filePath);
                 
                 // Final fallback to basic extraction
-                return await ExtractTextFromWordBasic(filePath);
+                return await ExtractTextFromWordBasic(filePath).ConfigureAwait(false);
             }
         }
 
@@ -1139,7 +1197,7 @@ namespace DocHandler.Services
                     _logger.Error(ex, "Failed basic text extraction from Word document: {Path}", filePath);
                     return string.Empty;
                 }
-            });
+            }).ConfigureAwait(false);
         }
 
         private async Task<string> ExtractTextFromExcel(string filePath)
@@ -1182,7 +1240,7 @@ namespace DocHandler.Services
                 {
                     // Use existing, trusted Office conversion service
                     var officeService = new OfficeConversionService();
-                    var conversionResult = await officeService.ConvertExcelToPdf(filePath, tempPdfPath);
+                    var conversionResult = await officeService.ConvertExcelToPdf(filePath, tempPdfPath).ConfigureAwait(false);
                     
                     if (!conversionResult.Success)
                     {
@@ -1206,7 +1264,7 @@ namespace DocHandler.Services
                     }
                     
                     // Use existing, trusted PDF text extraction
-                    var extractedText = await ExtractTextFromPdf(tempPdfPath);
+                    var extractedText = await ExtractTextFromPdf(tempPdfPath).ConfigureAwait(false);
                     
                     if (string.IsNullOrWhiteSpace(extractedText))
                     {
@@ -1279,7 +1337,7 @@ namespace DocHandler.Services
                 
                 // Read the text file (limit to first 10KB for company detection)
                 var maxBytes = 10 * 1024; // 10KB
-                var text = await File.ReadAllTextAsync(filePath);
+                var text = await File.ReadAllTextAsync(filePath).ConfigureAwait(false);
                 
                 // Truncate if too long for company detection
                 if (text.Length > maxBytes)
@@ -1329,7 +1387,7 @@ namespace DocHandler.Services
             {
                 company.UsageCount++;
                 company.LastUsed = DateTime.Now;
-                await SaveCompanyNames();
+                await SaveCompanyNames().ConfigureAwait(false);
             }
         }
         

@@ -135,7 +135,7 @@ namespace DocHandler
                     try
                     {
                         Mouse.OverrideCursor = Cursors.Wait;
-                        ViewModel.StatusMessage = "Extracting Outlook attachments...";
+                        Dispatcher.InvokeAsync(() => ViewModel.StatusMessage = "Extracting Outlook attachments...");
                         
                         var outlookFiles = OutlookAttachmentHelper.ExtractOutlookAttachments(e.Data);
                         
@@ -412,7 +412,7 @@ namespace DocHandler
                 // Still show visual feedback but with a different message
                 dropBorder.BorderBrush = (Brush)FindResource("SystemControlForegroundBaseMediumHighBrush");
                 dropBorder.BorderThickness = new Thickness(3);
-                ViewModel.StatusMessage = "New Outlook not supported - please save attachments first";
+                Dispatcher.InvokeAsync(() => ViewModel.StatusMessage = "New Outlook not supported - please save attachments first");
                 return;
             }
             
@@ -430,7 +430,7 @@ namespace DocHandler
                 // Update status for Outlook attachments
                 if (e.Data.GetDataPresent("FileGroupDescriptor") || e.Data.GetDataPresent("FileGroupDescriptorW"))
                 {
-                    ViewModel.StatusMessage = "Drop Outlook attachments here...";
+                    Dispatcher.InvokeAsync(() => ViewModel.StatusMessage = "Drop Outlook attachments here...");
                 }
             }
             else
