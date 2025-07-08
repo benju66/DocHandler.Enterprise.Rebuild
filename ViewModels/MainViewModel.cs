@@ -37,6 +37,7 @@ namespace DocHandler.ViewModels
         private readonly CompanyNameService _companyNameService;
         private readonly ScopeOfWorkService _scopeOfWorkService;
         private readonly SessionAwareOfficeService _sessionOfficeService;
+        private readonly SessionAwareExcelService _sessionExcelService;
         private readonly object _conversionLock = new object();
         private readonly ConcurrentDictionary<string, byte> _tempFilesToCleanup = new();
         
@@ -99,6 +100,21 @@ namespace DocHandler.ViewModels
                     {
                         StatusMessage = "Save Quotes Mode: Drop quote documents";
                         SessionSaveLocation = _configService.Config.DefaultSaveLocation;
+                        
+                        // Pre-warm Office services in background
+                        _ = Task.Run(() =>
+                        {
+                            try
+                            {
+                                _sessionOfficeService.WarmUp();
+                                _sessionExcelService.WarmUp();
+                                _logger.Information("Office services pre-warmed for Save Quotes Mode");
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.Warning(ex, "Failed to pre-warm Office services");
+                            }
+                        });
                     }
                     else
                     {
@@ -202,8 +218,9 @@ namespace DocHandler.ViewModels
             _sessionOfficeService = new SessionAwareOfficeService();
             _logger.Information("Session-aware Office service initialized");
 
-            // Add this line to inject services into CompanyNameService
-            _companyNameService.SetOfficeServices(_sessionOfficeService, new SessionAwareExcelService());
+            // Initialize session-aware Excel service for better performance
+            _sessionExcelService = new SessionAwareExcelService();
+            _companyNameService.SetOfficeServices(_sessionOfficeService, _sessionExcelService);
             
             // Initialize scope search timer for debouncing
             _scopeSearchTimer = new DispatcherTimer
@@ -1974,15 +1991,16 @@ namespace DocHandler.ViewModels
                      scopeSearchCancellation.Dispose();
                  }
             
-                // Cleanup session service
+                // Cleanup session services
                 try
                 {
                     _sessionOfficeService?.Dispose();
-                    _logger.Information("Session Office service disposed");
+                    _sessionExcelService?.Dispose();
+                    _logger.Information("Session Office services disposed");
                 }
                 catch (Exception ex)
                 {
-                    _logger.Warning(ex, "Error disposing session Office service");
+                    _logger.Warning(ex, "Error disposing session Office services");
                 }
                 
                 // Cleanup PDF cache
