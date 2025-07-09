@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using System.Text.RegularExpressions;
 using System.Text;
 using System.Security.Cryptography;
+using System.Diagnostics;
 using Serilog;
 using Task = System.Threading.Tasks.Task;
 using iText.Kernel.Pdf;
@@ -15,6 +16,7 @@ using iText.Kernel.Pdf.Canvas.Parser;
 using iText.Kernel.Pdf.Canvas.Parser.Listener;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
+using DocumentFormat.OpenXml.Spreadsheet;
 
 namespace DocHandler.Services
 {
@@ -758,10 +760,37 @@ namespace DocHandler.Services
                     return await ExtractTextFromPdf(filePath, progress);
                 }
                 
-                // For Office documents, convert to PDF first for faster text extraction
+                // For Office documents, use fast OpenXML extraction first
                 if (extension == ".docx" || extension == ".doc" || extension == ".xlsx" || extension == ".xls")
                 {
-                    progress?.Report(10); // Starting conversion
+                    progress?.Report(10);
+                    
+                    // Try fast OpenXML extraction first
+                    string text = string.Empty;
+                    
+                    if (extension == ".docx" || extension == ".doc")
+                    {
+                        text = await ExtractTextFromWord(filePath);
+                    }
+                    else // Excel
+                    {
+                        text = await ExtractTextFromExcel(filePath);
+                    }
+                    
+                    progress?.Report(80);
+                    
+                    // If OpenXML extraction was successful, return the text
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        _logger.Information("Extracted text via OpenXML for {File} - {Length} chars", 
+                            Path.GetFileName(filePath), text.Length);
+                        progress?.Report(100);
+                        return text;
+                    }
+                    
+                    // If OpenXML failed, fall back to PDF conversion approach
+                    _logger.Warning("OpenXML extraction failed for {File}, falling back to PDF conversion", 
+                        Path.GetFileName(filePath));
                     
                     // Check if we already have a converted PDF
                     if (_convertedPdfCache.TryGetValue(filePath, out string? cachedPdfPath) && 
@@ -772,7 +801,7 @@ namespace DocHandler.Services
                         return await ExtractTextFromPdf(cachedPdfPath, progress);
                     }
                     
-                    // Convert to temporary PDF
+                    // Convert to temporary PDF as fallback
                     var tempPdf = Path.Combine(Path.GetTempPath(), $"DocHandler_{Guid.NewGuid()}.pdf");
                     ConversionResult conversionResult;
                     
@@ -780,8 +809,8 @@ namespace DocHandler.Services
                     {
                         if (_sessionOfficeService == null)
                         {
-                            _logger.Warning("Office service not available, falling back to original method");
-                            return await ExtractTextFromWord(filePath);
+                            _logger.Warning("Office service not available for PDF conversion fallback");
+                            return string.Empty;
                         }
                         
                         conversionResult = await _sessionOfficeService.ConvertWordToPdf(filePath, tempPdf);
@@ -790,25 +819,20 @@ namespace DocHandler.Services
                     {
                         if (_sessionExcelService == null)
                         {
-                            _logger.Warning("Excel service not available, falling back to original method");
-                            return await ExtractTextFromExcel(filePath);
+                            _logger.Warning("Excel service not available for PDF conversion fallback");
+                            return string.Empty;
                         }
                         
                         conversionResult = await _sessionExcelService.ConvertSpreadsheetToPdf(filePath, tempPdf);
                     }
                     
-                    progress?.Report(40); // Conversion complete
+                    progress?.Report(40);
                     
                     if (!conversionResult.Success)
                     {
                         _logger.Warning("Failed to convert {File} to PDF: {Error}", 
                             Path.GetFileName(filePath), conversionResult.ErrorMessage);
-                        
-                        // Fallback to original methods
-                        if (extension == ".docx" || extension == ".doc")
-                            return await ExtractTextFromWord(filePath);
-                        else
-                            return await ExtractTextFromExcel(filePath);
+                        return string.Empty;
                     }
                     
                     try
@@ -818,14 +842,14 @@ namespace DocHandler.Services
                         _pdfCacheTimestamps[filePath] = DateTime.Now;
                         _pdfCacheFileInfo[filePath] = new FileInfo(filePath);
                         
-                        // Extract text from the PDF (much faster than Word interop!)
+                        // Extract text from the PDF
                         progress?.Report(50);
-                        var text = await ExtractTextFromPdf(tempPdf, progress);
+                        var pdfText = await ExtractTextFromPdf(tempPdf, progress);
                         
-                        _logger.Information("Extracted text via PDF conversion for {File} - {Length} chars", 
-                            Path.GetFileName(filePath), text.Length);
+                        _logger.Information("Extracted text via PDF conversion fallback for {File} - {Length} chars", 
+                            Path.GetFileName(filePath), pdfText.Length);
                         
-                        return text;
+                        return pdfText;
                     }
                     catch (Exception ex)
                     {
@@ -838,11 +862,7 @@ namespace DocHandler.Services
                         }
                         _convertedPdfCache.TryRemove(filePath, out _);
                         
-                        // Fallback to original methods
-                        if (extension == ".docx" || extension == ".doc")
-                            return await ExtractTextFromWord(filePath);
-                        else
-                            return await ExtractTextFromExcel(filePath);
+                        return string.Empty;
                     }
                 }
                 
@@ -952,75 +972,166 @@ namespace DocHandler.Services
         {
             return await Task.Run(() =>
             {
+                var extractedText = new StringBuilder();
+                var stopwatch = Stopwatch.StartNew();
+                const int maxChars = 5000;
+                const int timeoutMs = 2000;
+                
                 try
                 {
+                    // Check file extension - only process .docx files with OpenXML
+                    var extension = Path.GetExtension(filePath).ToLowerInvariant();
+                    if (extension != ".docx")
+                    {
+                        _logger.Debug("Skipping OpenXML extraction for non-docx file: {Extension}", extension);
+                        return string.Empty;
+                    }
+                    
                     using (var doc = WordprocessingDocument.Open(filePath, false))
                     {
-                        var text = new StringBuilder();
-                        var body = doc.MainDocumentPart?.Document?.Body;
-                        
-                        if (body == null) 
+                        // 1. Extract document properties first (highest priority)
+                        try
                         {
-                            _logger.Warning("Word document has no body content: {Path}", filePath);
-                            return string.Empty;
+                            var extendedProps = doc.ExtendedFilePropertiesPart;
+                            if (extendedProps != null)
+                            {
+                                var props = extendedProps.Properties;
+                                if (props != null)
+                                {
+                                    var company = props.Company?.Text;
+                                    
+                                    if (!string.IsNullOrWhiteSpace(company))
+                                    {
+                                        extractedText.AppendLine($"COMPANY: {company}");
+                                        _logger.Debug("Found company in document properties: {Company}", company);
+                                    }
+                                }
+                            }
+                            
+                            var coreProps = doc.PackageProperties;
+                            if (coreProps != null)
+                            {
+                                var creator = coreProps.Creator;
+                                
+                                if (!string.IsNullOrWhiteSpace(creator))
+                                {
+                                    extractedText.AppendLine($"AUTHOR: {creator}");
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Debug(ex, "Failed to extract document properties");
                         }
                         
-                        // Extract first 30 paragraphs (usually enough for company detection)
-                        var paragraphs = body.Elements<Paragraph>().Take(30);
-                        int paragraphCount = 0;
+                        // Early termination check
+                        if (extractedText.Length >= maxChars || stopwatch.ElapsedMilliseconds > timeoutMs)
+                        {
+                            _logger.Debug("Early termination after document properties");
+                            return extractedText.ToString();
+                        }
                         
-                        foreach (var para in paragraphs)
+                        // 2. Extract headers and footers (second priority)
+                        try
+                        {
+                            foreach (var headerPart in doc.MainDocumentPart?.HeaderParts ?? Enumerable.Empty<HeaderPart>())
+                            {
+                                var headerText = headerPart.Header?.InnerText?.Trim();
+                                if (!string.IsNullOrWhiteSpace(headerText))
+                                {
+                                    extractedText.AppendLine($"HEADER: {headerText}");
+                                    
+                                    if (extractedText.Length >= maxChars || stopwatch.ElapsedMilliseconds > timeoutMs)
+                                        break;
+                                }
+                            }
+                            
+                            foreach (var footerPart in doc.MainDocumentPart?.FooterParts ?? Enumerable.Empty<FooterPart>())
+                            {
+                                var footerText = footerPart.Footer?.InnerText?.Trim();
+                                if (!string.IsNullOrWhiteSpace(footerText))
+                                {
+                                    extractedText.AppendLine($"FOOTER: {footerText}");
+                                    
+                                    if (extractedText.Length >= maxChars || stopwatch.ElapsedMilliseconds > timeoutMs)
+                                        break;
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Debug(ex, "Failed to extract headers/footers");
+                        }
+                        
+                        // Early termination check
+                        if (extractedText.Length >= maxChars || stopwatch.ElapsedMilliseconds > timeoutMs)
+                        {
+                            _logger.Debug("Early termination after headers/footers");
+                            return extractedText.ToString();
+                        }
+                        
+                        var body = doc.MainDocumentPart?.Document?.Body;
+                        if (body == null)
+                        {
+                            _logger.Warning("Word document has no body content: {Path}", filePath);
+                            return extractedText.ToString();
+                        }
+                        
+                        var paragraphs = body.Elements<Paragraph>().ToList();
+                        
+                        // 3. Extract first 5 paragraphs (third priority)
+                        var firstParagraphs = paragraphs.Take(5);
+                        foreach (var para in firstParagraphs)
                         {
                             var paraText = para.InnerText?.Trim();
                             if (!string.IsNullOrWhiteSpace(paraText))
                             {
-                                text.AppendLine(paraText);
-                                paragraphCount++;
+                                extractedText.AppendLine(paraText);
+                                
+                                if (extractedText.Length >= maxChars || stopwatch.ElapsedMilliseconds > timeoutMs)
+                                    break;
                             }
                         }
                         
-                        // Check headers where company info often appears
-                        foreach (var headerPart in doc.MainDocumentPart.HeaderParts)
+                        // Early termination check
+                        if (extractedText.Length >= maxChars || stopwatch.ElapsedMilliseconds > timeoutMs)
                         {
-                            var headerText = headerPart.Header?.InnerText?.Trim();
-                            if (!string.IsNullOrWhiteSpace(headerText))
-                            {
-                                text.AppendLine("HEADER: " + headerText);
-                            }
+                            _logger.Debug("Early termination after first 5 paragraphs");
+                            return extractedText.ToString();
                         }
                         
-                        // Check footers
-                        foreach (var footerPart in doc.MainDocumentPart.FooterParts)
+                        // 4. Extract last 5 paragraphs (signature area - fourth priority)
+                        if (paragraphs.Count > 5)
                         {
-                            var footerText = footerPart.Footer?.InnerText?.Trim();
-                            if (!string.IsNullOrWhiteSpace(footerText))
+                            var lastParagraphs = paragraphs.Skip(Math.Max(0, paragraphs.Count - 5));
+                            foreach (var para in lastParagraphs)
                             {
-                                text.AppendLine("FOOTER: " + footerText);
+                                var paraText = para.InnerText?.Trim();
+                                if (!string.IsNullOrWhiteSpace(paraText))
+                                {
+                                    extractedText.AppendLine($"SIGNATURE: {paraText}");
+                                    
+                                    if (extractedText.Length >= maxChars || stopwatch.ElapsedMilliseconds > timeoutMs)
+                                        break;
+                                }
                             }
                         }
                         
-                        // Also check first page for letterhead info
-                        var firstSection = body.Elements<SectionProperties>().FirstOrDefault();
-                        if (firstSection != null)
-                        {
-                            var titlePage = firstSection.Elements<TitlePage>().FirstOrDefault();
-                            if (titlePage != null)
-                            {
-                                _logger.Debug("Document has title page");
-                            }
-                        }
-                        
-                        var extractedText = text.ToString();
-                        _logger.Debug("OpenXML extraction successful: {Length} characters from {Paragraphs} paragraphs", 
-                            extractedText.Length, paragraphCount);
+                        var result = extractedText.ToString();
+                        _logger.Debug("OpenXML extraction completed: {Length} characters in {ElapsedMs}ms", 
+                            result.Length, stopwatch.ElapsedMilliseconds);
                             
-                        return extractedText;
+                        return result;
                     }
                 }
                 catch (Exception ex)
                 {
                     _logger.Warning(ex, "OpenXML extraction failed for: {Path}", filePath);
                     return string.Empty;
+                }
+                finally
+                {
+                    stopwatch.Stop();
                 }
             }).ConfigureAwait(false);
         }
@@ -1043,19 +1154,28 @@ namespace DocHandler.Services
                     return string.Empty;
                 }
                 
-                // Try fast OpenXML extraction first
-                _logger.Debug("Attempting OpenXML text extraction for: {Path}", filePath);
-                var text = await ExtractTextFromWordDirect(filePath).ConfigureAwait(false);
+                var extension = Path.GetExtension(filePath).ToLowerInvariant();
                 
-                if (!string.IsNullOrWhiteSpace(text) && text.Length > 100)
+                // Try fast OpenXML extraction first for .docx files
+                if (extension == ".docx")
                 {
-                    _logger.Information("Successfully extracted text using OpenXML: {Length} characters", text.Length);
-                    return text;
+                    _logger.Debug("Attempting optimized OpenXML text extraction for: {Path}", filePath);
+                    var text = await ExtractTextFromWordDirect(filePath).ConfigureAwait(false);
+                    
+                    if (!string.IsNullOrWhiteSpace(text) && text.Length > 50)
+                    {
+                        _logger.Information("Successfully extracted text using optimized OpenXML: {Length} characters", text.Length);
+                        return text;
+                    }
+                    
+                    _logger.Information("OpenXML extraction insufficient ({Length} chars), falling back to PDF conversion", text.Length);
+                }
+                else
+                {
+                    _logger.Debug("Legacy Word format detected ({Extension}), using PDF conversion", extension);
                 }
                 
-                _logger.Information("OpenXML extraction insufficient ({Length} chars), falling back to PDF conversion", text.Length);
-                
-                // Fall back to existing PDF conversion method
+                // Fall back to existing PDF conversion method for .doc files or insufficient OpenXML extraction
                 return await ExtractTextFromWordUsingPdfConversion(filePath).ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -1247,6 +1367,177 @@ namespace DocHandler.Services
             }).ConfigureAwait(false);
         }
 
+        private async Task<string> ExtractTextFromExcelDirect(string filePath)
+        {
+            return await Task.Run(() =>
+            {
+                var extractedText = new StringBuilder();
+                var stopwatch = Stopwatch.StartNew();
+                const int maxChars = 5000;
+                const int timeoutMs = 2000;
+                
+                try
+                {
+                    // Check file extension - only process .xlsx files with OpenXML
+                    var extension = Path.GetExtension(filePath).ToLowerInvariant();
+                    if (extension != ".xlsx")
+                    {
+                        _logger.Debug("Skipping OpenXML extraction for non-xlsx file: {Extension}", extension);
+                        return string.Empty;
+                    }
+                    
+                    using (var doc = SpreadsheetDocument.Open(filePath, false))
+                    {
+                        // 1. Extract document properties first (highest priority)
+                        try
+                        {
+                            var extendedProps = doc.ExtendedFilePropertiesPart;
+                            if (extendedProps != null)
+                            {
+                                var props = extendedProps.Properties;
+                                if (props != null)
+                                {
+                                    var company = props.Company?.Text;
+                                    
+                                    if (!string.IsNullOrWhiteSpace(company))
+                                    {
+                                        extractedText.AppendLine($"COMPANY: {company}");
+                                        _logger.Debug("Found company in Excel document properties: {Company}", company);
+                                    }
+                                }
+                            }
+                            
+                            var coreProps = doc.PackageProperties;
+                            if (coreProps != null)
+                            {
+                                var creator = coreProps.Creator;
+                                
+                                if (!string.IsNullOrWhiteSpace(creator))
+                                {
+                                    extractedText.AppendLine($"AUTHOR: {creator}");
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Debug(ex, "Failed to extract Excel document properties");
+                        }
+                        
+                        // Early termination check
+                        if (extractedText.Length >= maxChars || stopwatch.ElapsedMilliseconds > timeoutMs)
+                        {
+                            _logger.Debug("Early termination after Excel document properties");
+                            return extractedText.ToString();
+                        }
+                        
+                        var workbookPart = doc.WorkbookPart;
+                        if (workbookPart == null)
+                        {
+                            _logger.Warning("Excel document has no workbook: {Path}", filePath);
+                            return extractedText.ToString();
+                        }
+                        
+                        // 2. Extract from first worksheet only
+                        var worksheetPart = workbookPart.WorksheetParts.FirstOrDefault();
+                        if (worksheetPart == null)
+                        {
+                            _logger.Warning("Excel document has no worksheets: {Path}", filePath);
+                            return extractedText.ToString();
+                        }
+                        
+                        var worksheet = worksheetPart.Worksheet;
+                        var sheetData = worksheet.GetFirstChild<SheetData>();
+                        if (sheetData == null)
+                        {
+                            _logger.Debug("Excel worksheet has no data: {Path}", filePath);
+                            return extractedText.ToString();
+                        }
+                        
+                        // Get shared string table for text lookup
+                        var stringTable = workbookPart.SharedStringTablePart?.SharedStringTable;
+                        
+                        int cellCount = 0;
+                        const int maxCells = 100;
+                        
+                        // 3. Extract text from first 100 cells with content
+                        foreach (var row in sheetData.Elements<Row>())
+                        {
+                            if (cellCount >= maxCells || extractedText.Length >= maxChars || stopwatch.ElapsedMilliseconds > timeoutMs)
+                                break;
+                                
+                            foreach (var cell in row.Elements<Cell>())
+                            {
+                                if (cellCount >= maxCells || extractedText.Length >= maxChars || stopwatch.ElapsedMilliseconds > timeoutMs)
+                                    break;
+                                
+                                var cellText = GetCellText(cell, stringTable);
+                                if (!string.IsNullOrWhiteSpace(cellText))
+                                {
+                                    // Skip numbers and formulas - focus on text content
+                                    if (!IsNumericOrFormula(cellText))
+                                    {
+                                        extractedText.AppendLine(cellText);
+                                        cellCount++;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        var result = extractedText.ToString();
+                        _logger.Debug("Excel OpenXML extraction completed: {Length} characters from {CellCount} cells in {ElapsedMs}ms", 
+                            result.Length, cellCount, stopwatch.ElapsedMilliseconds);
+                            
+                        return result;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Excel OpenXML extraction failed for: {Path}", filePath);
+                    return string.Empty;
+                }
+                finally
+                {
+                    stopwatch.Stop();
+                }
+            }).ConfigureAwait(false);
+        }
+        
+        private string GetCellText(Cell cell, SharedStringTable? stringTable)
+        {
+            if (cell.CellValue == null)
+                return string.Empty;
+            
+            var value = cell.CellValue.Text;
+            
+            // If it's a shared string, look it up in the string table
+            if (cell.DataType?.Value == CellValues.SharedString && stringTable != null)
+            {
+                if (int.TryParse(value, out int index) && index >= 0 && index < stringTable.Count())
+                {
+                    var stringItem = stringTable.Elements<SharedStringItem>().ElementAtOrDefault(index);
+                    return stringItem?.InnerText ?? string.Empty;
+                }
+            }
+            
+            return value ?? string.Empty;
+        }
+        
+        private bool IsNumericOrFormula(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return true;
+            
+            // Skip if it's a number
+            if (double.TryParse(text, out _))
+                return true;
+            
+            // Skip if it looks like a formula result or contains only numbers/symbols
+            if (text.All(c => char.IsDigit(c) || ".,%-$()".Contains(c)))
+                return true;
+            
+            return false;
+        }
+
         private async Task<string> ExtractTextFromExcel(string filePath)
         {
             try
@@ -1274,6 +1565,42 @@ namespace DocHandler.Services
                     return string.Empty;
                 }
                 
+                var extension = Path.GetExtension(filePath).ToLowerInvariant();
+                
+                // Try fast OpenXML extraction first for .xlsx files
+                if (extension == ".xlsx")
+                {
+                    _logger.Debug("Attempting optimized OpenXML text extraction for Excel: {Path}", filePath);
+                    var text = await ExtractTextFromExcelDirect(filePath).ConfigureAwait(false);
+                    
+                    if (!string.IsNullOrWhiteSpace(text) && text.Length > 20)
+                    {
+                        _logger.Information("Successfully extracted text using optimized Excel OpenXML: {Length} characters", text.Length);
+                        return text;
+                    }
+                    
+                    _logger.Information("Excel OpenXML extraction insufficient ({Length} chars), falling back to PDF conversion", text.Length);
+                }
+                else
+                {
+                    _logger.Debug("Legacy Excel format detected ({Extension}), using PDF conversion", extension);
+                }
+                
+                // Fall back to existing PDF conversion method for .xls files or insufficient OpenXML extraction
+                return await ExtractTextFromExcelUsingPdfConversion(filePath).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to extract text from Excel document: {Path}", filePath);
+                return string.Empty;
+            }
+        }
+        
+        // Rename the existing ExtractTextFromExcel content to this new method
+        private async Task<string> ExtractTextFromExcelUsingPdfConversion(string filePath)
+        {
+            try
+            {
                 _logger.Information("Converting Excel to PDF for text extraction: {Path}", filePath);
                 
                 // Create secure temporary directory with unique name
@@ -1359,7 +1686,7 @@ namespace DocHandler.Services
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Failed to extract text from Excel document: {Path}", filePath);
+                _logger.Error(ex, "Failed to extract text from Excel document via PDF conversion: {Path}", filePath);
                 return string.Empty;
             }
         }
