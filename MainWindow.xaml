@@ -301,9 +301,7 @@
                                                             </Style.Triggers>
                                                         </Style>
                                                     </ui:SymbolIcon.Style>
-                                                    <ui:SymbolIcon.RenderTransform>
-                                                        <RotateTransform CenterX="6" CenterY="6"/>
-                                                    </ui:SymbolIcon.RenderTransform>
+                                                    <!-- RenderTransform removed - will be created dynamically by animation -->
                                                 </ui:SymbolIcon>
                                                 
                                                 <TextBlock Grid.Column="1" Text="📄" FontSize="16" Margin="0,0,6,0" VerticalAlignment="Center"/>
@@ -378,9 +376,9 @@
                                 </Ellipse.Effect>
                             </Ellipse>
                             
-                            <StackPanel VerticalAlignment="Center" 
-                                        HorizontalAlignment="Center"
-                                        Opacity="0">
+                            <StackPanel x:Name="SuccessStackPanel"
+                                        VerticalAlignment="Center" 
+                                        HorizontalAlignment="Center">
                                 <ui:SymbolIcon x:Name="SuccessCheckmark"
                                                Symbol="Accept" 
                                                Width="48" 
@@ -1103,9 +1101,7 @@
                                                             </Style.Triggers>
                                                         </Style>
                                                     </ui:SymbolIcon.Style>
-                                                    <ui:SymbolIcon.RenderTransform>
-                                                        <RotateTransform CenterX="10" CenterY="10"/>
-                                                    </ui:SymbolIcon.RenderTransform>
+                                                    <!-- RenderTransform removed - will be created dynamically by animation -->
                                                 </ui:SymbolIcon>
                                                 
                                                 <TextBlock Grid.Column="1" Text="📄" FontSize="24" Margin="0,0,10,0" VerticalAlignment="Center"/>

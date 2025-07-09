@@ -522,9 +522,10 @@ namespace DocHandler
                 {
                     SuccessOverlay.Visibility = Visibility.Visible;
                     
-                    // Fade in the checkmark and text
+                    // Initialize and fade in the checkmark and text using named StackPanel
+                    SuccessStackPanel.Opacity = 0; // Set initial opacity programmatically
                     var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(500));
-                    SuccessOverlay.Children[0].BeginAnimation(OpacityProperty, fadeIn);
+                    SuccessStackPanel.BeginAnimation(OpacityProperty, fadeIn);
                 });
                 
                 // Start the border animation
@@ -576,7 +577,8 @@ namespace DocHandler
             {
                 // Hide overlay
                 SuccessOverlay.Visibility = Visibility.Collapsed;
-                SuccessOverlay.Children[0].Opacity = 0;
+                // Reset StackPanel opacity using named reference
+                SuccessStackPanel.Opacity = 0;
                 
                 // Reset border color instantly
                 DropBorderSaveMode.BorderBrush = new SolidColorBrush(Color.FromRgb(0x19, 0x76, 0xD2));
@@ -596,7 +598,7 @@ namespace DocHandler
             // Fade out and reset
             Dispatcher.Invoke(async () =>
             {
-                // Fade out the success overlay
+                // Fade out the success overlay using named StackPanel
                 var fadeOut = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(500));
                 fadeOut.Completed += (s, args) =>
                 {
@@ -604,7 +606,7 @@ namespace DocHandler
                     ViewModel.IsShowingSuccessAnimation = false;
                 };
                 
-                SuccessOverlay.Children[0].BeginAnimation(OpacityProperty, fadeOut);
+                SuccessStackPanel.BeginAnimation(OpacityProperty, fadeOut);
                 
                 // Animate border back to normal
                 var resetStoryboard = FindResource("SaveQuotesResetAnimation") as Storyboard;
