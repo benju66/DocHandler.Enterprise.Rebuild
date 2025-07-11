@@ -11,6 +11,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -38,6 +39,7 @@ namespace DocHandler.ViewModels
         private readonly ScopeOfWorkService _scopeOfWorkService;
         private readonly SessionAwareOfficeService _sessionOfficeService;
         private readonly SessionAwareExcelService _sessionExcelService;
+        private readonly PerformanceMonitor _performanceMonitor;
         private readonly object _conversionLock = new object();
         private readonly ConcurrentDictionary<string, byte> _tempFilesToCleanup = new();
         
@@ -187,6 +189,7 @@ namespace DocHandler.ViewModels
 
         // Performance tracking
         private int _processedFileCount = 0;
+        private PerformanceMetricsWindow _metricsWindow;
 
         // Animation state tracking
         private bool _isShowingSuccessAnimation;
@@ -221,6 +224,10 @@ namespace DocHandler.ViewModels
             // Initialize session-aware Excel service for better performance
             _sessionExcelService = new SessionAwareExcelService();
             _companyNameService.SetOfficeServices(_sessionOfficeService, _sessionExcelService);
+            
+            // Initialize performance monitor
+            _performanceMonitor = new PerformanceMonitor();
+            _logger.Information("Performance monitor initialized");
             
             // Initialize scope search timer for debouncing
             _scopeSearchTimer = new DispatcherTimer
@@ -1420,33 +1427,72 @@ namespace DocHandler.ViewModels
         }
         
         [RelayCommand]
-        private void ShowPerformanceMetrics()
+        private async Task ShowPerformanceMetricsAsync()
         {
-            try
+            // Close existing window if open
+            if (_metricsWindow != null && _metricsWindow.IsLoaded)
             {
-                var companyMetrics = _companyNameService.GetPerformanceSummary();
-                var process = Process.GetCurrentProcess();
-                var workingSet = process.WorkingSet64 / (1024 * 1024);
-                var gcMemory = GC.GetTotalMemory(false) / (1024 * 1024);
-                
-                var message = $"DocHandler Performance Metrics\n\n" +
-                             $"{companyMetrics}\n\n" +
-                             $"Memory Usage:\n" +
-                             $"  Working Set: {workingSet:N0} MB\n" +
-                             $"  GC Memory: {gcMemory:N0} MB\n" +
-                             $"  Thread Count: {process.Threads.Count}\n\n" +
-                             $"Session Info:\n" +
-                             $"  Files Processed: {_processedFileCount}\n" +
-                             $"  Session Duration: {DateTime.Now - Process.GetCurrentProcess().StartTime:hh\\:mm\\:ss}";
-                
-                MessageBox.Show(message, "Performance Metrics", MessageBoxButton.OK, MessageBoxImage.Information);
+                _metricsWindow.Activate();
+                return;
             }
-            catch (Exception ex)
+            
+            // Create and show new non-blocking window
+            _metricsWindow = new PerformanceMetricsWindow(this);
+            _metricsWindow.Owner = Application.Current.MainWindow;
+            _metricsWindow.Closed += (s, e) => _metricsWindow = null;
+            _metricsWindow.Show(); // Non-blocking
+        }
+
+        /// <summary>
+        /// Collects comprehensive performance metrics asynchronously
+        /// </summary>
+        public async Task<string> CollectPerformanceMetricsAsync()
+        {
+            return await Task.Run(() =>
             {
-                _logger.Error(ex, "Failed to show performance metrics");
-                MessageBox.Show("Failed to retrieve performance metrics.", "Error", 
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+                try
+                {
+                    var documentMetrics = _performanceMonitor.GetDocumentProcessingPerformanceSummary();
+                    var companyMetrics = _companyNameService.GetPerformanceSummary();
+                    var memoryInfo = _performanceMonitor.GetMemoryInfo();
+                    var systemInfo = _performanceMonitor.GetSystemPerformanceInfo();
+                    
+                    var process = Process.GetCurrentProcess();
+                    var workingSet = process.WorkingSet64 / (1024 * 1024);
+                    var gcMemory = GC.GetTotalMemory(false) / (1024 * 1024);
+                    
+                    var metrics = new StringBuilder();
+                    metrics.AppendLine("DocHandler Performance Metrics");
+                    metrics.AppendLine(new string('=', 50));
+                    metrics.AppendLine();
+                    metrics.AppendLine($"=== {documentMetrics}");
+                    metrics.AppendLine($"=== Company Detection Performance ===");
+                    metrics.AppendLine(companyMetrics);
+                    metrics.AppendLine();
+                    metrics.AppendLine("=== Memory Usage ===");
+                    metrics.AppendLine($"  Working Set: {workingSet:N0} MB");
+                    metrics.AppendLine($"  GC Memory: {gcMemory:N0} MB");
+                    metrics.AppendLine($"  Peak Memory: {memoryInfo.PeakMemoryMB} MB");
+                    metrics.AppendLine($"  Memory Growth: {memoryInfo.MemoryGrowthMB} MB");
+                    metrics.AppendLine($"  Thread Count: {process.Threads.Count}");
+                    metrics.AppendLine();
+                    metrics.AppendLine("=== System Performance ===");
+                    metrics.AppendLine($"  CPU Usage: {systemInfo.CpuUsagePercent:F1}%");
+                    metrics.AppendLine($"  Available RAM: {systemInfo.AvailableMemoryMB} MB");
+                    metrics.AppendLine();
+                    metrics.AppendLine("=== Session Info ===");
+                    metrics.AppendLine($"  Files Processed: {_processedFileCount}");
+                    metrics.AppendLine($"  Session Duration: {DateTime.Now - process.StartTime:hh\\:mm\\:ss}");
+                    metrics.AppendLine($"  Current Time: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                    
+                    return metrics.ToString();
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Failed to collect performance metrics");
+                    return "Error collecting metrics: " + ex.Message;
+                }
+            });
         }
 
         [RelayCommand]
@@ -1579,8 +1625,17 @@ namespace DocHandler.ViewModels
 
                 foreach (var file in uiValues.PendingFilesList)
                 {
+                    var fileStopwatch = Stopwatch.StartNew();
+                    var success = false;
+                    long fileSize = 0;
+                    string errorType = null;
+                    
                     try
                     {
+                        // Get file size for metrics
+                        var fileInfo = new FileInfo(file.FilePath);
+                        fileSize = fileInfo.Length;
+                        
                         // Update progress on UI thread
                         await Application.Current.Dispatcher.InvokeAsync(() =>
                         {
@@ -1602,6 +1657,7 @@ namespace DocHandler.ViewModels
                         if (processResult.Success)
                         {
                             processedCount++;
+                            success = true;
                             
                             // Update UI on UI thread - remove from actual UI collection
                             await Application.Current.Dispatcher.InvokeAsync(() =>
@@ -1639,13 +1695,36 @@ namespace DocHandler.ViewModels
                         }
                         else
                         {
+                            errorType = "ProcessingFailed";
                             failedFiles.Add((file.FileName, processResult.ErrorMessage ?? "Unknown error"));
                         }
                     }
+                    catch (OperationCanceledException)
+                    {
+                        errorType = "Cancelled";
+                        throw;
+                    }
+                    catch (UnauthorizedAccessException ex)
+                    {
+                        errorType = "AccessDenied";
+                        failedFiles.Add((file.FileName, ex.Message));
+                        _logger.Error(ex, "Access denied processing quote: {File}", file.FileName);
+                    }
                     catch (Exception ex)
                     {
+                        errorType = ex.GetType().Name;
                         failedFiles.Add((file.FileName, ex.Message));
                         _logger.Error(ex, "Failed to process quote: {File}", file.FileName);
+                    }
+                    finally
+                    {
+                        fileStopwatch.Stop();
+                        _performanceMonitor.RecordDocumentProcessed(
+                            file.FilePath, 
+                            fileStopwatch.ElapsedMilliseconds, 
+                            success,
+                            fileSize,
+                            errorType);
                     }
                 }
 
@@ -2012,6 +2091,17 @@ namespace DocHandler.ViewModels
                 catch (Exception ex)
                 {
                     _logger.Warning(ex, "Error cleaning PDF cache");
+                }
+                
+                // Dispose performance monitor
+                try
+                {
+                    _performanceMonitor?.Dispose();
+                    _logger.Information("Performance monitor disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing performance monitor");
                 }
                 
                 // Dispose other services

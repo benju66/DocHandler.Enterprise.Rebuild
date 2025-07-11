@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
+using System.Text;
+using System.IO;
 using Serilog;
 
 namespace DocHandler.Services
@@ -20,6 +22,10 @@ namespace DocHandler.Services
         // Performance metrics
         private readonly Dictionary<string, List<double>> _metrics = new Dictionary<string, List<double>>();
         private readonly Dictionary<string, DateTime> _operationStartTimes = new Dictionary<string, DateTime>();
+        
+        // Document processing statistics
+        private readonly Dictionary<string, DocumentTypeStats> _documentProcessingStats = new Dictionary<string, DocumentTypeStats>();
+        private readonly object _docStatsLock = new object();
         
         // Memory tracking
         private long _initialMemoryUsage;
@@ -298,6 +304,134 @@ namespace DocHandler.Services
             }
         }
 
+        /// <summary>
+        /// Records document processing metrics with enhanced details
+        /// </summary>
+        public void RecordDocumentProcessed(string filePath, double processingTimeMs, bool success, 
+            long fileSize = 0, string errorType = null)
+        {
+            var extension = Path.GetExtension(filePath)?.ToLowerInvariant() ?? "unknown";
+            var fileName = Path.GetFileName(filePath);
+            
+            // Map extensions to readable types
+            string documentType = extension switch
+            {
+                ".pdf" => "PDF",
+                ".docx" => "Word (Modern)",
+                ".doc" => "Word (Legacy)",
+                ".xlsx" => "Excel (Modern)",
+                ".xls" => "Excel (Legacy)",
+                ".txt" => "Text",
+                _ => $"Other ({extension})"
+            };
+            
+            lock (_docStatsLock)
+            {
+                if (!_documentProcessingStats.ContainsKey(documentType))
+                {
+                    _documentProcessingStats[documentType] = new DocumentTypeStats();
+                }
+                
+                var stats = _documentProcessingStats[documentType];
+                stats.TotalFiles++;
+                if (success) 
+                {
+                    stats.SuccessfulFiles++;
+                }
+                else if (!string.IsNullOrEmpty(errorType))
+                {
+                    if (!stats.ErrorTypes.ContainsKey(errorType))
+                        stats.ErrorTypes[errorType] = 0;
+                    stats.ErrorTypes[errorType]++;
+                }
+                
+                stats.TotalProcessingTime += processingTimeMs;
+                stats.MinTime = Math.Min(stats.MinTime, processingTimeMs);
+                stats.MaxTime = Math.Max(stats.MaxTime, processingTimeMs);
+                stats.LastProcessed = DateTime.Now;
+                stats.TotalBytesProcessed += fileSize;
+                
+                // Keep recent files
+                if (stats.RecentFiles.Count >= 5)
+                    stats.RecentFiles.Dequeue();
+                stats.RecentFiles.Enqueue(fileName);
+            }
+            
+            // Also record in existing metrics
+            RecordMetric($"DocProcess_{extension}", processingTimeMs);
+        }
+
+        /// <summary>
+        /// Gets document processing performance summary
+        /// </summary>
+        public string GetDocumentProcessingPerformanceSummary()
+        {
+            lock (_docStatsLock)
+            {
+                if (!_documentProcessingStats.Any())
+                    return "Document Processing Performance:\nNo document processing metrics available yet.";
+                
+                var totalFiles = _documentProcessingStats.Sum(kvp => kvp.Value.TotalFiles);
+                var totalTime = _documentProcessingStats.Sum(kvp => kvp.Value.TotalProcessingTime);
+                var totalSuccess = _documentProcessingStats.Sum(kvp => kvp.Value.SuccessfulFiles);
+                var totalBytes = _documentProcessingStats.Sum(kvp => kvp.Value.TotalBytesProcessed);
+                var overallAvg = totalFiles > 0 ? totalTime / totalFiles : 0;
+                var overallSuccessRate = totalFiles > 0 ? (double)totalSuccess / totalFiles * 100 : 0;
+                var overallThroughput = totalBytes > 0 && totalTime > 0 
+                    ? (totalBytes / 1024.0 / 1024.0) / (totalTime / 1000.0) 
+                    : 0;
+                
+                var summary = new StringBuilder();
+                summary.AppendLine("Document Processing Performance:");
+                summary.AppendLine($"Total: {totalFiles} docs, Overall Avg: {overallAvg:F1}ms, Success Rate: {overallSuccessRate:F1}%, Throughput: {overallThroughput:F2} MB/s");
+                summary.AppendLine("  By Type:");
+                
+                foreach (var kvp in _documentProcessingStats.OrderBy(x => x.Key))
+                {
+                    var type = kvp.Key;
+                    var stats = kvp.Value;
+                    summary.AppendLine($"    {type}: {stats.TotalFiles} files, Avg: {stats.AverageTime:F1}ms, Success: {stats.SuccessRate:F1}%, Throughput: {stats.ThroughputMBps:F2} MB/s");
+                    
+                    // Add error breakdown if any
+                    if (stats.ErrorTypes.Any())
+                    {
+                        summary.AppendLine($"      Errors: {string.Join(", ", stats.ErrorTypes.Select(et => $"{et.Key} ({et.Value})"))}");
+                    }
+                }
+                
+                return summary.ToString();
+            }
+        }
+
+        /// <summary>
+        /// Gets detailed document type statistics for advanced UI
+        /// </summary>
+        public Dictionary<string, DocumentTypeStats> GetDocumentTypeStats()
+        {
+            lock (_docStatsLock)
+            {
+                // Return a deep copy to avoid threading issues
+                var copy = new Dictionary<string, DocumentTypeStats>();
+                foreach (var kvp in _documentProcessingStats)
+                {
+                    copy[kvp.Key] = new DocumentTypeStats
+                    {
+                        TotalFiles = kvp.Value.TotalFiles,
+                        SuccessfulFiles = kvp.Value.SuccessfulFiles,
+                        TotalProcessingTime = kvp.Value.TotalProcessingTime,
+                        MinTime = kvp.Value.MinTime,
+                        MaxTime = kvp.Value.MaxTime,
+                        FirstProcessed = kvp.Value.FirstProcessed,
+                        LastProcessed = kvp.Value.LastProcessed,
+                        TotalBytesProcessed = kvp.Value.TotalBytesProcessed,
+                        ErrorTypes = new Dictionary<string, int>(kvp.Value.ErrorTypes),
+                        RecentFiles = new Queue<string>(kvp.Value.RecentFiles)
+                    };
+                }
+                return copy;
+            }
+        }
+
         public void Dispose()
         {
             _memoryTimer?.Dispose();
@@ -307,6 +441,26 @@ namespace DocHandler.Services
             
             _logger.Information("Performance monitor disposed");
         }
+    }
+
+    public class DocumentTypeStats
+    {
+        public int TotalFiles { get; set; }
+        public int SuccessfulFiles { get; set; }
+        public double TotalProcessingTime { get; set; }
+        public double MinTime { get; set; } = double.MaxValue;
+        public double MaxTime { get; set; }
+        public DateTime FirstProcessed { get; set; } = DateTime.Now;
+        public DateTime LastProcessed { get; set; } = DateTime.Now;
+        public long TotalBytesProcessed { get; set; }
+        public Dictionary<string, int> ErrorTypes { get; set; } = new Dictionary<string, int>();
+        public Queue<string> RecentFiles { get; set; } = new Queue<string>(5);
+        
+        public double AverageTime => TotalFiles > 0 ? TotalProcessingTime / TotalFiles : 0;
+        public double SuccessRate => TotalFiles > 0 ? (double)SuccessfulFiles / TotalFiles * 100 : 0;
+        public double ThroughputMBps => TotalBytesProcessed > 0 && TotalProcessingTime > 0 
+            ? (TotalBytesProcessed / 1024.0 / 1024.0) / (TotalProcessingTime / 1000.0) 
+            : 0;
     }
 
     public class PerformanceStats
