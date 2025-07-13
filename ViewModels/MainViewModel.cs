@@ -1429,18 +1429,35 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private async Task ShowPerformanceMetricsAsync()
         {
-            // Close existing window if open
-            if (_metricsWindow != null && _metricsWindow.IsLoaded)
+            try
             {
-                _metricsWindow.Activate();
-                return;
+                _logger.Information("ShowPerformanceMetricsAsync called");
+                
+                // Close existing window if open
+                if (_metricsWindow != null && _metricsWindow.IsLoaded)
+                {
+                    _logger.Information("Activating existing metrics window");
+                    _metricsWindow.Activate();
+                    return;
+                }
+                
+                _logger.Information("Creating new PerformanceMetricsWindow");
+                
+                // Create and show new non-blocking window
+                _metricsWindow = new PerformanceMetricsWindow(this);
+                _metricsWindow.Owner = Application.Current.MainWindow;
+                _metricsWindow.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+                _metricsWindow.Closed += (s, e) => _metricsWindow = null;
+                _metricsWindow.Show(); // Non-blocking
+                
+                _logger.Information("Performance metrics window opened successfully");
             }
-            
-            // Create and show new non-blocking window
-            _metricsWindow = new PerformanceMetricsWindow(this);
-            _metricsWindow.Owner = Application.Current.MainWindow;
-            _metricsWindow.Closed += (s, e) => _metricsWindow = null;
-            _metricsWindow.Show(); // Non-blocking
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to show performance metrics window");
+                MessageBox.Show($"Failed to open performance metrics window:\n\n{ex.Message}\n\nInner Exception: {ex.InnerException?.Message}", 
+                    "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         /// <summary>
