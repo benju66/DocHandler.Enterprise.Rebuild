@@ -95,7 +95,7 @@
             </MenuItem>
             
             <MenuItem Header="_Help">
-                <MenuItem Header="Performance Metrics..." Command="{Binding ShowPerformanceMetricsAsyncCommand}">
+                <MenuItem Header="Performance Metrics..." Command="{Binding ShowPerformanceMetricsCommand}">
                     <MenuItem.Icon>
                         <ui:SymbolIcon Symbol="Repair"/>
                     </MenuItem.Icon>
