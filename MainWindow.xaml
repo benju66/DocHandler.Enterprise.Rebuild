@@ -8,6 +8,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:ui="http://schemas.modernwpf.com/2019"
         xmlns:vm="clr-namespace:DocHandler.ViewModels"
+        xmlns:helpers="clr-namespace:DocHandler.Helpers"
         mc:Ignorable="d"
         ui:WindowHelper.UseModernWindowStyle="True"
         Title="DocHandler Enterprise" Height="700" Width="1000"
@@ -117,6 +118,7 @@
         
         <!-- Status Bar -->
         <StatusBar DockPanel.Dock="Bottom" Height="25">
+            <!-- Left: Mode Indicator -->
             <StatusBarItem>
                 <TextBlock>
                     <TextBlock.Style>
@@ -133,34 +135,54 @@
                     </TextBlock.Style>
                 </TextBlock>
             </StatusBarItem>
+            
             <Separator/>
+            
+            <!-- Middle: Queue Progress (Clickable) -->
             <StatusBarItem>
-                <TextBlock Text="{Binding StatusMessage}"/>
-            </StatusBarItem>
-            <StatusBarItem HorizontalAlignment="Right">
-                <TextBlock>
+                <TextBlock Cursor="Hand"
+                           TextDecorations="{x:Null}"
+                           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}">
                     <TextBlock.Style>
                         <Style TargetType="TextBlock">
                             <Setter Property="Visibility" Value="Collapsed"/>
                             <Style.Triggers>
-                                <MultiDataTrigger>
-                                    <MultiDataTrigger.Conditions>
-                                        <Condition Binding="{Binding SaveQuotesMode}" Value="True"/>
-                                        <Condition Binding="{Binding SelectedScope, Converter={StaticResource StringNotEmptyConverter}}" Value="True"/>
-                                    </MultiDataTrigger.Conditions>
+                                <!-- Show processing message when queue is active -->
+                                <DataTrigger Binding="{Binding IsQueueProcessing}" Value="True">
                                     <Setter Property="Visibility" Value="Visible"/>
-                                    <Setter Property="Text">
-                                        <Setter.Value>
-                                            <MultiBinding StringFormat="{}Selected: {0}">
-                                                <Binding Path="SelectedScope"/>
-                                            </MultiBinding>
-                                        </Setter.Value>
-                                    </Setter>
-                                </MultiDataTrigger>
+                                </DataTrigger>
+                                <!-- Show completion message when queue is done -->
+                                <DataTrigger Binding="{Binding ShowQueueCompletionMessage}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
                             </Style.Triggers>
                         </Style>
                     </TextBlock.Style>
+                    <TextBlock.Text>
+                        <MultiBinding>
+                            <MultiBinding.Converter>
+                                <helpers:QueueStatusConverter/>
+                            </MultiBinding.Converter>
+                            <Binding Path="IsQueueProcessing"/>
+                            <Binding Path="QueueProcessedCount"/>
+                            <Binding Path="QueueTotalCount"/>
+                            <Binding Path="QueueCompletionMessage"/>
+                        </MultiBinding>
+                    </TextBlock.Text>
+                    <TextBlock.InputBindings>
+                        <MouseBinding Gesture="LeftClick" Command="{Binding ShowQueueWindowCommand}"/>
+                    </TextBlock.InputBindings>
+                    <TextBlock.ToolTip>
+                        <ToolTip Content="Click to view queue details"/>
+                    </TextBlock.ToolTip>
                 </TextBlock>
+            </StatusBarItem>
+            
+            <Separator/>
+            
+            <!-- Right: Status Message -->
+            <StatusBarItem HorizontalAlignment="Right">
+                <TextBlock Text="{Binding QueueStatusMessage}"/>
             </StatusBarItem>
         </StatusBar>
         

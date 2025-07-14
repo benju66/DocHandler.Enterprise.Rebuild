@@ -71,7 +71,9 @@ namespace DocHandler.Services
                 OpenFolderAfterProcessing = true,
                 SaveQuotesMode = true,  // Added - default to true
                 ShowRecentScopes = false,  // Added - default to false (hidden by default)
-                AutoScanCompanyNames = true  // Added - default to true (enabled)
+                AutoScanCompanyNames = true,  // Added - default to true (enabled)
+                ScanCompanyNamesForDocFiles = false,  // Added - default to false (disabled for .doc files)
+                DocFileSizeLimitMB = 10  // Added - default to 10MB limit for .doc files
             };
         }
         
@@ -155,5 +157,11 @@ namespace DocHandler.Services
         public bool SaveQuotesMode { get; set; } = true;  // Added - default to true
         public bool ShowRecentScopes { get; set; } = false;  // Added - default to false (hidden by default)
         public bool AutoScanCompanyNames { get; set; } = true;  // Added - default to true (enabled)
+        public bool ScanCompanyNamesForDocFiles { get; set; } = false;  // Added - default to false (disabled for .doc files)
+        public int DocFileSizeLimitMB { get; set; } = 10;  // Added - default to 10MB limit for .doc files
+        
+        // Queue Window Position
+        public double? QueueWindowLeft { get; set; }
+        public double? QueueWindowTop { get; set; }
     }
 }

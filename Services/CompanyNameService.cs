@@ -102,6 +102,9 @@ namespace DocHandler.Services
         private SessionAwareOfficeService? _sessionOfficeService;
         private SessionAwareExcelService? _sessionExcelService;
         
+        // Configurable .doc file size limit
+        private int _docFileSizeLimitMB = 10;
+        
         // Safe compiled regex patterns for better performance
         private static readonly Regex ControlCharactersRegex = new(@"[\x00-\x1F\x7F-\x9F]", RegexOptions.Compiled);
         private static readonly Regex MultipleSpacesRegex = new(@"\s+", RegexOptions.Compiled);
@@ -150,6 +153,12 @@ namespace DocHandler.Services
         {
             _sessionOfficeService = officeService;
             _sessionExcelService = excelService;
+        }
+        
+        public void UpdateDocFileSizeLimit(int limitMB)
+        {
+            _docFileSizeLimitMB = limitMB;
+            _logger.Information("Updated .doc file size limit to {LimitMB}MB", limitMB);
         }
         
         private CompanyNamesData LoadCompanyNames()
@@ -306,6 +315,31 @@ namespace DocHandler.Services
                         _performanceMetrics.CacheMisses++;
                     }
                     return null;
+                }
+                
+                // Check if this is a .doc file and handle specially
+                var extension = Path.GetExtension(filePath).ToLowerInvariant();
+                if (extension == ".doc")
+                {
+                    _logger.Information("Processing .doc file for company detection: {Path}", filePath);
+                    
+                    // Add timeout and resource management for .doc files
+                    using var docCts = new CancellationTokenSource(TimeSpan.FromSeconds(15)); // Shorter timeout for .doc files
+                    
+                    try
+                    {
+                        return await ProcessDocFileForCompanyDetection(filePath, progress, docCts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        _logger.Warning("Company detection timed out for .doc file: {Path}", filePath);
+                        return null;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Failed to process .doc file for company detection: {Path}", filePath);
+                        return null;
+                    }
                 }
                 
                 // Early exit for very large files
@@ -2010,25 +2044,192 @@ namespace DocHandler.Services
         // Add method to remove cached PDF
         public void RemoveCachedPdf(string originalFilePath)
         {
-            if (_convertedPdfCache.TryRemove(originalFilePath, out string? pdfPath))
+            if (string.IsNullOrWhiteSpace(originalFilePath))
+                return;
+                
+            lock (_cacheCleanupLock)
             {
-                if (File.Exists(pdfPath))
+                if (_convertedPdfCache.TryRemove(originalFilePath, out var cachedPdfPath))
                 {
-                    try 
-                    { 
-                        File.Delete(pdfPath);
-                        _logger.Debug("Removed cached PDF for {File}", Path.GetFileName(originalFilePath));
-                    } 
-                    catch (Exception ex) 
-                    { 
-                        _logger.Warning(ex, "Failed to delete cached PDF: {Path}", pdfPath);
+                    _pdfCacheTimestamps.TryRemove(originalFilePath, out _);
+                    _pdfCacheFileInfo.TryRemove(originalFilePath, out _);
+                    
+                    if (File.Exists(cachedPdfPath))
+                    {
+                        try
+                        {
+                            File.Delete(cachedPdfPath);
+                            _logger.Debug("Removed cached PDF: {Path}", cachedPdfPath);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Failed to delete cached PDF: {Path}", cachedPdfPath);
+                        }
                     }
                 }
             }
-            _pdfCacheTimestamps.TryRemove(originalFilePath, out _);
-            _pdfCacheFileInfo.TryRemove(originalFilePath, out _);
         }
 
+        private async Task<string?> ProcessDocFileForCompanyDetection(string filePath, IProgress<int>? progress, CancellationToken cancellationToken)
+        {
+            var fileInfo = new FileInfo(filePath);
+            var fileSizeMB = fileInfo.Length / (1024.0 * 1024.0);
+            
+            // Use configurable size limit for .doc files
+            if (fileSizeMB > _docFileSizeLimitMB)
+            {
+                _logger.Warning("Skipping large .doc file ({Size:F1}MB) exceeding limit of {LimitMB}MB: {Path}", 
+                    fileSizeMB, _docFileSizeLimitMB, filePath);
+                return null;
+            }
+            
+            progress?.Report(20);
+            
+            // Try basic text extraction first (faster, safer)
+            try
+            {
+                var basicText = await ExtractTextFromDocBasic(filePath);
+                if (!string.IsNullOrWhiteSpace(basicText) && basicText.Length > 100)
+                {
+                    progress?.Report(70);
+                    
+                    var processedText = PreprocessText(basicText);
+                    var match = await FindBestCompanyMatch(processedText);
+                    
+                    progress?.Report(100);
+                    
+                    if (match.HasValue)
+                    {
+                        _logger.Information("Found company in .doc file using basic extraction: {Company}", match.Value.company);
+                        return match.Value.company;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Basic text extraction failed for .doc file: {Path}", filePath);
+            }
+            
+            // If basic extraction didn't work, try PDF conversion with strict timeout
+            progress?.Report(40);
+            
+            try
+            {
+                var pdfText = await ExtractTextFromDocViaPdfConversion(filePath, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(pdfText))
+                {
+                    progress?.Report(80);
+                    
+                    var processedText = PreprocessText(pdfText);
+                    var match = await FindBestCompanyMatch(processedText);
+                    
+                    progress?.Report(100);
+                    
+                    if (match.HasValue)
+                    {
+                        _logger.Information("Found company in .doc file using PDF conversion: {Company}", match.Value.company);
+                        return match.Value.company;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.Warning("PDF conversion timed out for .doc file: {Path}", filePath);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "PDF conversion failed for .doc file: {Path}", filePath);
+            }
+            
+            progress?.Report(100);
+            return null;
+        }
+
+        private async Task<string> ExtractTextFromDocBasic(string filePath)
+        {
+            // Try to extract text using basic file reading (for simple .doc files)
+            try
+            {
+                var bytes = await File.ReadAllBytesAsync(filePath);
+                var text = System.Text.Encoding.UTF8.GetString(bytes);
+                
+                // Basic cleanup of binary data
+                text = Regex.Replace(text, @"[^\x20-\x7E\r\n]", " ");
+                text = Regex.Replace(text, @"\s+", " ");
+                
+                if (text.Length > 1000)
+                {
+                    text = text.Substring(0, 1000); // Limit to first 1000 characters
+                }
+                
+                return text;
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug(ex, "Basic text extraction failed for .doc file");
+                return string.Empty;
+            }
+        }
+
+        private async Task<string> ExtractTextFromDocViaPdfConversion(string filePath, CancellationToken cancellationToken)
+        {
+            if (_sessionOfficeService == null)
+            {
+                _logger.Warning("Office service not available for .doc PDF conversion");
+                return string.Empty;
+            }
+            
+            var tempPdf = Path.Combine(Path.GetTempPath(), $"DocHandler_{Guid.NewGuid()}.pdf");
+            
+            try
+            {
+                // Use a task with timeout for the conversion
+                var conversionTask = _sessionOfficeService.ConvertWordToPdf(filePath, tempPdf);
+                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+                
+                var completedTask = await Task.WhenAny(conversionTask, timeoutTask);
+                
+                if (completedTask == timeoutTask)
+                {
+                    _logger.Warning("PDF conversion timed out for .doc file: {Path}", filePath);
+                    throw new OperationCanceledException("PDF conversion timed out");
+                }
+                
+                var conversionResult = await conversionTask;
+                
+                if (!conversionResult.Success)
+                {
+                    _logger.Warning("Failed to convert .doc to PDF: {Error}", conversionResult.ErrorMessage);
+                    return string.Empty;
+                }
+                
+                if (!File.Exists(tempPdf))
+                {
+                    _logger.Warning("PDF conversion completed but output file not found: {Path}", tempPdf);
+                    return string.Empty;
+                }
+                
+                // Extract text from the converted PDF
+                return await ExtractTextFromPdf(tempPdf);
+            }
+            finally
+            {
+                // Clean up temporary PDF
+                if (File.Exists(tempPdf))
+                {
+                    try
+                    {
+                        File.Delete(tempPdf);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Failed to delete temporary PDF: {Path}", tempPdf);
+                    }
+                }
+            }
+        }
+        
         public void Dispose()
         {
             try

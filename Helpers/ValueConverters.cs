@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Data;
+using DocHandler.Services;
 
 namespace DocHandler.Helpers
 {
@@ -186,6 +187,77 @@ namespace DocHandler.Helpers
         }
 
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            throw new NotImplementedException();
+        }
+    }
+    
+    public class StatusToIconConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is SaveQuoteStatus status)
+            {
+                return status switch
+                {
+                    SaveQuoteStatus.Queued => "⏳",
+                    SaveQuoteStatus.Processing => "⚡",
+                    SaveQuoteStatus.Completed => "✓",
+                    SaveQuoteStatus.Failed => "❌",
+                    SaveQuoteStatus.Cancelled => "⛔",
+                    _ => "?"
+                };
+            }
+            return "?";
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            throw new NotImplementedException();
+        }
+    }
+
+    public class QueuedStatusToVisibilityConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is SaveQuoteStatus status)
+            {
+                return status == SaveQuoteStatus.Queued ? Visibility.Visible : Visibility.Collapsed;
+            }
+            return Visibility.Collapsed;
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            throw new NotImplementedException();
+        }
+    }
+
+    public class QueueStatusConverter : IMultiValueConverter
+    {
+        public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (values.Length != 4) return "";
+            
+            var isProcessing = values[0] as bool? ?? false;
+            var processedCount = values[1] as int? ?? 0;
+            var totalCount = values[2] as int? ?? 0;
+            var completionMessage = values[3] as string ?? "";
+            
+            if (isProcessing)
+            {
+                return $"Saving {processedCount} of {totalCount}...";
+            }
+            else if (!string.IsNullOrEmpty(completionMessage))
+            {
+                return completionMessage;
+            }
+            
+            return "";
+        }
+        
+        public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture)
         {
             throw new NotImplementedException();
         }

@@ -43,6 +43,10 @@ namespace DocHandler.ViewModels
         private readonly object _conversionLock = new object();
         private readonly ConcurrentDictionary<string, byte> _tempFilesToCleanup = new();
         
+        // Queue service
+        private readonly SaveQuotesQueueService _queueService;
+        private QueueDetailsWindow _queueWindow;
+        
         // Add concurrent scan protection
         private volatile int _activeScanCount = 0;
         private readonly SemaphoreSlim _scanSemaphore = new SemaphoreSlim(1, 1);
@@ -187,6 +191,26 @@ namespace DocHandler.ViewModels
         [ObservableProperty]
         private bool _isDetectingCompany;
 
+        // Queue properties
+        [ObservableProperty]
+        private int _queueTotalCount;
+
+        [ObservableProperty]
+        private int _queueProcessedCount;
+
+        [ObservableProperty]
+        private bool _isQueueProcessing;
+
+        [ObservableProperty]
+        private string _queueStatusMessage = "Drop quote documents";
+
+        // Add new properties for completion message
+        [ObservableProperty]
+        private string _queueCompletionMessage = "";
+
+        [ObservableProperty]
+        private bool _showQueueCompletionMessage = false;
+
         // Performance tracking
         private int _processedFileCount = 0;
         private PerformanceMetricsWindow _metricsWindow;
@@ -207,6 +231,38 @@ namespace DocHandler.ViewModels
         // Recent locations
         public ObservableCollection<string> RecentLocations => 
             new ObservableCollection<string>(_configService.Config.RecentLocations);
+
+        // .doc file scanning preferences
+        private bool _scanCompanyNamesForDocFiles = false;
+        public bool ScanCompanyNamesForDocFiles
+        {
+            get => _scanCompanyNamesForDocFiles;
+            set
+            {
+                if (SetProperty(ref _scanCompanyNamesForDocFiles, value))
+                {
+                    _configService.Config.ScanCompanyNamesForDocFiles = value;
+                    _ = _configService.SaveConfiguration();
+                }
+            }
+        }
+
+        private int _docFileSizeLimitMB = 10;
+        public int DocFileSizeLimitMB
+        {
+            get => _docFileSizeLimitMB;
+            set
+            {
+                if (SetProperty(ref _docFileSizeLimitMB, value))
+                {
+                    _configService.Config.DocFileSizeLimitMB = value;
+                    _ = _configService.SaveConfiguration();
+                    
+                    // Update the company name service with the new limit
+                    _companyNameService.UpdateDocFileSizeLimit(value);
+                }
+            }
+        }
         
         public MainViewModel()
         {
@@ -228,6 +284,15 @@ namespace DocHandler.ViewModels
             // Initialize performance monitor
             _performanceMonitor = new PerformanceMonitor();
             _logger.Information("Performance monitor initialized");
+            
+            // Initialize queue service
+            _queueService = new SaveQuotesQueueService();
+            
+            // Subscribe to queue events
+            _queueService.ProgressChanged += OnQueueProgressChanged;
+            _queueService.ItemCompleted += OnQueueItemCompleted;
+            _queueService.QueueEmpty += OnQueueEmpty;
+            _queueService.StatusMessageChanged += OnQueueStatusMessageChanged;
             
             // Initialize scope search timer for debouncing
             _scopeSearchTimer = new DispatcherTimer
@@ -262,6 +327,13 @@ namespace DocHandler.ViewModels
             // Load auto-scan company names preference
             AutoScanCompanyNames = _configService.Config.AutoScanCompanyNames;
             
+            // Load .doc file scanning preferences
+            ScanCompanyNamesForDocFiles = _configService.Config.ScanCompanyNamesForDocFiles;
+            DocFileSizeLimitMB = _configService.Config.DocFileSizeLimitMB;
+            
+            // Initialize company name service with current size limit
+            _companyNameService.UpdateDocFileSizeLimit(_configService.Config.DocFileSizeLimitMB);
+            
             // Update UI when files are added/removed
             PendingFiles.CollectionChanged += (s, e) => 
             {
@@ -295,6 +367,31 @@ namespace DocHandler.ViewModels
             {
                 _logger.Debug("Skipping company name scan - SaveQuotesMode: {SaveQuotesMode}, IsDetecting: {IsDetecting}, HasInput: {HasInput}, AutoScan: {AutoScan}", 
                     SaveQuotesMode, IsDetectingCompany, !string.IsNullOrWhiteSpace(CompanyNameInput), AutoScanCompanyNames);
+                return;
+            }
+
+            // Check if this is a .doc file and if .doc scanning is disabled
+            var extension = Path.GetExtension(filePath).ToLowerInvariant();
+            if (extension == ".doc" && !ScanCompanyNamesForDocFiles)
+            {
+                _logger.Information("Skipping company name scan for .doc file (disabled in settings): {Path}", filePath);
+                
+                // Show brief status message
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = "Skipping company scan for .doc file";
+                    
+                    // Clear message after 2 seconds
+                    var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+                    timer.Tick += (s, args) =>
+                    {
+                        timer.Stop();
+                        StatusMessage = "";
+                        UpdateUI();
+                    };
+                    timer.Start();
+                });
+                
                 return;
             }
 
@@ -1568,6 +1665,149 @@ namespace DocHandler.ViewModels
             }
         }
 
+        [RelayCommand]
+        private void ShowQueueWindow()
+        {
+            if (_queueWindow == null || !_queueWindow.IsLoaded)
+            {
+                _queueWindow = new QueueDetailsWindow(_queueService)
+                {
+                    Owner = Application.Current.MainWindow
+                };
+                
+                // Remember window position
+                if (_configService.Config.QueueWindowLeft.HasValue)
+                {
+                    _queueWindow.Left = _configService.Config.QueueWindowLeft.Value;
+                    _queueWindow.Top = _configService.Config.QueueWindowTop.Value;
+                }
+                
+                _queueWindow.Show();
+            }
+            else
+            {
+                _queueWindow.Activate();
+            }
+        }
+
+        // Queue event handlers
+        private void OnQueueProgressChanged(object sender, SaveQuoteProgressEventArgs e)
+        {
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                QueueTotalCount = e.TotalCount;
+                QueueProcessedCount = e.ProcessedCount;
+                IsQueueProcessing = e.IsProcessing;
+            });
+        }
+
+        private void OnQueueItemCompleted(object sender, SaveQuoteCompletedEventArgs e)
+        {
+            if (e.Success)
+            {
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    QueueStatusMessage = "Successfully saved!";
+                    
+                    // Reset message after 1 second
+                    var timer = new DispatcherTimer 
+                    { 
+                        Interval = TimeSpan.FromSeconds(1) 
+                    };
+                    timer.Tick += (s, args) =>
+                    {
+                        timer.Stop();
+                        UpdateQueueStatusMessage();
+                    };
+                    timer.Start();
+                });
+            }
+        }
+
+        private void OnQueueEmpty(object sender, EventArgs e)
+        {
+            Application.Current.Dispatcher.Invoke(async () =>
+            {
+                var totalCount = _queueService.TotalCount;
+                var failedCount = _queueService.FailedCount;
+                var successCount = totalCount - failedCount;
+                
+                if (failedCount > 0)
+                {
+                    MessageBox.Show(
+                        $"{successCount} quotes saved, {failedCount} failed - see queue for details",
+                        "Processing Complete",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
+                
+                // Show success animation if no failures and not in speed mode
+                if (failedCount == 0 && !_isSpeedMode)
+                {
+                    if (Application.Current.MainWindow is MainWindow mainWindow)
+                    {
+                        await mainWindow.ShowSaveQuotesSuccessAnimation(totalCount);
+                    }
+                }
+                
+                // Set completion message for middle status bar
+                if (failedCount > 0)
+                {
+                    QueueCompletionMessage = $"Saved {successCount} of {totalCount}";
+                }
+                else
+                {
+                    QueueCompletionMessage = $"Saved {totalCount} of {totalCount}";
+                }
+                
+                ShowQueueCompletionMessage = true;
+                
+                // Hide completion message after 4 seconds
+                var completionTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+                completionTimer.Tick += (s, args) =>
+                {
+                    completionTimer.Stop();
+                    ShowQueueCompletionMessage = false;
+                };
+                completionTimer.Start();
+                
+                QueueStatusMessage = "All quotes saved";
+                
+                // Reset to idle after 2 seconds
+                var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+                timer.Tick += (s, args) =>
+                {
+                    timer.Stop();
+                    QueueStatusMessage = "Drop quote documents";
+                };
+                timer.Start();
+            });
+        }
+
+        private void OnQueueStatusMessageChanged(object sender, string message)
+        {
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                QueueStatusMessage = message;
+            });
+        }
+
+        private void UpdateQueueStatusMessage()
+        {
+            if (IsQueueProcessing)
+            {
+                QueueStatusMessage = "Processing queue...";
+            }
+            else if (QueueTotalCount > 0)
+            {
+                QueueStatusMessage = $"{QueueTotalCount} item(s) in queue";
+            }
+            else
+            {
+                QueueStatusMessage = "Drop quote documents";
+            }
+        }
+
         private async Task ProcessSaveQuotes()
         {
             // STEP 1: Capture all UI values on the UI thread FIRST
@@ -1578,21 +1818,10 @@ namespace DocHandler.ViewModels
                 CompanyNameInput = this.CompanyNameInput,
                 DetectedCompanyName = this.DetectedCompanyName,
                 PendingFilesList = this.PendingFiles.ToList(), // Create a copy
-                SessionSaveLocation = this.SessionSaveLocation,
-                OpenFolderAfterProcessing = this.OpenFolderAfterProcessing
+                SessionSaveLocation = this.SessionSaveLocation
             });
 
-            // Check if user is working fast
-            var timeSinceLastProcess = DateTime.Now - _lastProcessTime;
-            _isSpeedMode = timeSinceLastProcess.TotalSeconds < SpeedModeThresholdSeconds;
-            
-            // Log speed mode detection
-            if (_isSpeedMode)
-            {
-                _logger.Debug("Speed mode detected - skipping animation");
-            }
-            
-            // Now use captured values instead of direct UI access
+            // Validation (keep existing validation logic)
             if (!uiValues.SaveQuotesMode || string.IsNullOrEmpty(uiValues.SelectedScope))
             {
                 MessageBox.Show("Please select a scope of work first.", "Save Quotes", 
@@ -1625,202 +1854,32 @@ namespace DocHandler.ViewModels
                 return;
             }
 
+            var outputDir = !string.IsNullOrEmpty(uiValues.SessionSaveLocation) 
+                ? uiValues.SessionSaveLocation 
+                : _configService.Config.DefaultSaveLocation;
+
+            var fileCount = uiValues.PendingFilesList.Count;
+            
+            // Add to queue instead of processing directly
+            foreach (var file in uiValues.PendingFilesList)
+            {
+                _queueService.AddToQueue(file, uiValues.SelectedScope, companyName, outputDir);
+            }
+            
+            // Clear UI immediately
             await Application.Current.Dispatcher.InvokeAsync(() =>
             {
-                IsProcessing = true;
+                PendingFiles.Clear();
+                CompanyNameInput = "";
+                DetectedCompanyName = "";
+                SelectedScope = null;
+                StatusMessage = $"Added {fileCount} quote{(fileCount > 1 ? "s" : "")} to queue";
             });
             
-            var processedCount = 0;
-            var totalFiles = uiValues.PendingFilesList.Count;
-            var failedFiles = new List<(string file, string error)>();
-
-            try
+            // Start processing if not already running
+            if (!_queueService.IsProcessing)
             {
-                var outputDir = !string.IsNullOrEmpty(uiValues.SessionSaveLocation) 
-                    ? uiValues.SessionSaveLocation 
-                    : _configService.Config.DefaultSaveLocation;
-
-                foreach (var file in uiValues.PendingFilesList)
-                {
-                    var fileStopwatch = Stopwatch.StartNew();
-                    var success = false;
-                    long fileSize = 0;
-                    string errorType = null;
-                    
-                    try
-                    {
-                        // Get file size for metrics
-                        var fileInfo = new FileInfo(file.FilePath);
-                        fileSize = fileInfo.Length;
-                        
-                        // Update progress on UI thread
-                        await Application.Current.Dispatcher.InvokeAsync(() =>
-                        {
-                            StatusMessage = $"Processing quote: {file.FileName}";
-                            ProgressValue = (processedCount / (double)totalFiles) * 100;
-                        });
-
-                        // Build the filename: [Scope] - [Company].pdf
-                        var outputFileName = $"{uiValues.SelectedScope} - {companyName}.pdf";
-                        var outputPath = Path.Combine(outputDir, outputFileName);
-
-                        // Ensure unique filename
-                        outputPath = Path.Combine(outputDir, 
-                            _fileProcessingService.GetUniqueFileName(outputDir, outputFileName));
-
-                        // Process the file (convert if needed and save)
-                        var processResult = await ProcessSingleQuoteFile(file.FilePath, outputPath).ConfigureAwait(false);
-                        
-                        if (processResult.Success)
-                        {
-                            processedCount++;
-                            success = true;
-                            
-                            // Update UI on UI thread - remove from actual UI collection
-                            await Application.Current.Dispatcher.InvokeAsync(() =>
-                            {
-                                var itemToRemove = PendingFiles.FirstOrDefault(f => f.FilePath == file.FilePath);
-                                if (itemToRemove != null)
-                                {
-                                    PendingFiles.Remove(itemToRemove);
-                                }
-                            });
-                            
-                            _logger.Information("Saved quote as: {FileName}", outputFileName);
-                            
-                            // Update company usage if it was detected
-                            if (!string.IsNullOrWhiteSpace(uiValues.DetectedCompanyName) && 
-                                companyName.Equals(SanitizeFileName(uiValues.DetectedCompanyName), StringComparison.OrdinalIgnoreCase))
-                            {
-                                await _companyNameService.IncrementUsageCount(uiValues.DetectedCompanyName).ConfigureAwait(false);
-                            }
-                            
-                            // Update scope usage
-                            await _scopeOfWorkService.IncrementUsageCount(uiValues.SelectedScope).ConfigureAwait(false);
-                            
-                            // Add to company database if not already there
-                            var originalCompanyName = !string.IsNullOrWhiteSpace(uiValues.CompanyNameInput) 
-                                ? uiValues.CompanyNameInput.Trim() 
-                                : uiValues.DetectedCompanyName?.Trim();
-                                
-                            if (!string.IsNullOrWhiteSpace(originalCompanyName) &&
-                                !_companyNameService.Companies.Any(c => 
-                                    c.Name.Equals(originalCompanyName, StringComparison.OrdinalIgnoreCase)))
-                            {
-                                await _companyNameService.AddCompanyName(originalCompanyName).ConfigureAwait(false);
-                            }
-                        }
-                        else
-                        {
-                            errorType = "ProcessingFailed";
-                            failedFiles.Add((file.FileName, processResult.ErrorMessage ?? "Unknown error"));
-                        }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        errorType = "Cancelled";
-                        throw;
-                    }
-                    catch (UnauthorizedAccessException ex)
-                    {
-                        errorType = "AccessDenied";
-                        failedFiles.Add((file.FileName, ex.Message));
-                        _logger.Error(ex, "Access denied processing quote: {File}", file.FileName);
-                    }
-                    catch (Exception ex)
-                    {
-                        errorType = ex.GetType().Name;
-                        failedFiles.Add((file.FileName, ex.Message));
-                        _logger.Error(ex, "Failed to process quote: {File}", file.FileName);
-                    }
-                    finally
-                    {
-                        fileStopwatch.Stop();
-                        _performanceMonitor.RecordDocumentProcessed(
-                            file.FilePath, 
-                            fileStopwatch.ElapsedMilliseconds, 
-                            success,
-                            fileSize,
-                            errorType);
-                    }
-                }
-
-                // Update status based on results
-                if (processedCount > 0)
-                {
-                    // Update UI elements on UI thread
-                    await Application.Current.Dispatcher.InvokeAsync(() =>
-                    {
-                        StatusMessage = $"Successfully saved {processedCount} quote{(processedCount > 1 ? "s" : "")}";
-                        
-                        // Clear inputs for next batch
-                        CompanyNameInput = "";
-                        DetectedCompanyName = "";
-                        SelectedScope = null;
-                    });
-                    
-                    // Only show animation if not in speed mode
-                    if (!_isSpeedMode)
-                    {
-                        await Application.Current.Dispatcher.InvokeAsync(async () =>
-                        {
-                            if (Application.Current.MainWindow is MainWindow mainWindow)
-                            {
-                                await mainWindow.ShowSaveQuotesSuccessAnimation(processedCount);
-                            }
-                        });
-                    }
-                    
-                    // Update last process time
-                    _lastProcessTime = DateTime.Now;
-                    
-                    // Increment processed file count
-                    _processedFileCount += processedCount;
-                    
-                    // Update recent locations
-                    _configService.AddRecentLocation(outputDir);
-                    await Application.Current.Dispatcher.InvokeAsync(() =>
-                    {
-                        OnPropertyChanged(nameof(RecentLocations));
-                    });
-                    
-                    // Open output folder if preference is set
-                    if (uiValues.OpenFolderAfterProcessing && processedCount == totalFiles)
-                    {
-                        OpenOutputFolder(outputDir);
-                    }
-                }
-
-                // Show errors if any
-                if (failedFiles.Any())
-                {
-                    var failedList = string.Join("\n", 
-                        failedFiles.Select(f => $"• {f.file}: {f.error}"));
-                    MessageBox.Show(
-                        $"The following quotes could not be processed:\n\n{failedList}",
-                        "Processing Errors",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Save Quotes processing failed");
-                MessageBox.Show($"An error occurred: {ex.Message}", "Error", 
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            finally
-            {
-                // Ensure all UI updates happen on the UI thread
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    IsProcessing = false;
-                    ProgressValue = 0;
-                    UpdateUI();
-                });
-                
-                // Cleanup temp files (can be done on background thread)
-                await CleanupTempFiles().ConfigureAwait(false);
+                _ = _queueService.StartProcessingAsync();
             }
         }
 
