@@ -68,7 +68,7 @@ namespace DocHandler.Services
             return false;
         }
         
-        public async System.Threading.Tasks.Task<ConversionResult> ConvertWordToPdf(string inputPath, string outputPath)
+        public async Task<ConversionResult> ConvertWordToPdf(string inputPath, string outputPath)
         {
             if (!IsOfficeAvailable())
             {
@@ -78,8 +78,124 @@ namespace DocHandler.Services
                     ErrorMessage = "Microsoft Office is not installed or accessible. Please install Microsoft Office to convert Word documents to PDF."
                 };
             }
+
+            var result = new ConversionResult();
             
-            return await Task.Run(() => ConvertWordToPdfSync(inputPath, outputPath));
+            // Add file size validation
+            var fileInfo = new FileInfo(inputPath);
+            if (fileInfo.Length > 50 * 1024 * 1024) // 50MB limit
+            {
+                result.Success = false;
+                result.ErrorMessage = "File size exceeds 50MB limit";
+                return result;
+            }
+
+            _logger.Information("Converting Word to PDF: {WordPath} -> {PdfPath}", inputPath, outputPath);
+
+            await Task.Run(() =>
+            {
+                lock (_wordLock)
+                {
+                    dynamic? doc = null;
+                    
+                    try
+                    {
+                        // Ensure Word application is initialized using late binding
+                        if (_wordApp == null)
+                        {
+                            try
+                            {
+                                Type? wordType = Type.GetTypeFromProgID("Word.Application");
+                                if (wordType == null)
+                                {
+                                    result.Success = false;
+                                    result.ErrorMessage = "Microsoft Word is not installed.";
+                                    return;
+                                }
+                                
+                                _wordApp = Activator.CreateInstance(wordType);
+                                _wordApp.Visible = false;
+                                _wordApp.DisplayAlerts = 0; // wdAlertsNone
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.Error(ex, "Failed to create Word application");
+                                result.Success = false;
+                                result.ErrorMessage = "Microsoft Word is not installed or accessible.";
+                                return;
+                            }
+                        }
+                        
+                        // Add timeout protection
+                        var conversionTask = Task.Run(() =>
+                        {
+                            doc = _wordApp.Documents.Open(inputPath, ReadOnly: true);
+                            doc.SaveAs2(outputPath, FileFormat: 17);
+                        });
+                        
+                        if (!conversionTask.Wait(TimeSpan.FromSeconds(30)))
+                        {
+                            throw new TimeoutException("Word conversion timed out after 30 seconds");
+                        }
+                        
+                        result.Success = true;
+                        result.OutputPath = outputPath;
+                        _logger.Information("Successfully converted Word to PDF");
+                    }
+                    catch (TimeoutException tex)
+                    {
+                        _logger.Error(tex, "Word conversion timeout");
+                        result.Success = false;
+                        result.ErrorMessage = tex.Message;
+                        
+                        // Force Word restart on timeout - dispose current instance
+                        if (_wordApp != null)
+                        {
+                            try
+                            {
+                                _wordApp.Quit();
+                                Marshal.FinalReleaseComObject(_wordApp);
+                                _wordApp = null;
+                                _logger.Information("Word application restarted due to timeout");
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.Warning(ex, "Error disposing Word app after timeout");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Failed to convert Word document to PDF");
+                        result.Success = false;
+                        result.ErrorMessage = $"Conversion failed: {ex.Message}";
+                    }
+                    finally
+                    {
+                        // Always cleanup document
+                        if (doc != null)
+                        {
+                            try
+                            {
+                                doc.Close(SaveChanges: false);
+                                Marshal.FinalReleaseComObject(doc);
+                                doc = null;
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.Warning(ex, "Error closing Word document");
+                            }
+                        }
+                        
+                        // Force garbage collection after COM operations
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                        GC.Collect();
+                    }
+                }
+            });
+            
+            return result;
         }
         
         private ConversionResult ConvertWordToPdfSync(string inputPath, string outputPath)

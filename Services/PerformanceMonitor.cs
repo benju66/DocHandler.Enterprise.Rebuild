@@ -36,12 +36,19 @@ namespace DocHandler.Services
         private const int HIGH_MEMORY_THRESHOLD_MB = 500;
         private const int MEMORY_LEAK_THRESHOLD_MB = 100;
         private const int MAX_METRIC_HISTORY = 100;
+        
+        // Memory pressure monitoring
+        private long _memoryThresholdBytes;
+        private Timer _memoryMonitorTimer;
+        
+        public event EventHandler<MemoryPressureEventArgs>? MemoryPressureDetected;
 
-        public PerformanceMonitor()
+        public PerformanceMonitor(int memoryLimitMB = 500)
         {
             _currentProcess = Process.GetCurrentProcess();
             _initialMemoryUsage = _currentProcess.WorkingSet64;
             _peakMemoryUsage = _initialMemoryUsage;
+            _memoryThresholdBytes = memoryLimitMB * 1024L * 1024L;
             
             try
             {
@@ -56,6 +63,10 @@ namespace DocHandler.Services
 
             // Start memory monitoring timer (every 30 seconds)
             _memoryTimer = new Timer(MonitorMemory, null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
+            
+            // Start memory pressure monitoring
+            _memoryMonitorTimer = new Timer(CheckMemoryPressure, null, 
+                5000, 5000); // 5 seconds in milliseconds
             
             _logger.Information("Performance monitor initialized with {InitialMemory} MB initial memory", 
                 _initialMemoryUsage / 1024 / 1024);
@@ -303,6 +314,34 @@ namespace DocHandler.Services
                 _logger.Warning(ex, "Error during memory monitoring");
             }
         }
+        
+        private void CheckMemoryPressure(object? state)
+        {
+            var process = Process.GetCurrentProcess();
+            var workingSet = process.WorkingSet64;
+            
+            if (workingSet > _memoryThresholdBytes)
+            {
+                var args = new MemoryPressureEventArgs
+                {
+                    CurrentMemoryMB = workingSet / (1024 * 1024),
+                    ThresholdMB = _memoryThresholdBytes / (1024 * 1024),
+                    IsCritical = workingSet > _memoryThresholdBytes * 1.5
+                };
+                
+                MemoryPressureDetected?.Invoke(this, args);
+                
+                // Force garbage collection if critical
+                if (args.IsCritical)
+                {
+                    _logger.Warning("Critical memory pressure detected: {CurrentMB}MB", args.CurrentMemoryMB);
+                    
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                    GC.Collect();
+                }
+            }
+        }
 
         /// <summary>
         /// Records document processing metrics with enhanced details
@@ -435,6 +474,7 @@ namespace DocHandler.Services
         public void Dispose()
         {
             _memoryTimer?.Dispose();
+            _memoryMonitorTimer?.Dispose();
             _cpuCounter?.Dispose();
             _ramCounter?.Dispose();
             _currentProcess?.Dispose();
@@ -488,5 +528,12 @@ namespace DocHandler.Services
     {
         public float CpuUsagePercent { get; set; }
         public long AvailableMemoryMB { get; set; }
+    }
+    
+    public class MemoryPressureEventArgs : EventArgs
+    {
+        public long CurrentMemoryMB { get; set; }
+        public long ThresholdMB { get; set; }
+        public bool IsCritical { get; set; }
     }
 } 

@@ -21,6 +21,7 @@ using CommunityToolkit.Mvvm.Input;
 using DocHandler.Services;
 using DocHandler.Views;
 using DocHandler.Models;
+using DocHandler.ViewModels;
 using Serilog;
 using MessageBox = System.Windows.MessageBox;
 using Application = System.Windows.Application;
@@ -40,6 +41,7 @@ namespace DocHandler.ViewModels
         private readonly SessionAwareOfficeService _sessionOfficeService;
         private readonly SessionAwareExcelService _sessionExcelService;
         private readonly PerformanceMonitor _performanceMonitor;
+        private readonly PdfCacheService _pdfCacheService;
         private readonly object _conversionLock = new object();
         private readonly ConcurrentDictionary<string, byte> _tempFilesToCleanup = new();
         
@@ -267,33 +269,73 @@ namespace DocHandler.ViewModels
         public MainViewModel()
         {
             _logger = Log.ForContext<MainViewModel>();
-            _fileProcessingService = new OptimizedFileProcessingService();
+            
+            // Initialize configuration first
             _configService = new ConfigurationService();
-            _officeConversionService = new OfficeConversionService();
+            
+            // Initialize core services
             _companyNameService = new CompanyNameService();
             _scopeOfWorkService = new ScopeOfWorkService();
+            _officeConversionService = new OfficeConversionService();
             
-            // Initialize session-aware Office service for better performance
+            // Initialize performance services
+            _pdfCacheService = new PdfCacheService();
+            _performanceMonitor = new PerformanceMonitor(_configService.Config.MemoryUsageLimitMB);
+            
+            // Initialize file processing with cache
+            _fileProcessingService = new OptimizedFileProcessingService(_configService, _pdfCacheService);
+            
+            // Initialize session-aware services
             _sessionOfficeService = new SessionAwareOfficeService();
-            _logger.Information("Session-aware Office service initialized");
-
-            // Initialize session-aware Excel service for better performance
             _sessionExcelService = new SessionAwareExcelService();
+            
+            // Set office services in company name service
             _companyNameService.SetOfficeServices(_sessionOfficeService, _sessionExcelService);
             
-            // Initialize performance monitor
-            _performanceMonitor = new PerformanceMonitor();
-            _logger.Information("Performance monitor initialized");
+            // Initialize queue service with dependencies
+            _queueService = new SaveQuotesQueueService(_configService, _pdfCacheService);
             
-            // Initialize queue service
-            _queueService = new SaveQuotesQueueService();
+            // Subscribe to events
+            SubscribeToEvents();
             
-            // Subscribe to queue events
+            // Initialize UI from configuration
+            InitializeFromConfiguration();
+            
+            // Restore queue window if needed
+            RestoreQueueWindowIfNeeded();
+            
+            _logger.Information("MainViewModel initialized with all enhancements");
+        }
+
+        private void SubscribeToEvents()
+        {
+            // Queue events
             _queueService.ProgressChanged += OnQueueProgressChanged;
             _queueService.ItemCompleted += OnQueueItemCompleted;
             _queueService.QueueEmpty += OnQueueEmpty;
             _queueService.StatusMessageChanged += OnQueueStatusMessageChanged;
             
+            // Performance monitor events
+            _performanceMonitor.MemoryPressureDetected += OnMemoryPressureDetected;
+            
+            // File collection changes
+            PendingFiles.CollectionChanged += (s, e) => 
+            {
+                Application.Current.Dispatcher.InvokeAsync(() => UpdateUI());
+                
+                if (SaveQuotesMode && e.NewItems != null && string.IsNullOrWhiteSpace(CompanyNameInput))
+                {
+                    foreach (FileItem item in e.NewItems)
+                    {
+                        StartCompanyNameScan(item.FilePath);
+                        break;
+                    }
+                }
+            };
+        }
+
+        private void InitializeFromConfiguration()
+        {
             // Initialize scope search timer for debouncing
             _scopeSearchTimer = new DispatcherTimer
             {
@@ -334,30 +376,25 @@ namespace DocHandler.ViewModels
             // Initialize company name service with current size limit
             _companyNameService.UpdateDocFileSizeLimit(_configService.Config.DocFileSizeLimitMB);
             
-            // Update UI when files are added/removed
-            PendingFiles.CollectionChanged += (s, e) => 
-            {
-                // Always update UI on the UI thread
-                Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    UpdateUI();
-                });
-                
-                // When files are added in Save Quotes mode, scan for company names
-                // ONLY if user hasn't already entered a company name
-                if (SaveQuotesMode && e.NewItems != null && string.IsNullOrWhiteSpace(CompanyNameInput))
-                {
-                    // Use a safer approach to start the scan
-                    foreach (FileItem item in e.NewItems)
-                    {
-                        StartCompanyNameScan(item.FilePath);
-                        break; // Only scan the first file to avoid multiple detections
-                    }
-                }
-            };
-            
             // Check Office availability
             CheckOfficeAvailability();
+        }
+
+        private void OnMemoryPressureDetected(object sender, MemoryPressureEventArgs e)
+        {
+            Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                if (e.IsCritical)
+                {
+                    _logger.Warning("Critical memory pressure: {CurrentMB}MB", e.CurrentMemoryMB);
+                    
+                    MessageBox.Show(
+                        $"Memory usage is critically high ({e.CurrentMemoryMB}MB). Consider closing other applications.",
+                        "Memory Warning",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+            });
         }
         
         private async Task ScanForCompanyName(string filePath, CancellationToken cancellationToken = default)
@@ -578,23 +615,80 @@ namespace DocHandler.ViewModels
 
         private void StartCompanyNameScan(string filePath)
         {
-            // Use a safer approach to start the scan without fire-and-forget
-            _ = Task.Run(async () =>
+            if (!SaveQuotesMode || !AutoScanCompanyNames || IsDetectingCompany || 
+                !string.IsNullOrWhiteSpace(CompanyNameInput))
+            {
+                return;
+            }
+            
+            // Cancel any existing scan
+            _currentScanCancellation?.Cancel();
+            _currentScanCancellation = new CancellationTokenSource();
+            var cancellationToken = _currentScanCancellation.Token;
+            
+            // Run entirely in background
+            Task.Run(async () =>
             {
                 try
                 {
-                    await ScanForCompanyNameSafely(filePath);
+                    // Update UI to show scanning
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        IsDetectingCompany = true;
+                        DetectedCompanyName = "Scanning...";
+                    });
+                    
+                    // Create progress reporter
+                    var progress = new Progress<int>(percent =>
+                    {
+                        Application.Current.Dispatcher.InvokeAsync(() =>
+                        {
+                            if (percent < 100)
+                            {
+                                DetectedCompanyName = $"Scanning... {percent}%";
+                            }
+                        });
+                    });
+                    
+                    // Perform detection with progress
+                    var detectedCompany = await _companyNameService.ScanDocumentForCompanyName(
+                        filePath, progress);
+                    
+                    if (cancellationToken.IsCancellationRequested)
+                        return;
+                    
+                    // Update UI with result
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        if (!string.IsNullOrWhiteSpace(detectedCompany))
+                        {
+                            DetectedCompanyName = detectedCompany;
+                            CompanyNameInput = detectedCompany;
+                            _logger.Information("Auto-detected company: {Company}", detectedCompany);
+                        }
+                        else
+                        {
+                            DetectedCompanyName = "No company detected";
+                        }
+                        
+                        IsDetectingCompany = false;
+                    });
                 }
-                catch (ObjectDisposedException)
+                catch (OperationCanceledException)
                 {
-                    // Application is shutting down, ignore
-                    _logger.Debug("Scan cancelled - application shutting down");
+                    _logger.Debug("Company name scan cancelled");
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error(ex, "Error during auto-scan for file: {FilePath}", filePath);
+                    _logger.Error(ex, "Error during company name scan");
+                    
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        DetectedCompanyName = "Detection failed";
+                        IsDetectingCompany = false;
+                    });
                 }
-            });
+            }, cancellationToken);
         }
         
         private void CheckOfficeAvailability()
@@ -1522,6 +1616,47 @@ namespace DocHandler.ViewModels
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }
+
+        [RelayCommand]
+        private void OpenSettings()
+        {
+            var settingsViewModel = new SettingsViewModel(
+                _configService, 
+                _companyNameService, 
+                _scopeOfWorkService);
+                
+            var settingsWindow = new Views.SettingsWindow(settingsViewModel)
+            {
+                Owner = Application.Current.MainWindow
+            };
+            
+            if (settingsWindow.ShowDialog() == true)
+            {
+                // Reload settings that affect the UI
+                IsDarkMode = _configService.Config.Theme == "Dark";
+                SaveQuotesMode = _configService.Config.SaveQuotesMode;
+                ShowRecentScopes = _configService.Config.ShowRecentScopes;
+                OpenFolderAfterProcessing = _configService.Config.OpenFolderAfterProcessing ?? true;
+                AutoScanCompanyNames = _configService.Config.AutoScanCompanyNames;
+                ScanCompanyNamesForDocFiles = _configService.Config.ScanCompanyNamesForDocFiles;
+                DocFileSizeLimitMB = _configService.Config.DocFileSizeLimitMB;
+                
+                // Update queue service with new parallel limit
+                _queueService?.UpdateMaxConcurrency(_configService.Config.MaxParallelProcessing);
+                
+                // Apply theme change
+                if (_configService.Config.Theme == "Dark")
+                {
+                    ModernWpf.ThemeManager.Current.ApplicationTheme = ModernWpf.ApplicationTheme.Dark;
+                }
+                else
+                {
+                    ModernWpf.ThemeManager.Current.ApplicationTheme = ModernWpf.ApplicationTheme.Light;
+                }
+                
+                _logger.Information("Settings updated from preferences window");
+            }
+        }
         
         [RelayCommand]
         private async Task ShowPerformanceMetricsAsync()
@@ -1665,24 +1800,78 @@ namespace DocHandler.ViewModels
             }
         }
 
+        // Add method to restore queue window on startup
+        private void RestoreQueueWindowIfNeeded()
+        {
+            if (_configService.Config.QueueWindowIsOpen && _configService.Config.RestoreQueueWindowOnStartup)
+            {
+                // Delay restoration to ensure main window is fully loaded
+                var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+                timer.Tick += (s, e) =>
+                {
+                    timer.Stop();
+                    
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        if (_queueWindow == null && Application.Current.MainWindow?.IsLoaded == true)
+                        {
+                            ShowQueueWindow();
+                            _logger.Information("Restored queue window from previous session");
+                        }
+                    });
+                };
+                timer.Start();
+            }
+        }
+
+        // Add helper method to ensure window is visible
+        private void EnsureWindowIsOnScreen(Window window)
+        {
+            var workingArea = SystemParameters.WorkArea;
+            
+            if (window.Left < 0) window.Left = 0;
+            if (window.Top < 0) window.Top = 0;
+            
+            if (window.Left + window.Width > workingArea.Width)
+                window.Left = workingArea.Width - window.Width;
+            
+            if (window.Top + window.Height > workingArea.Height)
+                window.Top = workingArea.Height - window.Height;
+        }
+
         [RelayCommand]
         private void ShowQueueWindow()
         {
             if (_queueWindow == null || !_queueWindow.IsLoaded)
             {
-                _queueWindow = new QueueDetailsWindow(_queueService)
+                _queueWindow = new QueueDetailsWindow(_queueService, _configService)
                 {
                     Owner = Application.Current.MainWindow
                 };
                 
-                // Remember window position
-                if (_configService.Config.QueueWindowLeft.HasValue)
+                // Restore window position
+                if (_configService.Config.QueueWindowLeft.HasValue && _configService.Config.QueueWindowTop.HasValue)
                 {
                     _queueWindow.Left = _configService.Config.QueueWindowLeft.Value;
                     _queueWindow.Top = _configService.Config.QueueWindowTop.Value;
+                    
+                    // Ensure window is on screen
+                    EnsureWindowIsOnScreen(_queueWindow);
                 }
                 
+                // Subscribe to closed event
+                _queueWindow.Closed += (s, e) =>
+                {
+                    _queueWindow = null;
+                    _configService.Config.QueueWindowIsOpen = false;
+                    _ = _configService.SaveConfiguration();
+                };
+                
                 _queueWindow.Show();
+                
+                // Mark as open
+                _configService.Config.QueueWindowIsOpen = true;
+                _ = _configService.SaveConfiguration();
             }
             else
             {
@@ -2118,6 +2307,11 @@ namespace DocHandler.ViewModels
         {
             try
             {
+                _logger.Information("MainViewModel cleanup started");
+                
+                // Close queue window if open
+                _queueWindow?.Close();
+                
                 // Cancel any active scans safely
                 var currentScan = Interlocked.Exchange(ref _currentScanCancellation, null);
                 if (currentScan != null)
@@ -2137,36 +2331,59 @@ namespace DocHandler.ViewModels
                 _scopeSearchTimer?.Stop();
                 _scopeSearchTimer = null;
                 
-                                 // Handle scope search cancellation safely
-                 var scopeSearchCancellation = Interlocked.Exchange(ref _scopeSearchCancellation, null);
-                 if (scopeSearchCancellation != null)
-                 {
-                     scopeSearchCancellation.Cancel();
-                     await Task.Delay(100);
-                     scopeSearchCancellation.Dispose();
-                 }
+                // Handle scope search cancellation safely
+                var scopeSearchCancellation = Interlocked.Exchange(ref _scopeSearchCancellation, null);
+                if (scopeSearchCancellation != null)
+                {
+                    scopeSearchCancellation.Cancel();
+                    await Task.Delay(100);
+                    scopeSearchCancellation.Dispose();
+                }
             
-                // Cleanup session services
+                // Dispose queue service first (it uses file processing service)
                 try
                 {
-                    _sessionOfficeService?.Dispose();
-                    _sessionExcelService?.Dispose();
-                    _logger.Information("Session Office services disposed");
+                    _queueService?.Dispose();
+                    _logger.Information("Queue service disposed");
                 }
                 catch (Exception ex)
                 {
-                    _logger.Warning(ex, "Error disposing session Office services");
+                    _logger.Error(ex, "Error disposing queue service");
                 }
                 
-                // Cleanup PDF cache
+                // Dispose file processing service
                 try
                 {
-                    _companyNameService?.CleanupPdfCache();
-                    _logger.Information("PDF cache cleaned up");
+                    _fileProcessingService?.Dispose();
+                    _logger.Information("File processing service disposed");
                 }
                 catch (Exception ex)
                 {
-                    _logger.Warning(ex, "Error cleaning PDF cache");
+                    _logger.Error(ex, "Error disposing file processing service");
+                }
+                
+                // Dispose company name service
+                try
+                {
+                    _companyNameService?.Dispose();
+                    _logger.Information("Company name service disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Error disposing company name service");
+                }
+                
+                // Dispose Office services
+                try
+                {
+                    _officeConversionService?.Dispose();
+                    _sessionOfficeService?.Dispose();
+                    _sessionExcelService?.Dispose();
+                    _logger.Information("Office services disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Error disposing Office services");
                 }
                 
                 // Dispose performance monitor
@@ -2177,17 +2394,19 @@ namespace DocHandler.ViewModels
                 }
                 catch (Exception ex)
                 {
-                    _logger.Warning(ex, "Error disposing performance monitor");
+                    _logger.Error(ex, "Error disposing performance monitor");
                 }
                 
-                // Dispose other services
-                _fileProcessingService?.Dispose();
+                // Force garbage collection to ensure COM cleanup
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
                 
                 _logger.Information("MainViewModel cleanup completed");
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Error during cleanup");
+                _logger.Error(ex, "Error during MainViewModel cleanup");
             }
         }
         
@@ -2287,6 +2506,46 @@ namespace DocHandler.ViewModels
                 
                 return "Scanning for company name...";
             }
+        }
+
+        // Property for binding
+        public bool RestoreQueueWindowOnStartup
+        {
+            get => _configService.Config.RestoreQueueWindowOnStartup;
+            set
+            {
+                if (_configService.Config.RestoreQueueWindowOnStartup != value)
+                {
+                    _configService.Config.RestoreQueueWindowOnStartup = value;
+                    _ = _configService.SaveConfiguration();
+                    OnPropertyChanged();
+                }
+            }
+        }
+
+        // Property for queue window state indicator
+        public bool QueueWindowIsOpen => _configService.Config.QueueWindowIsOpen;
+
+        // Command to reset position
+        [RelayCommand]
+        private void ResetQueueWindowPosition()
+        {
+            _configService.Config.QueueWindowLeft = null;
+            _configService.Config.QueueWindowTop = null;
+            _configService.Config.QueueWindowWidth = 600;
+            _configService.Config.QueueWindowHeight = 400;
+            _ = _configService.SaveConfiguration();
+            
+            // If window is open, move it to center
+            if (_queueWindow?.IsLoaded == true)
+            {
+                _queueWindow.Width = 600;
+                _queueWindow.Height = 400;
+                _queueWindow.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+            }
+            
+            MessageBox.Show("Queue window position has been reset.", "Reset Complete", 
+                            MessageBoxButton.OK, MessageBoxImage.Information);
         }
     }
 }

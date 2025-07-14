@@ -15,7 +15,7 @@ using System.Collections.Generic; // Added missing import
 
 namespace DocHandler.Services
 {
-    public partial class SaveQuotesQueueService : ObservableObject
+    public partial class SaveQuotesQueueService : ObservableObject, IDisposable
     {
         private readonly ILogger _logger;
         private readonly ConcurrentQueue<SaveQuoteItem> _queue;
@@ -24,6 +24,11 @@ namespace DocHandler.Services
         private readonly object _itemsLock = new object();
         private readonly OptimizedFileProcessingService _fileProcessingService;
         private CancellationTokenSource _cancellationTokenSource;
+        private readonly ConfigurationService _configService;
+        private readonly PdfCacheService _pdfCacheService;
+        
+        // Add private disposal tracking
+        private bool _disposed = false;
         
         public ObservableCollection<SaveQuoteItem> AllItems => _allItems;
         
@@ -45,14 +50,22 @@ namespace DocHandler.Services
         public event EventHandler QueueEmpty;
         public event EventHandler<string> StatusMessageChanged;
         
-        public SaveQuotesQueueService()
+        public SaveQuotesQueueService(ConfigurationService configService, PdfCacheService pdfCacheService)
         {
             _logger = Log.ForContext<SaveQuotesQueueService>();
+            _configService = configService;
+            _pdfCacheService = pdfCacheService;
             _queue = new ConcurrentQueue<SaveQuoteItem>();
-            _processingSemaphore = new SemaphoreSlim(3, 3); // Max 3 concurrent operations
+            
+            // Use configurable max concurrency
+            var maxConcurrency = _configService.Config.MaxParallelProcessing;
+            _processingSemaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+            
             _allItems = new ObservableCollection<SaveQuoteItem>();
             _fileProcessingService = new OptimizedFileProcessingService();
             _cancellationTokenSource = new CancellationTokenSource();
+            
+            _logger.Information("Queue service initialized with max concurrency: {MaxConcurrency}", maxConcurrency);
         }
         
         public void AddToQueue(FileItem file, string scope, string companyName, string saveLocation)
@@ -108,9 +121,11 @@ namespace DocHandler.Services
         
         private async Task ProcessQueueAsync()
         {
-            const int maxConcurrency = 3;
+            var maxConcurrency = _configService.Config.MaxParallelProcessing;
             var semaphore = new SemaphoreSlim(maxConcurrency);
             var tasks = new List<Task>();
+            
+            _logger.Information("Processing queue with {MaxConcurrency} parallel tasks", maxConcurrency);
             
             while (!_cancellationTokenSource.Token.IsCancellationRequested)
             {
@@ -240,6 +255,20 @@ namespace DocHandler.Services
             });
         }
         
+        // Add method to update concurrency at runtime
+        public void UpdateMaxConcurrency(int newMax)
+        {
+            if (newMax < 1) newMax = 1;
+            if (newMax > 10) newMax = 10;
+            
+            _configService.Config.MaxParallelProcessing = newMax;
+            _ = _configService.SaveConfiguration();
+            
+            _logger.Information("Updated max concurrency to {MaxConcurrency}", newMax);
+            
+            // Note: This will take effect on next queue processing
+        }
+        
         public void CancelItem(SaveQuoteItem item)
         {
             if (item.Status == SaveQuoteStatus.Queued)
@@ -278,6 +307,72 @@ namespace DocHandler.Services
             });
             
             _logger.Information("Cleared completed queue items");
+        }
+
+        // Implement IDisposable
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (_disposed)
+                return;
+
+            if (disposing)
+            {
+                try
+                {
+                    // Cancel any pending operations
+                    _cancellationTokenSource?.Cancel();
+                    _logger.Information("Queue processing cancelled");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error cancelling queue operations");
+                }
+                
+                try
+                {
+                    _cancellationTokenSource?.Dispose();
+                    _logger.Information("Cancellation token source disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing cancellation token source");
+                }
+                
+                try
+                {
+                    // Dispose of services
+                    _fileProcessingService?.Dispose();
+                    _logger.Information("File processing service disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing file processing service");
+                }
+                
+                try
+                {
+                    _processingSemaphore?.Dispose();
+                    _logger.Information("Processing semaphore disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing processing semaphore");
+                }
+            }
+
+            _disposed = true;
+            _logger.Information("SaveQuotesQueueService disposed");
+        }
+
+        ~SaveQuotesQueueService()
+        {
+            Dispose(false);
         }
     }
     

@@ -139,6 +139,11 @@ namespace DocHandler.Services
             AddRecentLocation(location);
             _ = SaveConfiguration();
         }
+        
+        public AppConfiguration GetDefaultConfiguration()
+        {
+            return CreateDefaultConfiguration();
+        }
     }
     
     public class AppConfiguration
@@ -160,8 +165,32 @@ namespace DocHandler.Services
         public bool ScanCompanyNamesForDocFiles { get; set; } = false;  // Added - default to false (disabled for .doc files)
         public int DocFileSizeLimitMB { get; set; } = 10;  // Added - default to 10MB limit for .doc files
         
-        // Queue Window Position
+        // Queue Window State
         public double? QueueWindowLeft { get; set; }
         public double? QueueWindowTop { get; set; }
+        public double? QueueWindowWidth { get; set; } = 600;
+        public double? QueueWindowHeight { get; set; } = 400;
+        public bool QueueWindowIsOpen { get; set; } = false;
+        public bool RestoreQueueWindowOnStartup { get; set; } = true;
+        
+        // Performance Settings
+        public int MaxParallelProcessing { get; set; } = 3;
+        public int ConversionTimeoutSeconds { get; set; } = 30;
+        public bool EnablePdfCaching { get; set; } = true;
+        public int PdfCacheExpirationMinutes { get; set; } = 30;
+        public bool EnableProgressReporting { get; set; } = true;
+        public int MemoryUsageLimitMB { get; set; } = 500;
+        
+        // Additional Display Settings
+        public bool EnableAnimations { get; set; } = true;
+        public bool ShowStatusNotifications { get; set; } = true;
+        
+        // Additional Advanced Settings
+        public bool CleanupTempFilesOnExit { get; set; } = true;
+        public bool EnableDiagnosticMode { get; set; } = false;
+        public int ComTimeoutSeconds { get; set; } = 30;
+        public bool EnableNetworkPathOptimization { get; set; } = true;
+        public string LogLevel { get; set; } = "Information";
+        public string LogFileLocation { get; set; } = "";
     }
 }

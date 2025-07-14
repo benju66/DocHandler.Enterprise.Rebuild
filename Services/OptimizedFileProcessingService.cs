@@ -18,17 +18,27 @@ namespace DocHandler.Services
         private readonly OfficeConversionService _optimizedOfficeService;
         private readonly SessionAwareExcelService _excelService;
         private readonly PdfOperationsService _pdfOperationsService;
+        private readonly ConfigurationService? _configService;
+        private readonly PdfCacheService? _pdfCacheService;
+        
+        // Add progress reporting delegate
+        public delegate void ProgressCallback(string fileName, double percentage, string status);
+        
+        // Add private disposal tracking
+        private bool _disposed = false;
 
         private readonly HashSet<string> _supportedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             ".pdf", ".doc", ".docx", ".xls", ".xlsx"
         };
 
-        public OptimizedFileProcessingService()
+        public OptimizedFileProcessingService(ConfigurationService? configService = null, PdfCacheService? pdfCacheService = null)
         {
             _optimizedOfficeService = new OfficeConversionService();
             _excelService = new SessionAwareExcelService();
             _pdfOperationsService = new PdfOperationsService();
+            _configService = configService;
+            _pdfCacheService = pdfCacheService;
         }
 
         public bool IsFileSupported(string filePath)
@@ -385,38 +395,137 @@ namespace DocHandler.Services
         // Single file conversion for Save Quotes Mode
         public async Task<ConversionResult> ConvertSingleFile(string inputPath, string outputPath)
         {
+            return await ConvertSingleFile(inputPath, outputPath, null);
+        }
+        
+        // Update ConvertSingleFile to report progress
+        public async Task<ConversionResult> ConvertSingleFile(
+            string inputPath, 
+            string outputPath,
+            ProgressCallback? progressCallback = null)
+        {
+            var fileName = Path.GetFileName(inputPath);
             var extension = Path.GetExtension(inputPath).ToLowerInvariant();
             
-            if (extension == ".pdf")
+            try
             {
-                // Just copy the PDF
-                File.Copy(inputPath, outputPath, true);
-                return new ConversionResult { Success = true, OutputPath = outputPath };
-            }
-            else if (extension == ".doc" || extension == ".docx")
-            {
-                // Use optimized Word conversion
-                return await _optimizedOfficeService.ConvertWordToPdf(inputPath, outputPath);
-            }
-            else if (extension == ".xls" || extension == ".xlsx")
-            {
-                // Use SessionAwareExcelService for better performance
-                return await _excelService.ConvertSpreadsheetToPdf(inputPath, outputPath);
-            }
-            else
-            {
-                return new ConversionResult
+                progressCallback?.Invoke(fileName, 0, "Starting conversion...");
+                
+                // Check cache first if enabled
+                if (_configService?.Config.EnablePdfCaching == true && _pdfCacheService != null && extension != ".pdf")
                 {
-                    Success = false,
-                    ErrorMessage = $"Unsupported file type: {extension}"
-                };
+                    var fileHash = await ComputeFileHash(inputPath);
+                    var cachedPdf = await _pdfCacheService.GetCachedPdfAsync(inputPath, fileHash);
+                    
+                    if (cachedPdf != null)
+                    {
+                        progressCallback?.Invoke(fileName, 50, "Using cached PDF...");
+                        
+                        // Copy cached PDF to output
+                        await Task.Run(() => File.Copy(cachedPdf, outputPath, true));
+                        
+                        progressCallback?.Invoke(fileName, 100, "Completed (cached)");
+                        
+                        return new ConversionResult 
+                        { 
+                            Success = true, 
+                            OutputPath = outputPath 
+                        };
+                    }
+                }
+                
+                progressCallback?.Invoke(fileName, 20, "Converting to PDF...");
+                
+                ConversionResult result;
+                
+                if (extension == ".pdf")
+                {
+                    progressCallback?.Invoke(fileName, 50, "Copying PDF...");
+                    File.Copy(inputPath, outputPath, true);
+                    result = new ConversionResult { Success = true, OutputPath = outputPath };
+                }
+                else if (extension == ".doc" || extension == ".docx")
+                {
+                    result = await _optimizedOfficeService.ConvertWordToPdf(inputPath, outputPath);
+                }
+                else if (extension == ".xls" || extension == ".xlsx")
+                {
+                    result = await _excelService.ConvertSpreadsheetToPdf(inputPath, outputPath);
+                }
+                else
+                {
+                    result = new ConversionResult
+                    {
+                        Success = false,
+                        ErrorMessage = $"Unsupported file type: {extension}"
+                    };
+                }
+                
+                if (result.Success)
+                {
+                    progressCallback?.Invoke(fileName, 80, "Finalizing...");
+                    
+                    // Add to cache if enabled
+                    if (_configService?.Config.EnablePdfCaching == true && _pdfCacheService != null && extension != ".pdf")
+                    {
+                        var fileHash = await ComputeFileHash(inputPath);
+                        await _pdfCacheService.AddToCacheAsync(inputPath, outputPath, fileHash);
+                    }
+                    
+                    progressCallback?.Invoke(fileName, 100, "Completed");
+                }
+                else
+                {
+                    progressCallback?.Invoke(fileName, 100, $"Failed: {result.ErrorMessage}");
+                }
+                
+                return result;
             }
+            catch (Exception ex)
+            {
+                progressCallback?.Invoke(fileName, 100, $"Error: {ex.Message}");
+                throw;
+            }
+        }
+        
+        // Add file hash computation for cache key
+        private async Task<string> ComputeFileHash(string filePath)
+        {
+            using var md5 = System.Security.Cryptography.MD5.Create();
+            using var stream = File.OpenRead(filePath);
+            
+            var hash = await md5.ComputeHashAsync(stream);
+            return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
         }
 
         public void Dispose()
         {
-            _excelService?.Dispose();
-            _logger.Information("Optimized file processing service disposed");
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            if (disposing)
+            {
+                // Dispose managed resources
+                _optimizedOfficeService?.Dispose();
+                _excelService?.Dispose();
+                // Note: PdfOperationsService doesn't implement IDisposable
+                _logger.Information("Optimized file processing service disposed");
+            }
+            
+            _disposed = true;
+        }
+
+        ~OptimizedFileProcessingService()
+        {
+            Dispose(false);
         }
     }
 } 

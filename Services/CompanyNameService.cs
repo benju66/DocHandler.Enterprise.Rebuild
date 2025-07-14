@@ -74,7 +74,7 @@ namespace DocHandler.Services
         public double ConfidenceScore { get; set; }
     }
 
-    public class CompanyNameService
+    public class CompanyNameService : IDisposable
     {
         private readonly ILogger _logger;
         private readonly string _dataPath;
@@ -104,6 +104,9 @@ namespace DocHandler.Services
         
         // Configurable .doc file size limit
         private int _docFileSizeLimitMB = 10;
+        
+        // Add private disposal tracking
+        private bool _disposed = false;
         
         // Safe compiled regex patterns for better performance
         private static readonly Regex ControlCharactersRegex = new(@"[\x00-\x1F\x7F-\x9F]", RegexOptions.Compiled);
@@ -2232,33 +2235,54 @@ namespace DocHandler.Services
         
         public void Dispose()
         {
-            try
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (_disposed)
+                return;
+
+            if (disposing)
             {
-                _cacheCleanupTimer?.Dispose();
-                
-                // Clean up all cached PDFs on disposal
-                _logger.Information("Cleaning up PDF cache on disposal");
-                
-                foreach (var kvp in _convertedPdfCache)
+                // Dispose managed resources
+                try
                 {
-                    try
-                    {
-                        if (File.Exists(kvp.Value))
-                        {
-                            File.Delete(kvp.Value);
-                        }
-                    }
-                    catch { }
+                    _cacheCleanupTimer?.Dispose();
+                    _logger.Information("Cache cleanup timer disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing cache cleanup timer");
                 }
                 
-                _convertedPdfCache.Clear();
-                _pdfCacheTimestamps.Clear();
-                _pdfCacheFileInfo.Clear();
+                // Clean up all cached PDFs on disposal
+                try
+                {
+                    _logger.Information("Cleaning up PDF cache on disposal");
+                    CleanupPdfCache(); // Force final cleanup
+                    
+                    _convertedPdfCache.Clear();
+                    _pdfCacheTimestamps.Clear();
+                    _pdfCacheFileInfo.Clear();
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error during PDF cache cleanup");
+                }
             }
-            catch (Exception ex)
-            {
-                _logger.Warning(ex, "Error during CompanyNameService disposal");
-            }
+
+            // Dispose unmanaged resources if any
+            // No unmanaged resources in this class, but good practice for derived classes
+
+            _disposed = true;
+            _logger.Information("CompanyNameService disposed");
+        }
+        
+        ~CompanyNameService()
+        {
+            Dispose(false);
         }
     }
     
