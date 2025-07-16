@@ -4,6 +4,7 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using Serilog;
 using Task = System.Threading.Tasks.Task;
@@ -20,9 +21,33 @@ namespace DocHandler.Services
         private readonly object _wordLock = new object();
         private readonly object _excelLock = new object();
         
-        public OfficeConversionService()
+        private readonly ConfigurationService? _configService;
+        private readonly ProcessManager? _processManager;
+        
+        public OfficeConversionService(ConfigurationService? configService = null, ProcessManager? processManager = null)
         {
             _logger = Log.ForContext<OfficeConversionService>();
+            _configService = configService;
+            _processManager = processManager;
+        }
+        
+        /// <summary>
+        /// Validates that the current thread is in STA apartment state for COM operations
+        /// </summary>
+        /// <returns>True if STA, false otherwise</returns>
+        private bool ValidateSTAThread(string operation)
+        {
+            var apartmentState = Thread.CurrentThread.GetApartmentState();
+            _logger.Debug("{Operation}: Thread {ThreadId} apartment state is {ApartmentState}", 
+                operation, Thread.CurrentThread.ManagedThreadId, apartmentState);
+                
+            if (apartmentState != ApartmentState.STA)
+            {
+                _logger.Error("{Operation}: Thread is not STA - COM operations will fail", operation);
+                return false;
+            }
+            
+            return true;
         }
         
         private bool IsOfficeAvailable()
@@ -40,6 +65,7 @@ namespace DocHandler.Services
                     try
                     {
                         testApp = Activator.CreateInstance(wordType);
+                        ComHelper.TrackComObjectCreation("WordApp", "OfficeAvailabilityCheck");
                         testApp.Visible = false;
                         testApp.Quit();
                         _officeAvailable = true;
@@ -49,12 +75,8 @@ namespace DocHandler.Services
                     {
                         if (testApp != null)
                         {
-                            try
-                            {
-                                // CRITICAL FIX #4: Proper COM cleanup
-                                Marshal.ReleaseComObject(testApp);
-                            }
-                            catch { }
+                            // CRITICAL FIX #4: Proper COM cleanup
+                            ComHelper.SafeReleaseComObject(testApp, "WordApp", "OfficeAvailabilityCheck");
                         }
                     }
                 }
@@ -92,14 +114,32 @@ namespace DocHandler.Services
 
             _logger.Information("Converting Word to PDF: {WordPath} -> {PdfPath}", inputPath, outputPath);
 
+            // CRITICAL FIX: Use proper cancellation token instead of Task.Wait() to prevent deadlocks
+            var timeoutSeconds = _configService?.Config.ConversionTimeoutSeconds ?? 30;
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+            
             await Task.Run(() =>
             {
+                // CRITICAL: Set apartment state before any COM operations
+                Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
+                
+                // Validate apartment state
+                if (!ValidateSTAThread("ConvertWordToPdf"))
+                {
+                    result.Success = false;
+                    result.ErrorMessage = "Thread apartment state is not STA - COM operations may fail";
+                    return;
+                }
+                
                 lock (_wordLock)
                 {
                     dynamic? doc = null;
                     
                     try
                     {
+                        // Check for cancellation before starting
+                        cts.Token.ThrowIfCancellationRequested();
+                        
                         // Ensure Word application is initialized using late binding
                         if (_wordApp == null)
                         {
@@ -114,6 +154,7 @@ namespace DocHandler.Services
                                 }
                                 
                                 _wordApp = Activator.CreateInstance(wordType);
+                                ComHelper.TrackComObjectCreation("WordApp", "OfficeConversionService");
                                 _wordApp.Visible = false;
                                 _wordApp.DisplayAlerts = 0; // wdAlertsNone
                             }
@@ -126,27 +167,29 @@ namespace DocHandler.Services
                             }
                         }
                         
-                        // Add timeout protection
-                        var conversionTask = Task.Run(() =>
-                        {
-                            doc = _wordApp.Documents.Open(inputPath, ReadOnly: true);
-                            doc.SaveAs2(outputPath, FileFormat: 17);
-                        });
+                        // Check for cancellation before document operations
+                        cts.Token.ThrowIfCancellationRequested();
                         
-                        if (!conversionTask.Wait(TimeSpan.FromSeconds(30)))
-                        {
-                            throw new TimeoutException("Word conversion timed out after 30 seconds");
-                        }
+                        // FIXED: Direct COM operations on single STA thread - no nested Task.Run()
+                        _logger.Debug("Opening Word document: {Path}", inputPath);
+                        doc = _wordApp.Documents.Open(inputPath, ReadOnly: true);
+                        ComHelper.TrackComObjectCreation("Document", "ConvertWordToPdf");
+                        
+                        // Check for cancellation before PDF conversion
+                        cts.Token.ThrowIfCancellationRequested();
+                        
+                        _logger.Debug("Converting to PDF: {Path}", outputPath);
+                        doc.SaveAs2(outputPath, FileFormat: 17);
                         
                         result.Success = true;
                         result.OutputPath = outputPath;
                         _logger.Information("Successfully converted Word to PDF");
                     }
-                    catch (TimeoutException tex)
+                    catch (OperationCanceledException)
                     {
-                        _logger.Error(tex, "Word conversion timeout");
+                        _logger.Error("Word conversion timed out after {TimeoutSeconds} seconds", timeoutSeconds);
                         result.Success = false;
-                        result.ErrorMessage = tex.Message;
+                        result.ErrorMessage = $"Word conversion timed out after {timeoutSeconds} seconds";
                         
                         // Force Word restart on timeout - dispose current instance
                         if (_wordApp != null)
@@ -154,13 +197,24 @@ namespace DocHandler.Services
                             try
                             {
                                 _wordApp.Quit();
-                                Marshal.FinalReleaseComObject(_wordApp);
+                                ComHelper.SafeReleaseComObject(_wordApp, "WordApp", "TimeoutRestart");
                                 _wordApp = null;
                                 _logger.Information("Word application restarted due to timeout");
                             }
                             catch (Exception ex)
                             {
                                 _logger.Warning(ex, "Error disposing Word app after timeout");
+                            }
+                            
+                            // Use ProcessManager to clean up any orphaned Word processes
+                            try
+                            {
+                                _processManager?.KillOrphanedWordProcesses();
+                                _logger.Information("Cleaned up orphaned Word processes after timeout");
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.Warning(ex, "Error cleaning up orphaned processes after timeout");
                             }
                         }
                     }
@@ -178,7 +232,7 @@ namespace DocHandler.Services
                             try
                             {
                                 doc.Close(SaveChanges: false);
-                                Marshal.FinalReleaseComObject(doc);
+                                ComHelper.SafeReleaseComObject(doc, "Document", "ConvertWordToPdf");
                                 doc = null;
                             }
                             catch (Exception ex)
@@ -188,12 +242,10 @@ namespace DocHandler.Services
                         }
                         
                         // Force garbage collection after COM operations
-                        GC.Collect();
-                        GC.WaitForPendingFinalizers();
-                        GC.Collect();
+                        ComHelper.ForceComCleanup("ConvertWordToPdf");
                     }
                 }
-            });
+            }, cts.Token);
             
             return result;
         }
@@ -202,6 +254,14 @@ namespace DocHandler.Services
         {
             var result = new ConversionResult();
             dynamic? doc = null;
+            
+            // Validate apartment state for synchronous operations
+            if (!ValidateSTAThread("ConvertWordToPdfSync"))
+            {
+                result.Success = false;
+                result.ErrorMessage = "Thread apartment state is not STA - COM operations may fail";
+                return result;
+            }
             
             // CRITICAL FIX #4: Thread-safe lock for Word operations
             lock (_wordLock)
@@ -221,9 +281,10 @@ namespace DocHandler.Services
                                 return result;
                             }
                             
-                            _wordApp = Activator.CreateInstance(wordType);
-                            _wordApp.Visible = false;
-                            _wordApp.DisplayAlerts = 0; // wdAlertsNone
+                                                            _wordApp = Activator.CreateInstance(wordType);
+                                ComHelper.TrackComObjectCreation("WordApp", "ConvertWordToPdfSync");
+                                _wordApp.Visible = false;
+                                _wordApp.DisplayAlerts = 0; // wdAlertsNone
                         }
                         catch (Exception ex)
                         {
@@ -237,6 +298,7 @@ namespace DocHandler.Services
                     // Open the document
                     _logger.Information("Opening Word document: {Path}", inputPath);
                     doc = _wordApp.Documents.Open(inputPath, ReadOnly: true);
+                    ComHelper.TrackComObjectCreation("Document", "ConvertWordToPdfSync");
                     
                     // Save as PDF (17 = wdFormatPDF)
                     _logger.Information("Converting to PDF: {Path}", outputPath);
@@ -261,7 +323,7 @@ namespace DocHandler.Services
                         try
                         {
                             doc.Close(SaveChanges: false);
-                            Marshal.FinalReleaseComObject(doc);
+                            ComHelper.SafeReleaseComObject(doc, "Document", "ConvertWordToPdfSync");
                             doc = null;
                         }
                         catch (Exception ex)
@@ -271,8 +333,7 @@ namespace DocHandler.Services
                     }
                     
                     // CRITICAL FIX #4: Force garbage collection after COM operations
-                    GC.Collect();
-                    GC.WaitForPendingFinalizers();
+                    ComHelper.ForceComCleanup("ConvertWordToPdfSync");
                 }
             }
             
@@ -292,14 +353,27 @@ namespace DocHandler.Services
             
             _logger.Information("Converting Excel to PDF: {ExcelPath} -> {PdfPath}", inputPath, outputPath);
 
-            return await Task.Run(() =>
+                    return await Task.Run(() =>
+        {
+            // CRITICAL: Set apartment state before any COM operations
+            Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
+            
+            // Validate apartment state
+            if (!ValidateSTAThread("ConvertExcelToPdf"))
             {
-                dynamic? workbook = null;
-                var result = new ConversionResult();
-
-                // CRITICAL FIX #4: Thread-safe lock for Excel operations
-                lock (_excelLock)
+                return new ConversionResult
                 {
+                    Success = false,
+                    ErrorMessage = "Thread apartment state is not STA - Excel operations may fail"
+                };
+            }
+            
+            dynamic? workbook = null;
+            var result = new ConversionResult();
+
+            // CRITICAL FIX #4: Thread-safe lock for Excel operations
+            lock (_excelLock)
+            {
                     try
                     {
                         // Create Excel application if needed using late binding
@@ -316,6 +390,7 @@ namespace DocHandler.Services
                                 }
                                 
                                 _excelApp = Activator.CreateInstance(excelType);
+                                ComHelper.TrackComObjectCreation("ExcelApp", "OfficeConversionService");
                                 _excelApp.Visible = false;
                                 _excelApp.DisplayAlerts = false;
                             }
@@ -334,6 +409,7 @@ namespace DocHandler.Services
                             ReadOnly: true,
                             IgnoreReadOnlyRecommended: true,
                             Notify: false);
+                        ComHelper.TrackComObjectCreation("Workbook", "ConvertExcelToPdf");
 
                         // Export as PDF (0 = xlTypePDF)
                         workbook.ExportAsFixedFormat(
@@ -363,7 +439,7 @@ namespace DocHandler.Services
                             try
                             {
                                 workbook.Close(false);
-                                Marshal.FinalReleaseComObject(workbook);
+                                ComHelper.SafeReleaseComObject(workbook, "Workbook", "ConvertExcelToPdf");
                                 workbook = null;
                             }
                             catch (Exception ex)
@@ -373,8 +449,7 @@ namespace DocHandler.Services
                         }
                         
                         // CRITICAL FIX #4: Force garbage collection after COM operations
-                        GC.Collect();
-                        GC.WaitForPendingFinalizers();
+                        ComHelper.ForceComCleanup("ConvertExcelToPdf");
                     }
                 }
 
@@ -421,17 +496,17 @@ namespace DocHandler.Services
                                         try
                                         {
                                             doc.Close(SaveChanges: false);
-                                            Marshal.FinalReleaseComObject(doc);
+                                            ComHelper.SafeReleaseComObject(doc, "Document", "Dispose");
                                         }
                                         catch { }
                                     }
-                                    Marshal.FinalReleaseComObject(documents);
+                                    ComHelper.SafeReleaseComObject(documents, "Documents", "Dispose");
                                 }
                             }
                             catch { }
                             
                             _wordApp.Quit();
-                            Marshal.FinalReleaseComObject(_wordApp);
+                            ComHelper.SafeReleaseComObject(_wordApp, "WordApp", "Dispose");
                             _wordApp = null;
                             
                             _logger.Information("Word application closed");
@@ -461,17 +536,17 @@ namespace DocHandler.Services
                                         try
                                         {
                                             wb.Close(false);
-                                            Marshal.FinalReleaseComObject(wb);
+                                            ComHelper.SafeReleaseComObject(wb, "Workbook", "Dispose");
                                         }
                                         catch { }
                                     }
-                                    Marshal.FinalReleaseComObject(workbooks);
+                                    ComHelper.SafeReleaseComObject(workbooks, "Workbooks", "Dispose");
                                 }
                             }
                             catch { }
                             
                             _excelApp.Quit();
-                            Marshal.FinalReleaseComObject(_excelApp);
+                            ComHelper.SafeReleaseComObject(_excelApp, "ExcelApp", "Dispose");
                             _excelApp = null;
                             
                             _logger.Information("Excel application closed");
@@ -485,9 +560,10 @@ namespace DocHandler.Services
                 
                 // CRITICAL FIX #4: Triple garbage collection to ensure COM cleanup
                 // Force garbage collection to release COM objects
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
+                ComHelper.ForceComCleanup("Dispose");
+                
+                // Log final COM object statistics
+                ComHelper.LogComObjectStats();
                 
                 _disposed = true;
             }

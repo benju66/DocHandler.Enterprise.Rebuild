@@ -31,6 +31,7 @@ namespace DocHandler.Services
                 }
                 
                 _excelApp = Activator.CreateInstance(excelType);
+                ComHelper.TrackComObjectCreation("ExcelApp", "SessionAwareExcelService");
                 _excelApp.Visible = false;
                 _excelApp.DisplayAlerts = false;
                 _excelApp.ScreenUpdating = false;
@@ -98,6 +99,7 @@ namespace DocHandler.Services
                     try
                     {
                         workbook = _excelApp.Workbooks.Open(inputPath, ReadOnly: true);
+                        ComHelper.TrackComObjectCreation("Workbook", "SessionAwareConvertToPdf");
                         workbook.ExportAsFixedFormat(
                             Type: 0, // xlTypePDF
                             Filename: outputPath,
@@ -120,7 +122,7 @@ namespace DocHandler.Services
                             try
                             {
                                 workbook.Close(false);
-                                Marshal.ReleaseComObject(workbook);
+                                ComHelper.SafeReleaseComObject(workbook, "Workbook", "SessionAwareConvertToPdf");
                             }
                             catch (Exception ex)
                             {
@@ -161,26 +163,24 @@ namespace DocHandler.Services
                             _logger.Warning("Closing {Count} open workbooks", workbooks.Count);
                             foreach (dynamic wb in workbooks)
                             {
-                                try
-                                {
-                                    wb.Close(false);
-                                    Marshal.ReleaseComObject(wb);
-                                }
-                                catch { }
+                                                                        try
+                                        {
+                                            wb.Close(false);
+                                            ComHelper.SafeReleaseComObject(wb, "Workbook", "DisposeExcel");
+                                        }
+                                        catch { }
                             }
-                            Marshal.ReleaseComObject(workbooks);
+                            ComHelper.SafeReleaseComObject(workbooks, "Workbooks", "DisposeExcel");
                         }
                     }
                     catch { }
                     
                     _excelApp.Quit();
-                    Marshal.ReleaseComObject(_excelApp);
+                    ComHelper.SafeReleaseComObject(_excelApp, "ExcelApp", "DisposeExcel");
                     _excelApp = null;
                     
                     // Force garbage collection
-                    GC.Collect();
-                    GC.WaitForPendingFinalizers();
-                    GC.Collect();
+                    ComHelper.ForceComCleanup("SessionAwareExcelService");
                     
                     _logger.Information("Excel application disposed");
                 }

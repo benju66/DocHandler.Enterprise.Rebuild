@@ -30,7 +30,7 @@ using System.Windows.Threading;
 
 namespace DocHandler.ViewModels
 {
-    public partial class MainViewModel : ObservableObject
+    public partial class MainViewModel : ObservableObject, IDisposable
     {
         private readonly ILogger _logger;
         private readonly OptimizedFileProcessingService _fileProcessingService;
@@ -38,15 +38,21 @@ namespace DocHandler.ViewModels
         private readonly OfficeConversionService _officeConversionService;
         private readonly CompanyNameService _companyNameService;
         private readonly ScopeOfWorkService _scopeOfWorkService;
-        private readonly SessionAwareOfficeService _sessionOfficeService;
-        private readonly SessionAwareExcelService _sessionExcelService;
+        private SessionAwareOfficeService? _sessionOfficeService;
+        private SessionAwareExcelService? _sessionExcelService;
         private readonly PerformanceMonitor _performanceMonitor;
         private readonly PdfCacheService _pdfCacheService;
+        private readonly ProcessManager _processManager;
+        private readonly OfficeInstanceTracker _officeTracker;
+        private readonly ScopeOfWorkService _scopeService;
+        private readonly CompanyNameService _companyService;
+        private readonly TelemetryService _telemetryService;
+        private readonly SaveQuotesQueueService _queueService;
+        private readonly ApplicationHealthChecker _healthChecker;
         private readonly object _conversionLock = new object();
         private readonly ConcurrentDictionary<string, byte> _tempFilesToCleanup = new();
         
         // Queue service
-        private readonly SaveQuotesQueueService _queueService;
         private QueueDetailsWindow _queueWindow;
         
         // Add concurrent scan protection
@@ -109,20 +115,27 @@ namespace DocHandler.ViewModels
                         StatusMessage = "Save Quotes Mode: Drop quote documents";
                         SessionSaveLocation = _configService.Config.DefaultSaveLocation;
                         
-                        // Pre-warm Office services in background
-                        _ = Task.Run(() =>
+                        // Pre-warm Office services in background if available
+                        if (_sessionOfficeService != null && _sessionExcelService != null)
                         {
-                            try
+                            _ = Task.Run(() =>
                             {
-                                _sessionOfficeService.WarmUp();
-                                _sessionExcelService.WarmUp();
-                                _logger.Information("Office services pre-warmed for Save Quotes Mode");
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.Warning(ex, "Failed to pre-warm Office services");
-                            }
-                        });
+                                try
+                                {
+                                    _sessionOfficeService.WarmUp();
+                                    _sessionExcelService.WarmUp();
+                                    _logger.Information("Office services pre-warmed for Save Quotes Mode");
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.Warning(ex, "Failed to pre-warm Office services");
+                                }
+                            });
+                        }
+                        else
+                        {
+                            _logger.Debug("Office services not available for pre-warming");
+                        }
                     }
                     else
                     {
@@ -270,68 +283,223 @@ namespace DocHandler.ViewModels
         {
             _logger = Log.ForContext<MainViewModel>();
             
-            // Initialize configuration first
-            _configService = new ConfigurationService();
-            
-            // Initialize core services
-            _companyNameService = new CompanyNameService();
-            _scopeOfWorkService = new ScopeOfWorkService();
-            _officeConversionService = new OfficeConversionService();
-            
-            // Initialize performance services
-            _pdfCacheService = new PdfCacheService();
-            _performanceMonitor = new PerformanceMonitor(_configService.Config.MemoryUsageLimitMB);
-            
-            // Initialize file processing with cache
-            _fileProcessingService = new OptimizedFileProcessingService(_configService, _pdfCacheService);
-            
-            // Initialize session-aware services
-            _sessionOfficeService = new SessionAwareOfficeService();
-            _sessionExcelService = new SessionAwareExcelService();
-            
-            // Set office services in company name service
-            _companyNameService.SetOfficeServices(_sessionOfficeService, _sessionExcelService);
-            
-            // Initialize queue service with dependencies
-            _queueService = new SaveQuotesQueueService(_configService, _pdfCacheService);
-            
-            // Subscribe to events
-            SubscribeToEvents();
-            
-            // Initialize UI from configuration
-            InitializeFromConfiguration();
-            
-            // Restore queue window if needed
-            RestoreQueueWindowIfNeeded();
-            
-            _logger.Information("MainViewModel initialized with all enhancements");
+            try 
+            {
+                // Initialize configuration first
+                _configService = new ConfigurationService();
+                
+                // Initialize process manager 
+                _processManager = new ProcessManager();
+                
+                // Initialize performance monitor
+                _performanceMonitor = new PerformanceMonitor(_configService.Config.MemoryUsageLimitMB);
+                
+                // Initialize Office instance tracker FIRST (before any Office services)
+                try
+                {
+                    _officeTracker = new OfficeInstanceTracker();
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Failed to initialize OfficeInstanceTracker - continuing without it");
+                    _officeTracker = null;
+                }
+                
+                // Initialize PDF cache service
+                _pdfCacheService = new PdfCacheService();
+                
+                // Initialize company detection service
+                _companyNameService = new CompanyNameService();
+                
+                // Initialize scope service
+                _scopeOfWorkService = new ScopeOfWorkService();
+                
+                // Initialize telemetry service
+                try
+                {
+                    _telemetryService = new TelemetryService();
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Failed to initialize TelemetryService - continuing without it");
+                    _telemetryService = null;
+                }
+                
+                // Initialize application health checker
+                try
+                {
+                    _healthChecker = new ApplicationHealthChecker();
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Failed to initialize ApplicationHealthChecker - continuing without it");
+                    _healthChecker = null;
+                }
+                
+                // Initialize office conversion service with timeout protection
+                try
+                {
+                    _officeConversionService = new OfficeConversionService(_configService, _processManager);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Failed to initialize OfficeConversionService - Office features will be limited");
+                    _officeConversionService = null;
+                }
+                
+                // Initialize file processing service with dependencies
+                try
+                {
+                    _fileProcessingService = new OptimizedFileProcessingService(_configService, _pdfCacheService, _processManager, _officeTracker);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Failed to initialize OptimizedFileProcessingService");
+                    _fileProcessingService = null;
+                }
+                
+                // Initialize session-aware services with timeout protection
+                try
+                {
+                    var timeoutTask = Task.Delay(10000); // 10 second timeout
+                    var initTask = Task.Run(() => 
+                    {
+                        var tempOfficeService = new SessionAwareOfficeService();
+                        var tempExcelService = new SessionAwareExcelService();
+                        return (tempOfficeService, tempExcelService);
+                    });
+                    
+                    if (Task.WhenAny(initTask, timeoutTask).Result == initTask && initTask.IsCompletedSuccessfully)
+                    {
+                        var result = initTask.Result;
+                        _sessionOfficeService = result.tempOfficeService;
+                        _sessionExcelService = result.tempExcelService;
+                        _logger.Information("Session-aware Office services initialized successfully");
+                    }
+                    else
+                    {
+                        // Initialize with null - will be initialized later when needed
+                        _sessionOfficeService = null;
+                        _sessionExcelService = null;
+                        _logger.Warning("Session-aware Office services initialization timed out, will initialize when needed");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _sessionOfficeService = null;
+                    _sessionExcelService = null;
+                    _logger.Warning(ex, "Failed to initialize session-aware Office services, will initialize when needed");
+                }
+                
+                // Set Office services for company name detection if they were initialized
+                if (_sessionOfficeService != null && _sessionExcelService != null)
+                {
+                    try
+                    {
+                        _companyNameService.SetOfficeServices(_sessionOfficeService, _sessionExcelService);
+                        _logger.Information("Office services set for company name detection");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Failed to set Office services for company name detection");
+                    }
+                }
+                
+                // Initialize queue service with dependencies
+                try
+                {
+                    _queueService = new SaveQuotesQueueService(_configService, _pdfCacheService, _processManager, _officeTracker);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Failed to initialize SaveQuotesQueueService");
+                    _queueService = null;
+                }
+                
+                // Subscribe to events
+                SubscribeToEvents();
+                
+                // Initialize UI from configuration
+                InitializeFromConfiguration();
+                
+                // Restore queue window if needed
+                RestoreQueueWindowIfNeeded();
+                
+                _logger.Information("MainViewModel initialized successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.Fatal(ex, "Failed to initialize MainViewModel");
+                
+                // Show error dialog but don't crash the app
+                MessageBox.Show(
+                    $"The application encountered an error during initialization:\n\n{ex.Message}\n\nSome features may not be available.",
+                    "Initialization Warning",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                
+                // Initialize with minimal functionality
+                try
+                {
+                    if (_configService == null)
+                        _configService = new ConfigurationService();
+                    
+                    InitializeFromConfiguration();
+                }
+                catch
+                {
+                    // Even minimal initialization failed
+                    StatusMessage = "Initialization failed - limited functionality";
+                }
+            }
         }
 
         private void SubscribeToEvents()
         {
-            // Queue events
-            _queueService.ProgressChanged += OnQueueProgressChanged;
-            _queueService.ItemCompleted += OnQueueItemCompleted;
-            _queueService.QueueEmpty += OnQueueEmpty;
-            _queueService.StatusMessageChanged += OnQueueStatusMessageChanged;
-            
-            // Performance monitor events
-            _performanceMonitor.MemoryPressureDetected += OnMemoryPressureDetected;
-            
-            // File collection changes
-            PendingFiles.CollectionChanged += (s, e) => 
+            try
             {
-                Application.Current.Dispatcher.InvokeAsync(() => UpdateUI());
-                
-                if (SaveQuotesMode && e.NewItems != null && string.IsNullOrWhiteSpace(CompanyNameInput))
+                // Queue events - only subscribe if queue service is available
+                if (_queueService != null)
                 {
-                    foreach (FileItem item in e.NewItems)
-                    {
-                        StartCompanyNameScan(item.FilePath);
-                        break;
-                    }
+                    _queueService.ProgressChanged += OnQueueProgressChanged;
+                    _queueService.ItemCompleted += OnQueueItemCompleted;
+                    _queueService.QueueEmpty += OnQueueEmpty;
+                    _queueService.StatusMessageChanged += OnQueueStatusMessageChanged;
                 }
-            };
+                else
+                {
+                    _logger.Warning("Queue service is null - queue events will not be available");
+                }
+                
+                // Performance monitor events - only subscribe if available
+                if (_performanceMonitor != null)
+                {
+                    _performanceMonitor.MemoryPressureDetected += OnMemoryPressureDetected;
+                }
+                else
+                {
+                    _logger.Warning("Performance monitor is null - memory pressure detection will not be available");
+                }
+                
+                // File collection changes
+                PendingFiles.CollectionChanged += (s, e) => 
+                {
+                    Application.Current.Dispatcher.InvokeAsync(() => UpdateUI());
+                    
+                    if (SaveQuotesMode && e.NewItems != null && string.IsNullOrWhiteSpace(CompanyNameInput))
+                    {
+                        foreach (FileItem item in e.NewItems)
+                        {
+                            StartCompanyNameScan(item.FilePath);
+                            break;
+                        }
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error subscribing to events");
+            }
         }
 
         private void InitializeFromConfiguration()
@@ -376,8 +544,27 @@ namespace DocHandler.ViewModels
             // Initialize company name service with current size limit
             _companyNameService.UpdateDocFileSizeLimit(_configService.Config.DocFileSizeLimitMB);
             
-            // Check Office availability
-            CheckOfficeAvailability();
+                            // Check Office availability in background with timeout
+                _ = Task.Run(async () => 
+                {
+                    try
+                    {
+                        var timeoutTask = Task.Delay(5000); // 5 second timeout
+                        var checkTask = Task.Run(() => CheckOfficeAvailability());
+                        
+                        if (await Task.WhenAny(checkTask, timeoutTask) == timeoutTask)
+                        {
+                            _logger.Warning("Office availability check timed out");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Failed to check Office availability");
+                    }
+                });
+            
+            // Start periodic COM object monitoring
+            StartComObjectMonitoring();
         }
 
         private void OnMemoryPressureDetected(object sender, MemoryPressureEventArgs e)
@@ -693,10 +880,49 @@ namespace DocHandler.ViewModels
         
         private void CheckOfficeAvailability()
         {
-            if (!_officeConversionService.IsOfficeInstalled())
+            try
             {
-                _logger.Warning("Microsoft Office is not available - Word/Excel conversion features will be disabled");
+                if (_officeConversionService != null && !_officeConversionService.IsOfficeInstalled())
+                {
+                    _logger.Warning("Microsoft Office is not available - Word/Excel conversion features will be disabled");
+                }
+                else if (_officeConversionService == null)
+                {
+                    _logger.Warning("Office conversion service is not available - Office features will be limited");
+                }
             }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Error checking Office availability");
+            }
+        }
+        
+        private void StartComObjectMonitoring()
+        {
+            // Log COM object statistics every 5 minutes during application runtime
+            var timer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMinutes(5)
+            };
+            
+            timer.Tick += (s, e) =>
+            {
+                Task.Run(() =>
+                {
+                    try
+                    {
+                        ComHelper.LogComObjectStats();
+                        _processManager?.LogProcessInfo();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Error during COM object monitoring");
+                    }
+                });
+            };
+            
+            timer.Start();
+            _logger.Information("COM object monitoring started - statistics will be logged every 5 minutes");
         }
         
         private void LoadScopesOfWork()
@@ -1193,7 +1419,7 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private async Task ProcessFiles()
         {
-            // Ensure all files are validated
+            // Quick validation on UI thread
             var pendingValidation = PendingFiles.Where(f => 
                 f.ValidationStatus == ValidationStatus.Pending || 
                 f.ValidationStatus == ValidationStatus.Validating).ToList();
@@ -1207,7 +1433,7 @@ namespace DocHandler.ViewModels
                 return;
             }
             
-            // Remove any invalid files
+            // Remove any invalid files on UI thread
             var invalidFiles = PendingFiles.Where(f => 
                 f.ValidationStatus == ValidationStatus.Invalid).ToList();
                 
@@ -1227,44 +1453,61 @@ namespace DocHandler.ViewModels
                 if (!PendingFiles.Any()) return;
             }
             
+            // Handle Save Quotes mode
             if (SaveQuotesMode)
             {
                 await ProcessSaveQuotes();
                 return;
             }
 
-            // Capture UI values on UI thread first
-            var uiValues = await Application.Current.Dispatcher.InvokeAsync(() => new
-            {
-                HasFiles = PendingFiles.Any(),
-                FileCount = PendingFiles.Count,
-                FilePaths = PendingFiles.Select(f => f.FilePath).ToList(),
-                OpenFolderAfterProcessing = this.OpenFolderAfterProcessing
-            });
+            // Capture UI state immediately on UI thread
+            var hasFiles = PendingFiles.Any();
+            var fileCount = PendingFiles.Count;
+            var filePaths = PendingFiles.Select(f => f.FilePath).ToList();
+            var openFolderAfterProcessing = this.OpenFolderAfterProcessing;
 
-            if (!uiValues.HasFiles)
+            if (!hasFiles)
             {
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    StatusMessage = "No files selected";
-                });
+                StatusMessage = "No files selected";
                 return;
             }
 
-            await Application.Current.Dispatcher.InvokeAsync(() =>
-            {
-                IsProcessing = true;
-                StatusMessage = uiValues.FileCount > 1 ? "Merging and processing files..." : "Processing file...";
-            });
+            // Set processing state on UI thread
+            IsProcessing = true;
+            StatusMessage = fileCount > 1 ? "Merging and processing files..." : "Processing file...";
 
+            // Move heavy processing to background thread
+            await Task.Run(async () =>
+            {
+                await ProcessFilesBackground(filePaths, fileCount, openFolderAfterProcessing);
+            });
+        }
+
+        private async Task ProcessFilesBackground(List<string> filePaths, int fileCount, bool openFolderAfterProcessing)
+        {
             try
             {
+                // Check if file processing service is available
+                if (_fileProcessingService == null)
+                {
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        StatusMessage = "File processing service is not available";
+                        MessageBox.Show(
+                            "The file processing service could not be initialized. Please check the logs for more information.",
+                            "Service Unavailable",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Error);
+                    });
+                    return;
+                }
+                
                 var outputDir = _configService.Config.DefaultSaveLocation;
 
                 // Create output folder with timestamp
                 outputDir = _fileProcessingService.CreateOutputFolder(outputDir);
 
-                var result = await _fileProcessingService.ProcessFiles(uiValues.FilePaths, outputDir, ConvertOfficeToPdf).ConfigureAwait(false);
+                var result = await _fileProcessingService.ProcessFiles(filePaths, outputDir, ConvertOfficeToPdf).ConfigureAwait(false);
 
                 if (result.Success)
                 {
@@ -1273,7 +1516,7 @@ namespace DocHandler.ViewModels
                     {
                         if (result.IsMerged)
                         {
-                            StatusMessage = $"Successfully merged {uiValues.FilePaths.Count} files into {Path.GetFileName(result.SuccessfulFiles.First())}";
+                            StatusMessage = $"Successfully merged {filePaths.Count} files into {Path.GetFileName(result.SuccessfulFiles.First())}";
                         }
                         else
                         {
@@ -1300,7 +1543,7 @@ namespace DocHandler.ViewModels
                     _configService.AddRecentLocation(outputDir);
 
                     // Open the output folder if preference is set
-                    if (uiValues.OpenFolderAfterProcessing)
+                    if (openFolderAfterProcessing)
                     {
                         try
                         {
@@ -1336,11 +1579,14 @@ namespace DocHandler.ViewModels
                         var failedFilesList = string.Join("\n", result.FailedFiles.Select(f => 
                             $"• {Path.GetFileName(f.FilePath)}: {f.Error}"));
                         
-                        MessageBox.Show(
-                            $"The following files could not be processed:\n\n{failedFilesList}",
-                            "Processing Errors",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Warning);
+                        await Application.Current.Dispatcher.InvokeAsync(() =>
+                        {
+                            MessageBox.Show(
+                                $"The following files could not be processed:\n\n{failedFilesList}",
+                                "Processing Errors",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Warning);
+                        });
                     }
                 }
             }
@@ -1353,11 +1599,15 @@ namespace DocHandler.ViewModels
                 });
                 
                 _logger.Error(ex, "Unexpected error during file processing");
-                MessageBox.Show(
-                    $"An unexpected error occurred:\n\n{ex.Message}",
-                    "Error",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error);
+                
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    MessageBox.Show(
+                        $"An unexpected error occurred:\n\n{ex.Message}",
+                        "Error",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                });
             }
             finally
             {
@@ -1999,19 +2249,8 @@ namespace DocHandler.ViewModels
 
         private async Task ProcessSaveQuotes()
         {
-            // STEP 1: Capture all UI values on the UI thread FIRST
-            var uiValues = await Application.Current.Dispatcher.InvokeAsync(() => new
-            {
-                SaveQuotesMode = this.SaveQuotesMode,
-                SelectedScope = this.SelectedScope,
-                CompanyNameInput = this.CompanyNameInput,
-                DetectedCompanyName = this.DetectedCompanyName,
-                PendingFilesList = this.PendingFiles.ToList(), // Create a copy
-                SessionSaveLocation = this.SessionSaveLocation
-            });
-
-            // Validation (keep existing validation logic)
-            if (!uiValues.SaveQuotesMode || string.IsNullOrEmpty(uiValues.SelectedScope))
+            // Quick validation and UI state capture on UI thread
+            if (!SaveQuotesMode || string.IsNullOrEmpty(SelectedScope))
             {
                 MessageBox.Show("Please select a scope of work first.", "Save Quotes", 
                     MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2019,9 +2258,9 @@ namespace DocHandler.ViewModels
             }
 
             // Get company name - use typed value first, then detected value  
-            var companyName = !string.IsNullOrWhiteSpace(uiValues.CompanyNameInput) 
-                ? uiValues.CompanyNameInput.Trim() 
-                : uiValues.DetectedCompanyName?.Trim();
+            var companyName = !string.IsNullOrWhiteSpace(CompanyNameInput) 
+                ? CompanyNameInput.Trim() 
+                : DetectedCompanyName?.Trim();
             
             if (string.IsNullOrWhiteSpace(companyName))
             {
@@ -2031,44 +2270,86 @@ namespace DocHandler.ViewModels
                 return;
             }
 
-            // Sanitize company name for use in filename
-            companyName = SanitizeFileName(companyName);
-
-            if (!uiValues.PendingFilesList.Any())
+            if (!PendingFiles.Any())
             {
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    StatusMessage = "No quote documents to process";
-                });
+                StatusMessage = "No quote documents to process";
                 return;
             }
 
-            var outputDir = !string.IsNullOrEmpty(uiValues.SessionSaveLocation) 
-                ? uiValues.SessionSaveLocation 
-                : _configService.Config.DefaultSaveLocation;
+            // Capture UI state immediately on UI thread
+            var selectedScope = this.SelectedScope;
+            var pendingFilesList = this.PendingFiles.ToList(); // Create a copy
+            var sessionSaveLocation = this.SessionSaveLocation;
+            var fileCount = pendingFilesList.Count;
 
-            var fileCount = uiValues.PendingFilesList.Count;
-            
-            // Add to queue instead of processing directly
-            foreach (var file in uiValues.PendingFilesList)
+            // Move heavy processing to background thread
+            await Task.Run(async () =>
             {
-                _queueService.AddToQueue(file, uiValues.SelectedScope, companyName, outputDir);
-            }
-            
-            // Clear UI immediately
-            await Application.Current.Dispatcher.InvokeAsync(() =>
-            {
-                PendingFiles.Clear();
-                CompanyNameInput = "";
-                DetectedCompanyName = "";
-                SelectedScope = null;
-                StatusMessage = $"Added {fileCount} quote{(fileCount > 1 ? "s" : "")} to queue";
+                await ProcessSaveQuotesBackground(selectedScope, companyName, pendingFilesList, sessionSaveLocation, fileCount);
             });
-            
-            // Start processing if not already running
-            if (!_queueService.IsProcessing)
+        }
+
+        private async Task ProcessSaveQuotesBackground(string selectedScope, string companyName, List<FileItem> pendingFilesList, string sessionSaveLocation, int fileCount)
+        {
+            try
             {
-                _ = _queueService.StartProcessingAsync();
+                // Check if queue service is available
+                if (_queueService == null)
+                {
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        StatusMessage = "Queue service is not available";
+                        MessageBox.Show(
+                            "The queue service could not be initialized. Save Quotes Mode requires the queue service to function.",
+                            "Service Unavailable",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Error);
+                    });
+                    return;
+                }
+                
+                // Sanitize company name for use in filename
+                companyName = SanitizeFileName(companyName);
+
+                var outputDir = !string.IsNullOrEmpty(sessionSaveLocation) 
+                    ? sessionSaveLocation 
+                    : _configService.Config.DefaultSaveLocation;
+                
+                // Add to queue instead of processing directly
+                foreach (var file in pendingFilesList)
+                {
+                    _queueService.AddToQueue(file, selectedScope, companyName, outputDir);
+                }
+                
+                // Clear UI immediately on UI thread
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    PendingFiles.Clear();
+                    CompanyNameInput = "";
+                    DetectedCompanyName = "";
+                    SelectedScope = null;
+                    StatusMessage = $"Added {fileCount} quote{(fileCount > 1 ? "s" : "")} to queue";
+                });
+                
+                // Start processing if not already running
+                if (!_queueService.IsProcessing)
+                {
+                    _ = _queueService.StartProcessingAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Unexpected error during save quotes processing");
+                
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = $"Error: {ex.Message}";
+                    MessageBox.Show(
+                        $"An unexpected error occurred:\n\n{ex.Message}",
+                        "Error",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                });
             }
         }
 
@@ -2163,6 +2444,18 @@ namespace DocHandler.ViewModels
             // For Word documents, check if we have a cached PDF first
             if (extension == ".doc" || extension == ".docx")
             {
+                // Check if Office conversion service is available
+                if (_officeConversionService == null)
+                {
+                    _logger.Error("Office conversion service is not available");
+                    return new ProcessingResult
+                    {
+                        Success = false,
+                        ErrorMessage = "Microsoft Office is required to convert Word documents to PDF",
+                        FailedFiles = { (inputPath, "Office not available") }
+                    };
+                }
+                
                 // Lock to prevent race conditions if user rapidly processes files
                 lock (_conversionLock)
                 {
@@ -2387,15 +2680,16 @@ namespace DocHandler.ViewModels
                 }
                 
                 // Dispose performance monitor
-                try
-                {
-                    _performanceMonitor?.Dispose();
-                    _logger.Information("Performance monitor disposed");
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error(ex, "Error disposing performance monitor");
-                }
+                _performanceMonitor?.Dispose();
+                _logger.Information("Performance monitor disposed");
+                
+                // Dispose office instance tracker (before process manager)
+                _officeTracker?.Dispose();
+                _logger.Information("Office instance tracker disposed");
+                
+                // Dispose process manager and log final COM stats
+                _processManager?.Dispose();
+                _logger.Information("Process manager disposed");
                 
                 // Force garbage collection to ensure COM cleanup
                 GC.Collect();
@@ -2547,5 +2841,72 @@ namespace DocHandler.ViewModels
             MessageBox.Show("Queue window position has been reset.", "Reset Complete", 
                             MessageBoxButton.OK, MessageBoxImage.Information);
         }
+
+        #region IDisposable Implementation
+        
+        private bool _disposed = false;
+        
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+        
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposed)
+            {
+                if (disposing)
+                {
+                    // Unsubscribe from all events to prevent memory leaks
+                    UnsubscribeFromEvents();
+                    
+                    // Call the existing cleanup method
+                    Cleanup();
+                }
+                
+                _disposed = true;
+            }
+        }
+        
+        private void UnsubscribeFromEvents()
+        {
+            try
+            {
+                // Unsubscribe from queue service events
+                if (_queueService != null)
+                {
+                    _queueService.ProgressChanged -= OnQueueProgressChanged;
+                    _queueService.ItemCompleted -= OnQueueItemCompleted;
+                    _queueService.QueueEmpty -= OnQueueEmpty;
+                    _queueService.StatusMessageChanged -= OnQueueStatusMessageChanged;
+                }
+                
+                // Unsubscribe from performance monitor events
+                if (_performanceMonitor != null)
+                {
+                    _performanceMonitor.MemoryPressureDetected -= OnMemoryPressureDetected;
+                }
+                
+                // Unsubscribe from file collection changes
+                if (PendingFiles != null)
+                {
+                    PendingFiles.CollectionChanged -= null; // This was an anonymous method, so we can't unsubscribe cleanly
+                }
+                
+                _logger.Information("Event handlers unsubscribed");
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Error unsubscribing from events");
+            }
+        }
+        
+        ~MainViewModel()
+        {
+            Dispose(false);
+        }
+        
+        #endregion
     }
 }

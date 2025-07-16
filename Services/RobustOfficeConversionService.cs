@@ -68,7 +68,7 @@ namespace DocHandler.Services
                         {
                             try
                             {
-                                Marshal.ReleaseComObject(testApp);
+                                ComHelper.SafeReleaseComObject(testApp, "WordApp", "RobustOfficeAvailabilityCheck");
                             }
                             catch { }
                         }
@@ -325,7 +325,7 @@ namespace DocHandler.Services
                         try
                         {
                             doc.Close(SaveChanges: false);
-                            Marshal.ReleaseComObject(doc);
+                            ComHelper.SafeReleaseComObject(doc, "Document", "RobustConversion");
                         }
                         catch (Exception ex)
                         {
@@ -399,7 +399,7 @@ namespace DocHandler.Services
                         try
                         {
                             wordInfo.Application.Quit();
-                            Marshal.ReleaseComObject(wordInfo.Application);
+                            ComHelper.SafeReleaseComObject(wordInfo.Application, "WordApp", "RobustDisposeWordApp");
                             _logger.Debug("Disposed Word application PID {ProcessId}", wordInfo.ProcessId);
                         }
                         catch (Exception ex)

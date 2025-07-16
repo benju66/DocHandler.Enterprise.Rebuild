@@ -15,9 +15,12 @@
         WindowStartupLocation="CenterScreen"
         Closing="MainWindow_Closing">
     
+    <!-- DataContext will be set in code-behind for better error handling -->
+    <!--
     <Window.DataContext>
         <vm:MainViewModel/>
     </Window.DataContext>
+    -->
     
     <Window.InputBindings>
         <KeyBinding Key="Enter" Modifiers="Ctrl" Command="{Binding ProcessFilesCommand}"/>

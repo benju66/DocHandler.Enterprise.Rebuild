@@ -21,11 +21,13 @@ namespace DocHandler.Services
         private bool? _officeAvailable;
         private DateTime _lastHealthCheck = DateTime.Now;
         private readonly TimeSpan _healthCheckInterval = TimeSpan.FromMinutes(5);
+        private readonly ConversionCircuitBreaker _circuitBreaker;
         
         public SessionAwareOfficeService()
         {
             _logger = Log.ForContext<SessionAwareOfficeService>();
-            _logger.Information("Initializing session-aware Office service");
+            _circuitBreaker = new ConversionCircuitBreaker();
+            _logger.Information("Initializing session-aware Office service with circuit breaker protection");
         }
         
         private bool IsOfficeAvailable()
@@ -74,7 +76,6 @@ namespace DocHandler.Services
                         _wordApp.Visible = false;
                         _wordApp.DisplayAlerts = 0; // wdAlertsNone
                         _wordApp.ScreenUpdating = false;
-                        _wordApp.EnableEvents = false;
                         _wordApp.DisplayRecentFiles = false;
                         _wordApp.DisplayScrollBars = false;
                         _wordApp.DisplayStatusBar = false;
@@ -85,23 +86,20 @@ namespace DocHandler.Services
                         // Set last health check time
                         _lastHealthCheck = DateTime.Now;
                         
-                        // Disable features that slow down conversion
+                        // REDUCED: Only essential optimization settings to prevent instability
                         try
                         {
+                            // Critical performance optimizations (safe)
                             _wordApp.Options.CheckGrammarAsYouType = false;
                             _wordApp.Options.CheckSpellingAsYouType = false;
-                            _wordApp.Options.AnimateScreenMovements = false;
-                            _wordApp.Options.EnableAutoRecovery = false;
-                            _wordApp.Options.SaveInterval = 0;
-                            _wordApp.Options.AllowFastSave = false;
-                            _wordApp.Options.CreateBackup = false;
-                            _wordApp.Options.SavePropertiesPrompt = false;
-                            _wordApp.Options.UpdateLinksAtOpen = false;
-                            _wordApp.Options.UpdateFieldsAtPrint = false;
-                            _wordApp.Options.PaginationView = false;
-                            _wordApp.Options.WPHelp = false;
                             _wordApp.Options.BackgroundSave = false;
-                            _wordApp.Options.SuggestSpellingCorrections = false;
+                            _wordApp.Options.SaveInterval = 0; // Disable auto-save
+                            
+                            // Removed potentially unstable options:
+                            // - EnableAutoRecovery, AllowFastSave, CreateBackup (can cause file locks)
+                            // - UpdateLinksAtOpen (can cause hanging on network resources)
+                            // - AnimateScreenMovements, PaginationView (UI-related, can cause issues)
+                            // - SavePropertiesPrompt, WPHelp (dialog-related, can cause hangs)
                         }
                         catch (Exception optEx)
                         {
@@ -186,7 +184,12 @@ namespace DocHandler.Services
                 };
             }
             
-            return await Task.Run(() =>
+            // Use circuit breaker to prevent cascading failures
+            try
+            {
+                return await _circuitBreaker.ExecuteAsync(async () =>
+                {
+                    return await Task.Run(() =>
             {
                 lock (_wordLock)
                 {
@@ -253,7 +256,7 @@ namespace DocHandler.Services
                             try
                             {
                                 doc.Close(SaveChanges: false);
-                                Marshal.ReleaseComObject(doc);
+                                ComHelper.SafeReleaseComObject(doc, "Document", "SessionAwareConversion");
                                 doc = null;
                             }
                             catch (Exception closeEx)
@@ -266,6 +269,17 @@ namespace DocHandler.Services
                     return result;
                 }
             });
+                });
+            }
+            catch (InvalidOperationException circuitEx) when (circuitEx.Message.Contains("Circuit breaker is open"))
+            {
+                _logger.Warning("Circuit breaker prevented Word conversion: {Message}", circuitEx.Message);
+                return new ConversionResult
+                {
+                    Success = false,
+                    ErrorMessage = "Word conversion service temporarily unavailable due to recent failures"
+                };
+            }
         }
         
         public void WarmUp()
@@ -298,17 +312,17 @@ namespace DocHandler.Services
                                 try
                                 {
                                     doc.Close(SaveChanges: false);
-                                    Marshal.ReleaseComObject(doc);
+                                    ComHelper.SafeReleaseComObject(doc, "Document", "SessionAwareDispose");
                                 }
                                 catch { }
                             }
-                            Marshal.ReleaseComObject(documents);
+                            ComHelper.SafeReleaseComObject(documents, "Documents", "SessionAwareDispose");
                         }
                     }
                     catch { }
                     
                     _wordApp.Quit(SaveChanges: false);
-                    Marshal.ReleaseComObject(_wordApp);
+                    ComHelper.SafeReleaseComObject(_wordApp, "WordApp", "SessionAwareDispose");
                     _wordApp = null;
                     
                     // Force garbage collection

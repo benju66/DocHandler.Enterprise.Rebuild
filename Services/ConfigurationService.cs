@@ -7,7 +7,7 @@ using Serilog;
 
 namespace DocHandler.Services
 {
-    public class ConfigurationService
+    public class ConfigurationService : IConfigurationService
     {
         private readonly ILogger _logger;
         private readonly string _configPath;
@@ -95,6 +95,18 @@ namespace DocHandler.Services
             {
                 _logger.Error(ex, "Failed to save configuration");
             }
+        }
+        
+        // IConfigurationService interface implementation
+        public async Task SaveConfigurationAsync()
+        {
+            await SaveConfiguration();
+        }
+        
+        public void UpdateConfiguration(Action<AppConfiguration> updateAction)
+        {
+            updateAction(_config);
+            _ = SaveConfiguration();
         }
         
         public void AddRecentLocation(string location)

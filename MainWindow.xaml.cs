@@ -23,16 +23,56 @@ namespace DocHandler
         private readonly ILogger _logger;
         private MainViewModel ViewModel => (MainViewModel)DataContext;
         
-        public MainWindow()
+        public MainWindow(System.IServiceProvider serviceProvider)
         {
-            InitializeComponent();
-            _logger = Log.ForContext<MainWindow>();
-            
-            // Window closing event to cleanup
-            Closing += MainWindow_Closing;
-            
-            // Restore window position after loading
-            Loaded += MainWindow_Loaded;
+            try
+            {
+                Console.WriteLine("MainWindow constructor started");
+                InitializeComponent();
+                _logger = Log.ForContext<MainWindow>();
+                
+                try 
+                {
+                    _logger.Information("MainWindow constructor started");
+                    
+                    // Initialize DataContext with the working MainViewModel (not MainViewModelAsync)
+                    _logger.Information("Creating MainViewModel...");
+                    Console.WriteLine("Creating MainViewModel...");
+                    
+                    DataContext = new ViewModels.MainViewModel();
+                    
+                    _logger.Information("MainViewModel created successfully");
+                    Console.WriteLine("MainViewModel created successfully");
+                    
+                    // Window closing event to cleanup
+                    Closing += MainWindow_Closing;
+                    
+                    // Restore window position after loading
+                    Loaded += MainWindow_Loaded;
+                    
+                    _logger.Information("MainWindow initialization completed successfully");
+                    Console.WriteLine("MainWindow initialization completed successfully");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Fatal(ex, "Failed to initialize MainWindow");
+                    Console.WriteLine($"Failed to initialize MainWindow: {ex}");
+                    
+                    MessageBox.Show($"Failed to initialize application:\n\n{ex.Message}\n\nInner: {ex.InnerException?.Message}", "Startup Error", 
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                    
+                    // Don't shut down immediately - let the error dialog show
+                    // Application.Current.Shutdown(1);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Critical error in MainWindow constructor: {ex}");
+                // InitializeComponent failed - this is critical
+                MessageBox.Show($"Critical error initializing window:\n\n{ex.Message}", "Critical Error", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                throw; // Re-throw as we can't recover from this
+            }
         }
         
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)

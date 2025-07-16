@@ -26,6 +26,8 @@ namespace DocHandler.Services
         private CancellationTokenSource _cancellationTokenSource;
         private readonly ConfigurationService _configService;
         private readonly PdfCacheService _pdfCacheService;
+        private readonly ProcessManager _processManager;
+        private readonly OfficeInstanceTracker? _officeTracker;
         
         // Add private disposal tracking
         private bool _disposed = false;
@@ -50,20 +52,24 @@ namespace DocHandler.Services
         public event EventHandler QueueEmpty;
         public event EventHandler<string> StatusMessageChanged;
         
-        public SaveQuotesQueueService(ConfigurationService configService, PdfCacheService pdfCacheService)
+        public SaveQuotesQueueService(ConfigurationService configService, PdfCacheService pdfCacheService, ProcessManager processManager, OfficeInstanceTracker? officeTracker = null)
         {
             _logger = Log.ForContext<SaveQuotesQueueService>();
             _configService = configService;
             _pdfCacheService = pdfCacheService;
+            _processManager = processManager;
+            _officeTracker = officeTracker;
+            
+            // Initialize the queue
             _queue = new ConcurrentQueue<SaveQuoteItem>();
-            
-            // Use configurable max concurrency
-            var maxConcurrency = _configService.Config.MaxParallelProcessing;
-            _processingSemaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
-            
             _allItems = new ObservableCollection<SaveQuoteItem>();
-            _fileProcessingService = new OptimizedFileProcessingService();
-            _cancellationTokenSource = new CancellationTokenSource();
+            
+            // Initialize file processing service with all dependencies including office tracker
+            _fileProcessingService = new OptimizedFileProcessingService(_configService, _pdfCacheService, _processManager, _officeTracker);
+            
+            // Determine optimal concurrency (conservative approach)
+            var maxConcurrency = Math.Min(Environment.ProcessorCount - 1, 3);
+            _processingSemaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
             
             _logger.Information("Queue service initialized with max concurrency: {MaxConcurrency}", maxConcurrency);
         }
@@ -187,8 +193,31 @@ namespace DocHandler.Services
                 outputPath = Path.Combine(item.SaveLocation, 
                     _fileProcessingService.GetUniqueFileName(item.SaveLocation, outputFileName));
                 
-                // Process the file
-                var result = await _fileProcessingService.ConvertSingleFile(item.File.FilePath, outputPath);
+                _logger.Information("=== STARTING QUEUE ITEM PROCESSING ===");
+                _logger.Information("QUEUE: Processing file: {FileName} ({Extension})", 
+                    item.File.FileName, Path.GetExtension(item.File.FilePath));
+                _logger.Information("QUEUE: Output path: {OutputPath}", outputPath);
+
+                // CRITICAL FIX: Process the file completely isolated from UI thread
+                // Wrap file conversion in Task.Run with STA threading to prevent UI blocking
+                var result = await Task.Run(async () =>
+                {
+                    _logger.Information("QUEUE: Starting conversion on background thread (Thread: {ThreadId})", 
+                        Thread.CurrentThread.ManagedThreadId);
+                    
+                    // Ensure STA apartment state for COM operations
+                    Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
+                    _logger.Information("QUEUE: STA apartment state set for COM operations");
+                    
+                    var conversionResult = await _fileProcessingService.ConvertSingleFile(item.File.FilePath, outputPath);
+                    
+                    _logger.Information("QUEUE: Conversion completed - Success: {Success}, Error: {Error}", 
+                        conversionResult.Success, conversionResult.ErrorMessage ?? "None");
+                    
+                    return conversionResult;
+                });
+
+                _logger.Information("=== QUEUE ITEM PROCESSING COMPLETED ===");
                 
                 Application.Current.Dispatcher.Invoke(() =>
                 {

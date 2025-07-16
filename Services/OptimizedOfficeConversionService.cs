@@ -26,9 +26,18 @@ namespace DocHandler.Services
         private int _conversionsCount;
         private readonly object _cleanupLock = new object();
 
-        public OptimizedOfficeConversionService(int maxInstances = 0)
+        private readonly ConfigurationService? _configService;
+        private readonly ProcessManager? _processManager;
+        private readonly StaThreadPool _staThreadPool;
+        private readonly OfficeInstanceTracker? _officeTracker;
+        
+        public OptimizedOfficeConversionService(int maxInstances = 0, ConfigurationService? configService = null, ProcessManager? processManager = null, OfficeInstanceTracker? officeTracker = null)
         {
             _logger = Log.ForContext<OptimizedOfficeConversionService>();
+            _configService = configService;
+            _processManager = processManager;
+            _officeTracker = officeTracker;
+            _staThreadPool = new StaThreadPool(1); // Single STA thread for COM operations
             
             // Conservative approach: 2-3 instances maximum based on system resources
             _maxInstances = maxInstances > 0 ? maxInstances : DetermineOptimalInstanceCount();
@@ -46,6 +55,25 @@ namespace DocHandler.Services
             
             // Initialize pool asynchronously
             Task.Run(InitializeWordAppPoolAsync);
+        }
+
+        /// <summary>
+        /// Validates that the current thread is in STA apartment state for COM operations
+        /// </summary>
+        /// <returns>True if STA, false otherwise</returns>
+        private bool ValidateSTAThread(string operation)
+        {
+            var apartmentState = Thread.CurrentThread.GetApartmentState();
+            _logger.Debug("{Operation}: Thread {ThreadId} apartment state is {ApartmentState}", 
+                operation, Thread.CurrentThread.ManagedThreadId, apartmentState);
+                
+            if (apartmentState != ApartmentState.STA)
+            {
+                _logger.Error("{Operation}: Thread is not STA - COM operations will fail", operation);
+                return false;
+            }
+            
+            return true;
         }
 
         private int DetermineOptimalInstanceCount()
@@ -98,57 +126,48 @@ namespace DocHandler.Services
 
         private async Task<WordAppInstance?> CreateOptimizedWordApplicationAsync()
         {
-            return await Task.Run(() =>
+            _logger.Information("Creating optimized Word application using STA thread pool");
+            
+            return await _staThreadPool.ExecuteAsync(async () =>
             {
                 try
                 {
-                    // Set COM apartment state for this thread
-                    Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
+                    // Validate we're on STA thread (StaThreadPool ensures this)
+                    if (!ValidateSTAThread("CreateOptimizedWordApplication"))
+                    {
+                        return null;
+                    }
                     
                     Type? wordType = Type.GetTypeFromProgID("Word.Application");
                     if (wordType == null)
                     {
-                        _logger.Error("Word.Application ProgID not found");
+                        _logger.Error("OFFICE CHECK FAILED: Word.Application ProgID not found - Microsoft Word is not registered");
                         return null;
                     }
-
+                    
+                    _logger.Information("Creating Word Application COM object");
                     dynamic wordApp = Activator.CreateInstance(wordType);
+                    
                     if (wordApp == null)
                     {
-                        _logger.Error("Failed to create Word application instance");
+                        _logger.Error("OFFICE CHECK FAILED: Word Application COM object creation returned null");
                         return null;
                     }
-
-                    // Critical performance optimizations
-                    wordApp.Visible = false;
-                    wordApp.DisplayAlerts = 0; // wdAlertsNone
-                    wordApp.ScreenUpdating = false; // Major performance boost
-                    wordApp.EnableEvents = false; // Disable events for performance
-                    wordApp.DisplayRecentFiles = false;
-                    wordApp.DisplayScrollBars = false;
-                    wordApp.DisplayStatusBar = false;
                     
-                    // Disable automatic features that slow down conversion
-                    try
-                    {
-                        wordApp.Options.CheckGrammarAsYouType = false;
-                        wordApp.Options.CheckSpellingAsYouType = false;
-                        wordApp.Options.SuggestSpellingCorrections = false;
-                        wordApp.Options.BackgroundSave = false;
-                        wordApp.Options.SaveInterval = 0; // Disable auto-save
-                        wordApp.Options.PaginationView = false;
-                        wordApp.Options.WPHelp = false;
-                        wordApp.Options.AnimateScreenMovements = false;
-                    }
-                    catch (Exception optEx)
-                    {
-                        _logger.Warning(optEx, "Failed to set some Word optimization options");
-                    }
-
+                    ComHelper.TrackComObjectCreation("WordApp", "CreateOptimizedWordApplication");
+                    _logger.Information("Word Application COM object created successfully");
+                    
                     // Get process ID for tracking
                     var processId = (int)wordApp.GetType().InvokeMember("ProcessID", 
                         System.Reflection.BindingFlags.GetProperty, null, wordApp, null);
-
+                    
+                    // Register with office tracker to prevent closing user instances
+                    _officeTracker?.RegisterAppCreatedWordProcess(processId);
+                    
+                    // Apply optimizations
+                    ApplyWordOptimizations(wordApp);
+                    _logger.Information("Word optimizations applied successfully");
+                    
                     var instance = new WordAppInstance
                     {
                         Application = wordApp,
@@ -158,54 +177,120 @@ namespace DocHandler.Services
                         IsHealthy = true
                     };
 
-                    _logger.Debug("Created optimized Word application with PID {ProcessId}", processId);
+                    _logger.Information("Created optimized Word application with PID {ProcessId}", processId);
                     return instance;
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error(ex, "Failed to create optimized Word application");
+                    _logger.Error(ex, "OFFICE CHECK FAILED: Exception creating Word application");
                     return null;
                 }
             });
         }
 
+        private void ApplyWordOptimizations(dynamic wordApp)
+        {
+            // Critical performance optimizations
+            wordApp.Visible = false;
+            wordApp.DisplayAlerts = 0; // wdAlertsNone
+            wordApp.ScreenUpdating = false; // Major performance boost
+            wordApp.EnableEvents = false; // Disable events for performance
+            wordApp.DisplayRecentFiles = false;
+            wordApp.DisplayScrollBars = false;
+            wordApp.DisplayStatusBar = false;
+            
+            // CONSERVATIVE: Only essential performance optimizations
+            try
+            {
+                wordApp.Options.CheckGrammarAsYouType = false;
+                wordApp.Options.CheckSpellingAsYouType = false;
+                wordApp.Options.BackgroundSave = false;
+                wordApp.Options.SaveInterval = 0; // Disable auto-save
+                
+                // Removed potentially unstable options:
+                // - PaginationView, WPHelp, AnimateScreenMovements (UI-related)
+                // - SuggestSpellingCorrections (can cause dialog issues)
+            }
+            catch (Exception optEx)
+            {
+                _logger.Warning(optEx, "Failed to set some Word optimization options");
+            }
+        }
+
         private bool IsOfficeAvailable()
         {
             if (_officeAvailable.HasValue)
+            {
+                _logger.Information("Office availability check (cached): {Available}", _officeAvailable.Value);
                 return _officeAvailable.Value;
+            }
                 
+            _logger.Information("=== CHECKING MICROSOFT OFFICE AVAILABILITY ===");
+            
             try
             {
                 Type? wordType = Type.GetTypeFromProgID("Word.Application");
-                if (wordType != null)
+                if (wordType == null)
                 {
-                    dynamic testApp = null;
-                    try
+                    _logger.Error("OFFICE CHECK FAILED: Word.Application ProgID not found - Microsoft Word is not registered");
+                    _officeAvailable = false;
+                    return false;
+                }
+                
+                _logger.Information("OFFICE CHECK: Word.Application ProgID found successfully");
+                
+                dynamic testApp = null;
+                try
+                {
+                    _logger.Information("OFFICE CHECK: Attempting to create Word application instance...");
+                    testApp = Activator.CreateInstance(wordType);
+                    if (testApp == null)
                     {
-                        testApp = Activator.CreateInstance(wordType);
-                        testApp.Visible = false;
-                        testApp.Quit();
-                        _officeAvailable = true;
-                        return true;
+                        _logger.Error("OFFICE CHECK FAILED: Activator.CreateInstance returned null");
+                        _officeAvailable = false;
+                        return false;
                     }
-                    finally
+                    
+                    ComHelper.TrackComObjectCreation("WordApp", "OptimizedOfficeAvailabilityCheck");
+                    _logger.Information("OFFICE CHECK: Word application instance created successfully");
+                    
+                    testApp.Visible = false;
+                    testApp.Quit();
+                    _logger.Information("OFFICE CHECK: Word application test completed successfully");
+                    
+                    _officeAvailable = true;
+                    _logger.Information("=== MICROSOFT OFFICE IS AVAILABLE ===");
+                    return true;
+                }
+                catch (System.Runtime.InteropServices.COMException comEx)
+                {
+                    _logger.Error(comEx, "OFFICE CHECK FAILED: COM exception - HResult={HResult}, Message={Message}", 
+                        comEx.HResult, comEx.Message);
+                    _officeAvailable = false;
+                    return false;
+                }
+                finally
+                {
+                    if (testApp != null)
                     {
-                        if (testApp != null)
+                        try
                         {
-                            try
-                            {
-                                Marshal.ReleaseComObject(testApp);
-                            }
-                            catch { }
+                            ComHelper.SafeReleaseComObject(testApp, "WordApp", "OptimizedOfficeAvailabilityCheck");
+                        }
+                        catch (Exception disposeEx)
+                        {
+                            _logger.Warning(disposeEx, "Error disposing Word application test instance");
                         }
                     }
                 }
             }
             catch (Exception ex)
             {
-                _logger.Warning(ex, "Microsoft Office is not available");
+                _logger.Error(ex, "OFFICE CHECK FAILED: Unexpected error - {ExceptionType}: {Message}", 
+                    ex.GetType().Name, ex.Message);
             }
             
+            _logger.Error("=== MICROSOFT OFFICE IS NOT AVAILABLE ===");
             _officeAvailable = false;
             return false;
         }
@@ -309,13 +394,16 @@ namespace DocHandler.Services
                 }
 
                 // Simple health check - try to access Word application properties
-                await Task.Run(() =>
+                var isHealthy = await _staThreadPool.ExecuteAsync(async () =>
                 {
+                    ValidateSTAThread("WordInstanceHealthCheck");
+                    
                     var _ = instance.Application.Version;
                     var documentCount = instance.Application.Documents.Count;
+                    return true;
                 });
 
-                return true;
+                return isHealthy;
             }
             catch (Exception ex)
             {
@@ -341,11 +429,28 @@ namespace DocHandler.Services
 
         private async Task<ConversionResult> ConvertWordToPdfWithInstance(WordAppInstance wordInstance, string inputPath, string outputPath)
         {
-            return await Task.Run(() =>
+            var timeoutSeconds = _configService?.Config.ConversionTimeoutSeconds ?? 30;
+            
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+            
+            try
             {
-                var result = new ConversionResult();
-                dynamic? doc = null;
-                var stopwatch = Stopwatch.StartNew();
+                return await Task.Run(() =>
+                {
+                    // CRITICAL: Validate STA apartment state for COM operations
+                    Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
+                    if (!ValidateSTAThread("ConvertWordToPdfWithInstance"))
+                    {
+                        return new ConversionResult
+                        {
+                            Success = false,
+                            ErrorMessage = "Thread apartment state is not STA - COM operations will fail"
+                        };
+                    }
+                    
+                    var result = new ConversionResult();
+                    dynamic? doc = null;
+                    var stopwatch = Stopwatch.StartNew();
                 
                 try
                 {
@@ -374,6 +479,7 @@ namespace DocHandler.Services
                             NoEncodingDialog: true,
                             Revert: false
                         );
+                        ComHelper.TrackComObjectCreation("Document", "OptimizedConversion");
 
                         // Convert to PDF with optimized settings for speed
                         doc.SaveAs2(
@@ -445,7 +551,7 @@ namespace DocHandler.Services
                         try
                         {
                             doc.Close(SaveChanges: false);
-                            Marshal.ReleaseComObject(doc);
+                            ComHelper.SafeReleaseComObject(doc, "Document", "OptimizedConversion");
                         }
                         catch (Exception ex)
                         {
@@ -455,7 +561,33 @@ namespace DocHandler.Services
                 }
 
                 return result;
-            });
+            }, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.Error("Word conversion timed out after {TimeoutSeconds} seconds for file: {InputPath}", 
+                    timeoutSeconds, inputPath);
+                
+                // Mark instance as unhealthy so it gets recreated
+                wordInstance.IsHealthy = false;
+                
+                // Clean up orphaned processes
+                try
+                {
+                    _processManager?.KillOrphanedWordProcesses();
+                    _logger.Information("Cleaned up orphaned Word processes after timeout");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error cleaning up orphaned processes after timeout");
+                }
+                
+                return new ConversionResult
+                {
+                    Success = false,
+                    ErrorMessage = $"Word conversion timed out after {timeoutSeconds} seconds"
+                };
+            }
         }
 
         private bool IsNetworkPath(string path)
@@ -529,7 +661,10 @@ namespace DocHandler.Services
             {
                 if (instance.Application != null)
                 {
-                    await Task.Run(() =>
+                    // Unregister from office tracker first
+                    _officeTracker?.UnregisterAppCreatedWordProcess(instance.ProcessId);
+                    
+                    await _staThreadPool.ExecuteAsync(async () =>
                     {
                         try
                         {
@@ -542,16 +677,18 @@ namespace DocHandler.Services
                                     try
                                     {
                                         doc.Close(SaveChanges: false);
-                                        Marshal.ReleaseComObject(doc);
+                                        ComHelper.SafeReleaseComObject(doc, "Document", "DisposeWordInstance");
                                     }
                                     catch { }
                                 }
-                                Marshal.ReleaseComObject(documents);
+                                ComHelper.SafeReleaseComObject(documents, "Documents", "DisposeWordInstance");
                             }
                             
                             // Quit Word application
                             instance.Application.Quit();
-                            Marshal.ReleaseComObject(instance.Application);
+                            ComHelper.SafeReleaseComObject(instance.Application, "WordApp", "DisposeWordInstance");
+                            
+                            _logger.Information("Disposed Word application PID {ProcessId}", instance.ProcessId);
                         }
                         catch (Exception ex)
                         {
@@ -594,10 +731,14 @@ namespace DocHandler.Services
                     _ = DisposeWordInstance(instance);
                 }
                 
+                // Dispose STA thread pool
+                _staThreadPool?.Dispose();
+                
                 // Force garbage collection
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
+                ComHelper.ForceComCleanup("OptimizedOfficeConversionService");
+                
+                // Log final COM statistics
+                ComHelper.LogComObjectStats();
                 
                 _disposed = true;
                 _logger.Information("Optimized Office conversion service disposed");

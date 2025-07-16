@@ -15,11 +15,13 @@ namespace DocHandler.Services
     public class OptimizedFileProcessingService : IDisposable
     {
         private readonly ILogger _logger = Log.ForContext<OptimizedFileProcessingService>();
-        private readonly OfficeConversionService _optimizedOfficeService;
+        private readonly OptimizedOfficeConversionService _optimizedOfficeService;
         private readonly SessionAwareExcelService _excelService;
         private readonly PdfOperationsService _pdfOperationsService;
         private readonly ConfigurationService? _configService;
         private readonly PdfCacheService? _pdfCacheService;
+        private readonly ProcessManager? _processManager;
+        private readonly OfficeInstanceTracker? _officeTracker;
         
         // Add progress reporting delegate
         public delegate void ProgressCallback(string fileName, double percentage, string status);
@@ -32,13 +34,15 @@ namespace DocHandler.Services
             ".pdf", ".doc", ".docx", ".xls", ".xlsx"
         };
 
-        public OptimizedFileProcessingService(ConfigurationService? configService = null, PdfCacheService? pdfCacheService = null)
+        public OptimizedFileProcessingService(ConfigurationService? configService = null, PdfCacheService? pdfCacheService = null, ProcessManager? processManager = null, OfficeInstanceTracker? officeTracker = null)
         {
-            _optimizedOfficeService = new OfficeConversionService();
+            _optimizedOfficeService = new OptimizedOfficeConversionService(0, configService, processManager, officeTracker);
             _excelService = new SessionAwareExcelService();
             _pdfOperationsService = new PdfOperationsService();
             _configService = configService;
             _pdfCacheService = pdfCacheService;
+            _processManager = processManager;
+            _officeTracker = officeTracker;
         }
 
         public bool IsFileSupported(string filePath)
@@ -407,6 +411,11 @@ namespace DocHandler.Services
             var fileName = Path.GetFileName(inputPath);
             var extension = Path.GetExtension(inputPath).ToLowerInvariant();
             
+            _logger.Information("=== CONVERT SINGLE FILE START ===");
+            _logger.Information("CONVERT: Input: {InputPath}", inputPath);
+            _logger.Information("CONVERT: Output: {OutputPath}", outputPath);
+            _logger.Information("CONVERT: Extension: {Extension}", extension);
+            
             try
             {
                 progressCallback?.Invoke(fileName, 0, "Starting conversion...");
@@ -446,7 +455,10 @@ namespace DocHandler.Services
                 }
                 else if (extension == ".doc" || extension == ".docx")
                 {
+                    _logger.Information("CONVERT: Word document detected, calling OptimizedOfficeService...");
                     result = await _optimizedOfficeService.ConvertWordToPdf(inputPath, outputPath);
+                    _logger.Information("CONVERT: OptimizedOfficeService returned - Success: {Success}, Error: {Error}", 
+                        result.Success, result.ErrorMessage ?? "None");
                 }
                 else if (extension == ".xls" || extension == ".xlsx")
                 {

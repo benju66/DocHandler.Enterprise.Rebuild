@@ -17,17 +17,7 @@ namespace DocHandler
         private System.Windows.Threading.DispatcherTimer _memoryTimer;
         protected override void OnStartup(StartupEventArgs e)
         {
-            // Initialize logging
-            Log.Logger = new LoggerConfiguration()
-                .MinimumLevel.Debug()
-                .WriteTo.File(
-                    Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                        "DocHandler", "Logs", "log-.txt"),
-                    rollingInterval: RollingInterval.Day,
-                    retainedFileCountLimit: 7)
-                .CreateLogger();
-                
+            // Use the logger already initialized in Program.cs
             _logger = Log.ForContext<App>();
             
             // Set up global exception handlers
