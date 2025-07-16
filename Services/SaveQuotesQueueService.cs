@@ -28,6 +28,7 @@ namespace DocHandler.Services
         private readonly PdfCacheService _pdfCacheService;
         private readonly ProcessManager _processManager;
         private readonly OfficeInstanceTracker? _officeTracker;
+        private readonly StaThreadPool _staThreadPool; // Added STA thread pool for COM operations
         
         // Add private disposal tracking
         private bool _disposed = false;
@@ -47,10 +48,10 @@ namespace DocHandler.Services
         private bool _isProcessing;
         
         // Events
-        public event EventHandler<SaveQuoteProgressEventArgs> ProgressChanged;
-        public event EventHandler<SaveQuoteCompletedEventArgs> ItemCompleted;
-        public event EventHandler QueueEmpty;
-        public event EventHandler<string> StatusMessageChanged;
+        public event EventHandler<SaveQuoteProgressEventArgs>? ProgressChanged;
+        public event EventHandler<SaveQuoteCompletedEventArgs>? ItemCompleted;
+        public event EventHandler? QueueEmpty;
+        public event EventHandler<string>? StatusMessageChanged;
         
         public SaveQuotesQueueService(ConfigurationService configService, PdfCacheService pdfCacheService, ProcessManager processManager, OfficeInstanceTracker? officeTracker = null)
         {
@@ -64,8 +65,14 @@ namespace DocHandler.Services
             _queue = new ConcurrentQueue<SaveQuoteItem>();
             _allItems = new ObservableCollection<SaveQuoteItem>();
             
+            // CRITICAL FIX: Initialize the CancellationTokenSource
+            _cancellationTokenSource = new CancellationTokenSource();
+            
             // Initialize file processing service with all dependencies including office tracker
             _fileProcessingService = new OptimizedFileProcessingService(_configService, _pdfCacheService, _processManager, _officeTracker);
+            
+            // Initialize STA thread pool for COM operations
+            _staThreadPool = new StaThreadPool(1, "SaveQuotesQueue");
             
             // Determine optimal concurrency (conservative approach)
             var maxConcurrency = Math.Min(Environment.ProcessorCount - 1, 3);
@@ -104,24 +111,37 @@ namespace DocHandler.Services
         
         public async Task StartProcessingAsync()
         {
-            if (IsProcessing) return;
+            _logger.Information("StartProcessingAsync called, IsProcessing: {IsProcessing}", IsProcessing);
+            
+            if (IsProcessing) 
+            {
+                _logger.Warning("Already processing, returning");
+                return;
+            }
             
             IsProcessing = true;
+            
+            // Ensure we have a fresh cancellation token
+            _cancellationTokenSource?.Cancel();
+            _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = new CancellationTokenSource();
             
             StatusMessageChanged?.Invoke(this, "Processing queue...");
             
             try
             {
+                _logger.Information("Starting ProcessQueueAsync");
                 await ProcessQueueAsync();
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Error processing queue");
+                throw; // Re-throw to surface the error
             }
             finally
             {
                 IsProcessing = false;
+                _logger.Information("Queue processing completed");
             }
         }
         
@@ -131,12 +151,14 @@ namespace DocHandler.Services
             var semaphore = new SemaphoreSlim(maxConcurrency);
             var tasks = new List<Task>();
             
-            _logger.Information("Processing queue with {MaxConcurrency} parallel tasks", maxConcurrency);
+            _logger.Information("Processing queue with {MaxConcurrency} parallel tasks, queue has {Count} items", 
+                maxConcurrency, _queue.Count);
             
             while (!_cancellationTokenSource.Token.IsCancellationRequested)
             {
                 if (_queue.TryDequeue(out var item))
                 {
+                    _logger.Debug("Dequeued item: {FileName} for processing", item.File.FileName);
                     var task = ProcessItemAsync(item, semaphore);
                     tasks.Add(task);
                     
@@ -198,24 +220,21 @@ namespace DocHandler.Services
                     item.File.FileName, Path.GetExtension(item.File.FilePath));
                 _logger.Information("QUEUE: Output path: {OutputPath}", outputPath);
 
-                // CRITICAL FIX: Process the file completely isolated from UI thread
-                // Wrap file conversion in Task.Run with STA threading to prevent UI blocking
-                var result = await Task.Run(async () =>
+                // CRITICAL FIX: Execute the entire conversion on STA thread to prevent COM threading violations
+                _logger.Information("QUEUE: Starting conversion on STA thread (Current Thread: {ThreadId})", 
+                    Thread.CurrentThread.ManagedThreadId);
+
+                var result = await _staThreadPool.ExecuteAsync(() =>
                 {
-                    _logger.Information("QUEUE: Starting conversion on background thread (Thread: {ThreadId})", 
-                        Thread.CurrentThread.ManagedThreadId);
-                    
-                    // Ensure STA apartment state for COM operations
-                    Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
-                    _logger.Information("QUEUE: STA apartment state set for COM operations");
-                    
-                    var conversionResult = await _fileProcessingService.ConvertSingleFile(item.File.FilePath, outputPath);
-                    
-                    _logger.Information("QUEUE: Conversion completed - Success: {Success}, Error: {Error}", 
-                        conversionResult.Success, conversionResult.ErrorMessage ?? "None");
-                    
-                    return conversionResult;
+                    _logger.Information("QUEUE: Now executing on STA thread {ThreadId} (Apartment: {ApartmentState})", 
+                        Thread.CurrentThread.ManagedThreadId, Thread.CurrentThread.GetApartmentState());
+                        
+                    // Use synchronous execution to maintain STA context
+                    return _fileProcessingService.ConvertSingleFile(item.File.FilePath, outputPath).GetAwaiter().GetResult();
                 });
+
+                _logger.Information("QUEUE: Conversion completed - Success: {Success}, Error: {Error}", 
+                    result.Success, result.ErrorMessage ?? "None");
 
                 _logger.Information("=== QUEUE ITEM PROCESSING COMPLETED ===");
                 
@@ -382,6 +401,16 @@ namespace DocHandler.Services
                 catch (Exception ex)
                 {
                     _logger.Warning(ex, "Error disposing file processing service");
+                }
+                
+                try
+                {
+                    _staThreadPool?.Dispose(); // Dispose STA thread pool
+                    _logger.Information("STA thread pool disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing STA thread pool");
                 }
                 
                 try

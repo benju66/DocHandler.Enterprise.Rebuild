@@ -75,13 +75,41 @@ namespace DocHandler.Services
                         // Make Word invisible and optimize for speed
                         _wordApp.Visible = false;
                         _wordApp.DisplayAlerts = 0; // wdAlertsNone
-                        _wordApp.ScreenUpdating = false;
-                        _wordApp.DisplayRecentFiles = false;
-                        _wordApp.DisplayScrollBars = false;
-                        _wordApp.DisplayStatusBar = false;
                         
-                        // Minimize window to prevent any flashing
-                        _wordApp.WindowState = -2; // wdWindowStateMinimize
+                        // SAFE: Only set properties that don't require active documents
+                        try
+                        {
+                            _wordApp.ScreenUpdating = false;
+                        }
+                        catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x800A11FD))
+                        {
+                            // Ignore "document window is not active" error during pre-warm
+                            _logger.Debug("Skipping ScreenUpdating property - no active document during pre-warm");
+                        }
+                        
+                        try
+                        {
+                            _wordApp.DisplayRecentFiles = false;
+                            _wordApp.DisplayScrollBars = false;
+                            _wordApp.DisplayStatusBar = false;
+                        }
+                        catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x800A11FD))
+                        {
+                            // Ignore properties that require active document
+                            _logger.Debug("Skipping UI properties - no active document during pre-warm");
+                        }
+                        
+                        // SAFE: Window state can be set without active document
+                        try
+                        {
+                            // Minimize window to prevent any flashing
+                            _wordApp.WindowState = -2; // wdWindowStateMinimize
+                        }
+                        catch (System.Runtime.InteropServices.COMException)
+                        {
+                            // Ignore if window state cannot be set
+                            _logger.Debug("Could not set WindowState during pre-warm");
+                        }
                         
                         // Set last health check time
                         _lastHealthCheck = DateTime.Now;

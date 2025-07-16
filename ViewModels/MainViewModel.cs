@@ -44,8 +44,6 @@ namespace DocHandler.ViewModels
         private readonly PdfCacheService _pdfCacheService;
         private readonly ProcessManager _processManager;
         private readonly OfficeInstanceTracker _officeTracker;
-        private readonly ScopeOfWorkService _scopeService;
-        private readonly CompanyNameService _companyService;
         private readonly TelemetryService _telemetryService;
         private readonly SaveQuotesQueueService _queueService;
         private readonly ApplicationHealthChecker _healthChecker;
@@ -567,7 +565,7 @@ namespace DocHandler.ViewModels
             StartComObjectMonitoring();
         }
 
-        private void OnMemoryPressureDetected(object sender, MemoryPressureEventArgs e)
+        private void OnMemoryPressureDetected(object? sender, MemoryPressureEventArgs e)
         {
             Application.Current.Dispatcher.InvokeAsync(() =>
             {
@@ -1868,6 +1866,33 @@ namespace DocHandler.ViewModels
         }
 
         [RelayCommand]
+        private async Task RunQueueDiagnosticAsync()
+        {
+            try
+            {
+                StatusMessage = "Running queue diagnostic...";
+                
+                var diagnosticResult = await Task.Run(async () => 
+                {
+                    return await QuickDiagnostic.TestQueueProcessing();
+                });
+                
+                // Show results in a message box
+                MessageBox.Show(diagnosticResult, "Queue Processing Diagnostic Results", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                
+                StatusMessage = "Diagnostic completed";
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error during queue diagnostic");
+                MessageBox.Show($"Diagnostic failed: {ex.Message}", "Diagnostic Error", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                StatusMessage = "Diagnostic failed";
+            }
+        }
+
+        [RelayCommand]
         private void OpenSettings()
         {
             var settingsViewModel = new SettingsViewModel(
@@ -2130,9 +2155,9 @@ namespace DocHandler.ViewModels
         }
 
         // Queue event handlers
-        private void OnQueueProgressChanged(object sender, SaveQuoteProgressEventArgs e)
+        private void OnQueueProgressChanged(object? sender, SaveQuoteProgressEventArgs e)
         {
-            Application.Current.Dispatcher.Invoke(() =>
+            Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 QueueTotalCount = e.TotalCount;
                 QueueProcessedCount = e.ProcessedCount;
@@ -2140,11 +2165,11 @@ namespace DocHandler.ViewModels
             });
         }
 
-        private void OnQueueItemCompleted(object sender, SaveQuoteCompletedEventArgs e)
+        private void OnQueueItemCompleted(object? sender, SaveQuoteCompletedEventArgs e)
         {
-            if (e.Success)
+            Application.Current.Dispatcher.Invoke(() =>
             {
-                Application.Current.Dispatcher.Invoke(() =>
+                if (e.Success)
                 {
                     QueueStatusMessage = "Successfully saved!";
                     
@@ -2159,11 +2184,11 @@ namespace DocHandler.ViewModels
                         UpdateQueueStatusMessage();
                     };
                     timer.Start();
-                });
-            }
+                }
+            });
         }
 
-        private void OnQueueEmpty(object sender, EventArgs e)
+        private void OnQueueEmpty(object? sender, EventArgs e)
         {
             Application.Current.Dispatcher.Invoke(async () =>
             {
@@ -2223,7 +2248,7 @@ namespace DocHandler.ViewModels
             });
         }
 
-        private void OnQueueStatusMessageChanged(object sender, string message)
+        private void OnQueueStatusMessageChanged(object? sender, string message)
         {
             Application.Current.Dispatcher.Invoke(() =>
             {
@@ -2334,7 +2359,27 @@ namespace DocHandler.ViewModels
                 // Start processing if not already running
                 if (!_queueService.IsProcessing)
                 {
-                    _ = _queueService.StartProcessingAsync();
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await _queueService.StartProcessingAsync();
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Error(ex, "Failed to start queue processing");
+                            
+                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                            {
+                                StatusMessage = "Queue processing failed";
+                                MessageBox.Show(
+                                    $"Failed to start queue processing:\n\n{ex.Message}",
+                                    "Queue Error",
+                                    MessageBoxButton.OK,
+                                    MessageBoxImage.Error);
+                            });
+                        }
+                    });
                 }
             }
             catch (Exception ex)

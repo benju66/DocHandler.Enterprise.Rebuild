@@ -89,6 +89,11 @@
                         <ui:SymbolIcon Symbol="Find"/>
                     </MenuItem.Icon>
                 </MenuItem>
+                <MenuItem Header="Run Queue Diagnostic..." Command="{Binding RunQueueDiagnosticCommand}">
+                    <MenuItem.Icon>
+                        <ui:SymbolIcon Symbol="Repair"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <MenuItem Header="_About..." Command="{Binding AboutCommand}">
                     <MenuItem.Icon>

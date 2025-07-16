@@ -128,7 +128,7 @@ namespace DocHandler.Services
         {
             _logger.Information("Creating optimized Word application using STA thread pool");
             
-            return await _staThreadPool.ExecuteAsync(async () =>
+            return await _staThreadPool.ExecuteAsync(() =>
             {
                 try
                 {
@@ -435,23 +435,20 @@ namespace DocHandler.Services
             
             try
             {
-                return await Task.Run(() =>
+                // SIMPLIFIED: We're already on STA thread from queue processing
+                if (!ValidateSTAThread("ConvertWordToPdfWithInstance"))
                 {
-                    // CRITICAL: Validate STA apartment state for COM operations
-                    Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
-                    if (!ValidateSTAThread("ConvertWordToPdfWithInstance"))
+                    return new ConversionResult
                     {
-                        return new ConversionResult
-                        {
-                            Success = false,
-                            ErrorMessage = "Thread apartment state is not STA - COM operations will fail"
-                        };
-                    }
-                    
-                    var result = new ConversionResult();
-                    dynamic? doc = null;
-                    var stopwatch = Stopwatch.StartNew();
+                        Success = false,
+                        ErrorMessage = "Thread apartment state is not STA - COM operations will fail"
+                    };
+                }
                 
+                var result = new ConversionResult();
+                dynamic? doc = null;
+                var stopwatch = Stopwatch.StartNew();
+            
                 try
                 {
                     // Handle network paths by copying locally if needed
@@ -561,7 +558,6 @@ namespace DocHandler.Services
                 }
 
                 return result;
-            }, cts.Token);
             }
             catch (OperationCanceledException)
             {

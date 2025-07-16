@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Serilog;
+using System.Linq; // Added for .Count()
 
 namespace DocHandler.Services
 {
@@ -52,22 +53,39 @@ namespace DocHandler.Services
             _shutdownTokenSource = new CancellationTokenSource();
             _threads = new Thread[_threadCount];
 
-            // Create and start STA threads
+            // Create and start STA threads with better error handling
             for (int i = 0; i < _threadCount; i++)
             {
-                var thread = new Thread(ThreadWorker)
+                try
                 {
-                    Name = $"{_poolName}-Thread-{i + 1}",
-                    IsBackground = true
-                };
-                
-                // CRITICAL: Set apartment state to STA for COM operations
-                thread.SetApartmentState(ApartmentState.STA);
-                _threads[i] = thread;
-                thread.Start(i);
+                    var thread = new Thread(ThreadWorker)
+                    {
+                        Name = $"{_poolName}-Thread-{i + 1}",
+                        IsBackground = true
+                    };
+                    
+                    // CRITICAL: Set apartment state to STA BEFORE starting the thread
+                    thread.SetApartmentState(ApartmentState.STA);
+                    _threads[i] = thread;
+                    
+                    // Start the thread and verify it's running
+                    thread.Start(i);
+                    
+                    // Give the thread a moment to initialize
+                    Thread.Sleep(10);
+                    
+                    _logger.Information("Created STA thread {ThreadName} with apartment state: {ApartmentState}", 
+                        thread.Name, thread.GetApartmentState());
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Failed to create STA thread {ThreadIndex}", i);
+                    throw new InvalidOperationException($"Failed to create STA thread {i}: {ex.Message}", ex);
+                }
             }
             
-            _logger.Information("{PoolName} initialized successfully", _poolName);
+            _logger.Information("{PoolName} initialized successfully with {ActualThreads} threads", 
+                _poolName, _threads.Count(t => t != null));
         }
 
         /// <summary>
@@ -171,27 +189,54 @@ namespace DocHandler.Services
         /// <summary>
         /// The main worker loop for each STA thread.
         /// </summary>
-        private async void ThreadWorker(object? state)
+        private void ThreadWorker(object? state)
         {
             var threadIndex = (int)state!;
             var threadName = Thread.CurrentThread.Name;
+            var currentThread = Thread.CurrentThread;
             
-            _logger.Debug("STA thread {ThreadName} started (apartment state: {ApartmentState})", 
-                threadName, Thread.CurrentThread.GetApartmentState());
+            _logger.Debug("STA thread {ThreadName} starting (apartment state: {ApartmentState})", 
+                threadName, currentThread.GetApartmentState());
 
             try
             {
-                // Verify we're running on STA thread
-                if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
+                // Verify we're running on STA thread - this is CRITICAL for COM operations
+                var apartmentState = currentThread.GetApartmentState();
+                if (apartmentState != ApartmentState.STA)
                 {
-                    _logger.Error("Thread {ThreadName} is not STA! COM operations may fail.", threadName);
+                    _logger.Error("CRITICAL: Thread {ThreadName} is {ApartmentState}, not STA! COM operations will fail.", 
+                        threadName, apartmentState);
+                    return; // Exit the thread worker if not STA
                 }
 
-                await foreach (var workItem in _workReader.ReadAllAsync(_shutdownTokenSource.Token))
+                _logger.Information("STA thread {ThreadName} confirmed STA and ready for COM operations", threadName);
+
+                // Use synchronous loop instead of async foreach
+                while (!_shutdownTokenSource.Token.IsCancellationRequested)
                 {
                     try
                     {
-                        workItem.Action();
+                        // Wait for work items synchronously with timeout
+                        if (_workReader.WaitToReadAsync(_shutdownTokenSource.Token).AsTask().Wait(100))
+                        {
+                            if (_workReader.TryRead(out var workItem))
+                            {
+                                // Double-check apartment state before each work item (paranoid but safe)
+                                if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
+                                {
+                                    _logger.Error("Thread {ThreadName} apartment state changed to {CurrentState}! Skipping work item.", 
+                                        threadName, Thread.CurrentThread.GetApartmentState());
+                                    continue;
+                                }
+
+                                workItem.Action();
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Expected when shutting down
+                        break;
                     }
                     catch (Exception ex)
                     {
@@ -209,6 +254,70 @@ namespace DocHandler.Services
             }
             
             _logger.Debug("STA thread {ThreadName} stopped", threadName);
+        }
+
+        /// <summary>
+        /// Verifies that all threads in the pool are properly configured as STA threads.
+        /// This is useful for diagnostics to ensure COM operations will work.
+        /// </summary>
+        /// <returns>True if all threads are STA, false otherwise.</returns>
+        public bool VerifyStaThreads()
+        {
+            if (_disposed)
+                return false;
+
+            var allSta = true;
+            for (int i = 0; i < _threadCount; i++)
+            {
+                var thread = _threads[i];
+                if (thread == null || !thread.IsAlive)
+                {
+                    _logger.Error("Thread {ThreadIndex} is null or not alive", i);
+                    allSta = false;
+                    continue;
+                }
+
+                var apartmentState = thread.GetApartmentState();
+                if (apartmentState != ApartmentState.STA)
+                {
+                    _logger.Error("Thread {ThreadName} has apartment state {ApartmentState}, expected STA", 
+                        thread.Name, apartmentState);
+                    allSta = false;
+                }
+                else
+                {
+                    _logger.Debug("Thread {ThreadName} confirmed STA", thread.Name);
+                }
+            }
+
+            return allSta;
+        }
+
+        /// <summary>
+        /// Tests if the thread pool is functional by executing a simple operation.
+        /// </summary>
+        /// <returns>True if the test operation succeeds, false otherwise.</returns>
+        public async Task<bool> TestFunctionality()
+        {
+            if (_disposed)
+                return false;
+
+            try
+            {
+                var result = await ExecuteAsync(() =>
+                {
+                    // Simple test - verify we're on STA thread and return success
+                    var apartmentState = Thread.CurrentThread.GetApartmentState();
+                    return apartmentState == ApartmentState.STA;
+                });
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Thread pool functionality test failed");
+                return false;
+            }
         }
 
         /// <summary>
