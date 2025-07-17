@@ -15,8 +15,9 @@ namespace DocHandler.Services
     public class OptimizedFileProcessingService : IDisposable
     {
         private readonly ILogger _logger = Log.ForContext<OptimizedFileProcessingService>();
-        private readonly OptimizedOfficeConversionService _optimizedOfficeService;
-        private readonly SessionAwareExcelService _excelService;
+        // COORDINATED SERVICES: Use shared session services instead of creating own instances
+        private readonly SessionAwareOfficeService? _sharedWordService;
+        private readonly SessionAwareExcelService? _sharedExcelService;
         private readonly PdfOperationsService _pdfOperationsService;
         private readonly ConfigurationService? _configService;
         private readonly PdfCacheService? _pdfCacheService;
@@ -34,15 +35,24 @@ namespace DocHandler.Services
             ".pdf", ".doc", ".docx", ".xls", ".xlsx"
         };
 
-        public OptimizedFileProcessingService(ConfigurationService? configService = null, PdfCacheService? pdfCacheService = null, ProcessManager? processManager = null, OfficeInstanceTracker? officeTracker = null)
+        public OptimizedFileProcessingService(
+            ConfigurationService? configService = null, 
+            PdfCacheService? pdfCacheService = null, 
+            ProcessManager? processManager = null, 
+            OfficeInstanceTracker? officeTracker = null,
+            SessionAwareOfficeService? sharedWordService = null,
+            SessionAwareExcelService? sharedExcelService = null)
         {
-            _optimizedOfficeService = new OptimizedOfficeConversionService(0, configService, processManager, officeTracker);
-            _excelService = new SessionAwareExcelService();
+            // Use shared session services instead of creating new instances
+            _sharedWordService = sharedWordService;
+            _sharedExcelService = sharedExcelService;
             _pdfOperationsService = new PdfOperationsService();
             _configService = configService;
             _pdfCacheService = pdfCacheService;
             _processManager = processManager;
             _officeTracker = officeTracker;
+            
+            _logger.Information("OptimizedFileProcessingService initialized with shared Office instances");
         }
 
         public bool IsFileSupported(string filePath)
@@ -260,7 +270,9 @@ namespace DocHandler.Services
                         Path.GetFileNameWithoutExtension(file) + ".pdf");
                     
                     var fileStopwatch = Stopwatch.StartNew();
-                    var conversionResult = await _optimizedOfficeService.ConvertWordToPdf(file, outputPath);
+                    var conversionResult = _sharedWordService != null 
+                        ? await _sharedWordService.ConvertWordToPdf(file, outputPath)
+                        : new ConversionResult { Success = false, ErrorMessage = "Word service not available" };
                     fileStopwatch.Stop();
                     
                     var currentProgress = Interlocked.Increment(ref progress);
@@ -316,7 +328,9 @@ namespace DocHandler.Services
                     var outputPath = Path.Combine(outputDirectory, 
                         Path.GetFileNameWithoutExtension(file) + ".pdf");
                     
-                    var conversionResult = await _excelService.ConvertSpreadsheetToPdf(file, outputPath);
+                    var conversionResult = _sharedExcelService != null 
+                        ? await _sharedExcelService.ConvertSpreadsheetToPdf(file, outputPath)
+                        : new ConversionResult { Success = false, ErrorMessage = "Excel service not available" };
                     
                     if (conversionResult.Success)
                     {
@@ -422,19 +436,30 @@ namespace DocHandler.Services
                     File.Copy(inputPath, outputPath, true);
                     result = new ConversionResult { Success = true, OutputPath = outputPath };
                 }
-                else if (extension == ".doc" || extension == ".docx")
+                else                 if (extension == ".doc" || extension == ".docx")
                 {
-                    _logger.Information("CONVERT: Word document detected, calling OptimizedOfficeService synchronously...");
-                    
-                    // Use the synchronous method from OptimizedOfficeConversionService
-                    result = _optimizedOfficeService.ConvertWordToPdf(inputPath, outputPath).GetAwaiter().GetResult();
-                    
-                    _logger.Information("CONVERT: OptimizedOfficeService returned - Success: {Success}, Error: {Error}", 
-                        result.Success, result.ErrorMessage ?? "None");
+                    if (_sharedWordService != null)
+                    {
+                        _logger.Information("CONVERT: Word document detected, calling shared Word service synchronously...");
+                        result = _sharedWordService.ConvertWordToPdf(inputPath, outputPath).GetAwaiter().GetResult();
+                        _logger.Information("CONVERT: Shared Word service returned - Success: {Success}, Error: {Error}", 
+                            result.Success, result.ErrorMessage ?? "None");
+                    }
+                    else
+                    {
+                        result = new ConversionResult { Success = false, ErrorMessage = "Word service not available" };
+                    }
                 }
                 else if (extension == ".xls" || extension == ".xlsx")
                 {
-                    result = _excelService.ConvertSpreadsheetToPdf(inputPath, outputPath).GetAwaiter().GetResult();
+                    if (_sharedExcelService != null)
+                    {
+                        result = _sharedExcelService.ConvertSpreadsheetToPdf(inputPath, outputPath).GetAwaiter().GetResult();
+                    }
+                    else
+                    {
+                        result = new ConversionResult { Success = false, ErrorMessage = "Excel service not available" };
+                    }
                 }
                 else
                 {
@@ -511,14 +536,28 @@ namespace DocHandler.Services
                 }
                 else if (extension == ".doc" || extension == ".docx")
                 {
-                    _logger.Information("CONVERT: Word document detected, calling OptimizedOfficeService...");
-                    result = await _optimizedOfficeService.ConvertWordToPdf(inputPath, outputPath);
-                    _logger.Information("CONVERT: OptimizedOfficeService returned - Success: {Success}, Error: {Error}", 
-                        result.Success, result.ErrorMessage ?? "None");
+                    if (_sharedWordService != null)
+                    {
+                        _logger.Information("CONVERT: Word document detected, calling shared Word service...");
+                        result = await _sharedWordService.ConvertWordToPdf(inputPath, outputPath);
+                        _logger.Information("CONVERT: Shared Word service returned - Success: {Success}, Error: {Error}", 
+                            result.Success, result.ErrorMessage ?? "None");
+                    }
+                    else
+                    {
+                        result = new ConversionResult { Success = false, ErrorMessage = "Word service not available" };
+                    }
                 }
                 else if (extension == ".xls" || extension == ".xlsx")
                 {
-                    result = await _excelService.ConvertSpreadsheetToPdf(inputPath, outputPath);
+                    if (_sharedExcelService != null)
+                    {
+                        result = await _sharedExcelService.ConvertSpreadsheetToPdf(inputPath, outputPath);
+                    }
+                    else
+                    {
+                        result = new ConversionResult { Success = false, ErrorMessage = "Excel service not available" };
+                    }
                 }
                 else
                 {
@@ -581,11 +620,10 @@ namespace DocHandler.Services
 
             if (disposing)
             {
-                // Dispose managed resources
-                _optimizedOfficeService?.Dispose();
-                _excelService?.Dispose();
+                // Note: Shared services are disposed by their owner (MainViewModel)
+                // Don't dispose shared services here as they may be used by other components
                 // Note: PdfOperationsService doesn't implement IDisposable
-                _logger.Information("Optimized file processing service disposed");
+                _logger.Information("Optimized file processing service disposed (shared services not disposed)");
             }
             
             _disposed = true;

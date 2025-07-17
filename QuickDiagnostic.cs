@@ -16,6 +16,38 @@ namespace DocHandler
     {
         private static readonly ILogger _logger = Log.ForContext(typeof(QuickDiagnostic));
         
+        // Windows API imports for safe process ID retrieval
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindow(IntPtr hWnd);
+        
+        /// <summary>
+        /// Safely gets Word process ID using window handle approach
+        /// </summary>
+        private static int GetWordProcessIdSafely(dynamic wordApp)
+        {
+            try
+            {
+                // Try to get the window handle (Hwnd property)
+                IntPtr windowHandle = (IntPtr)wordApp.Hwnd;
+                
+                if (windowHandle != IntPtr.Zero && IsWindow(windowHandle))
+                {
+                    uint processId;
+                    GetWindowThreadProcessId(windowHandle, out processId);
+                    return (int)processId;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug("Could not get process ID using window handle: {Message}", ex.Message);
+            }
+            
+            return 0; // Return 0 if ProcessID cannot be determined
+        }
+        
         public static async Task<string> RunQueueDiagnosticAsync()
         {
             var results = new StringBuilder();
@@ -186,7 +218,16 @@ namespace DocHandler
                 var processManager = new ProcessManager();
                 var officeTracker = new OfficeInstanceTracker();
                 
-                var queueService = new SaveQuotesQueueService(configService, pdfCacheService, processManager, officeTracker);
+                // Create session services for testing
+                var sessionWordService = new SessionAwareOfficeService();
+                var sessionExcelService = new SessionAwareExcelService();
+                
+                // Create file processing service with shared session services
+                var fileProcessingService = new OptimizedFileProcessingService(
+                    configService, pdfCacheService, processManager, officeTracker, 
+                    sessionWordService, sessionExcelService);
+                
+                var queueService = new SaveQuotesQueueService(configService, pdfCacheService, processManager, fileProcessingService);
                 
                 // Test basic properties
                 bool isProcessing = queueService.IsProcessing;
@@ -277,7 +318,16 @@ namespace DocHandler
                 var processManager = new ProcessManager();
                 var officeTracker = new OfficeInstanceTracker();
                 
-                using var queueService = new SaveQuotesQueueService(configService, pdfCacheService, processManager, officeTracker);
+                // Create session services for testing
+                var sessionWordService = new SessionAwareOfficeService();
+                var sessionExcelService = new SessionAwareExcelService();
+                
+                // Create file processing service with shared session services
+                var fileProcessingService = new OptimizedFileProcessingService(
+                    configService, pdfCacheService, processManager, officeTracker, 
+                    sessionWordService, sessionExcelService);
+                
+                using var queueService = new SaveQuotesQueueService(configService, pdfCacheService, processManager, fileProcessingService);
                 
                 // Create a test PDF file (since PDFs don't require Office)
                 var testFilePath = Path.Combine(Path.GetTempPath(), "diagnostic_test.pdf");
@@ -583,12 +633,18 @@ namespace DocHandler
                             }
                             Log.Information("✓ Word application instance created");
                             
-                            // Test 4: Try basic COM method - ProcessID (most reliable)
+                            // Test 4: Try ProcessID access using safe window handle approach
                             try
                             {
-                                var processId = (int)wordApp.GetType().InvokeMember("ProcessID", 
-                                    System.Reflection.BindingFlags.GetProperty, null, wordApp, null);
-                                Log.Information("✓ Word ProcessID accessed: {ProcessId}", processId);
+                                var processId = GetWordProcessIdSafely(wordApp);
+                                if (processId > 0)
+                                {
+                                    Log.Information("✓ Word ProcessID accessed safely: {ProcessId}", processId);
+                                }
+                                else
+                                {
+                                    Log.Information("✓ Word application created (ProcessID not available in this version)");
+                                }
                             }
                             catch (Exception pidEx)
                             {

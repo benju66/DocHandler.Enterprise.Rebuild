@@ -16,6 +16,9 @@ namespace DocHandler.Services
             services.AddSingleton<TelemetryService>();
             services.AddSingleton<PdfCacheService>();
             
+            // CRITICAL: Single instance tracker for the entire application
+            services.AddSingleton<OfficeInstanceTracker>();
+            
             // Data Services (Singleton - shared data access)
             services.AddSingleton<ScopeOfWorkService>();
             services.AddSingleton<CompanyNameService>();

@@ -113,27 +113,8 @@ namespace DocHandler.ViewModels
                         StatusMessage = "Save Quotes Mode: Drop quote documents";
                         SessionSaveLocation = _configService.Config.DefaultSaveLocation;
                         
-                        // Pre-warm Office services in background if available
-                        if (_sessionOfficeService != null && _sessionExcelService != null)
-                        {
-                            _ = Task.Run(() =>
-                            {
-                                try
-                                {
-                                    _sessionOfficeService.WarmUp();
-                                    _sessionExcelService.WarmUp();
-                                    _logger.Information("Office services pre-warmed for Save Quotes Mode");
-                                }
-                                catch (Exception ex)
-                                {
-                                    _logger.Warning(ex, "Failed to pre-warm Office services");
-                                }
-                            });
-                        }
-                        else
-                        {
-                            _logger.Debug("Office services not available for pre-warming");
-                        }
+                        // Use centralized pre-warming strategy
+                        PreWarmOfficeServicesForSaveQuotes();
                     }
                     else
                     {
@@ -334,29 +315,8 @@ namespace DocHandler.ViewModels
                     _healthChecker = null;
                 }
                 
-                // Initialize office conversion service with timeout protection
-                try
-                {
-                    _officeConversionService = new OfficeConversionService(_configService, _processManager);
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warning(ex, "Failed to initialize OfficeConversionService - Office features will be limited");
-                    _officeConversionService = null;
-                }
-                
-                // Initialize file processing service with dependencies
-                try
-                {
-                    _fileProcessingService = new OptimizedFileProcessingService(_configService, _pdfCacheService, _processManager, _officeTracker);
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warning(ex, "Failed to initialize OptimizedFileProcessingService");
-                    _fileProcessingService = null;
-                }
-                
-                // Initialize session-aware services with timeout protection
+                // COORDINATED OFFICE SERVICES: Use only SessionAware services to reduce instance count
+                // Remove individual OfficeConversionService creation - use SessionAware services for all operations
                 try
                 {
                     var timeoutTask = Task.Delay(10000); // 10 second timeout
@@ -372,21 +332,35 @@ namespace DocHandler.ViewModels
                         var result = initTask.Result;
                         _sessionOfficeService = result.tempOfficeService;
                         _sessionExcelService = result.tempExcelService;
-                        _logger.Information("Session-aware Office services initialized successfully");
+                        _logger.Information("Shared SessionAware Office services initialized successfully");
                     }
                     else
                     {
                         // Initialize with null - will be initialized later when needed
                         _sessionOfficeService = null;
                         _sessionExcelService = null;
-                        _logger.Warning("Session-aware Office services initialization timed out, will initialize when needed");
+                        _logger.Warning("SessionAware Office services initialization timed out, will initialize when needed");
                     }
                 }
                 catch (Exception ex)
                 {
                     _sessionOfficeService = null;
                     _sessionExcelService = null;
-                    _logger.Warning(ex, "Failed to initialize session-aware Office services, will initialize when needed");
+                    _logger.Warning(ex, "Failed to initialize SessionAware Office services, will initialize when needed");
+                }
+                
+                // Initialize file processing service with shared session services
+                try
+                {
+                    _fileProcessingService = new OptimizedFileProcessingService(
+                        _configService, _pdfCacheService, _processManager, _officeTracker, 
+                        _sessionOfficeService, _sessionExcelService);
+                    _logger.Information("File processing service initialized with shared Office instances");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Failed to initialize OptimizedFileProcessingService");
+                    _fileProcessingService = null;
                 }
                 
                 // Set Office services for company name detection if they were initialized
@@ -403,10 +377,10 @@ namespace DocHandler.ViewModels
                     }
                 }
                 
-                // Initialize queue service with dependencies
+                // Initialize queue service with shared file processing service
                 try
                 {
-                    _queueService = new SaveQuotesQueueService(_configService, _pdfCacheService, _processManager, _officeTracker);
+                    _queueService = new SaveQuotesQueueService(_configService, _pdfCacheService, _processManager, _fileProcessingService);
                 }
                 catch (Exception ex)
                 {
@@ -892,6 +866,37 @@ namespace DocHandler.ViewModels
             catch (Exception ex)
             {
                 _logger.Warning(ex, "Error checking Office availability");
+            }
+        }
+        
+        /// <summary>
+        /// Centralized pre-warming strategy for Office services when Save Quotes Mode is enabled
+        /// </summary>
+        private void PreWarmOfficeServicesForSaveQuotes()
+        {
+            if (_sessionOfficeService != null && _sessionExcelService != null)
+            {
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        _logger.Information("Pre-warming shared Office services for Save Quotes Mode...");
+                        
+                        // Pre-warm both services using the shared instances
+                        _sessionOfficeService.WarmUp();
+                        _sessionExcelService.WarmUp();
+                        
+                        _logger.Information("✓ Shared Office services pre-warmed successfully");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Failed to pre-warm Office services");
+                    }
+                });
+            }
+            else
+            {
+                _logger.Debug("Office services not available for pre-warming - they will be initialized when first needed");
             }
         }
         

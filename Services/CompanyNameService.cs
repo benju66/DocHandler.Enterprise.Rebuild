@@ -1268,9 +1268,14 @@ namespace DocHandler.Services
                 
                 try
                 {
-                    // Use existing, trusted Office conversion service
-                    var officeService = new OfficeConversionService();
-                    var conversionResult = await officeService.ConvertWordToPdf(filePath, tempPdfPath).ConfigureAwait(false);
+                    // Use shared session Office service instead of creating new instance
+                    if (_sessionOfficeService == null)
+                    {
+                        _logger.Warning("Session Office service not available for Word to PDF conversion");
+                        return await ExtractTextFromWordBasic(filePath).ConfigureAwait(false);
+                    }
+                    
+                    var conversionResult = await _sessionOfficeService.ConvertWordToPdf(filePath, tempPdfPath).ConfigureAwait(false);
                     
                     if (!conversionResult.Success)
                     {
@@ -1649,9 +1654,14 @@ namespace DocHandler.Services
                 
                 try
                 {
-                    // Use existing, trusted Office conversion service
-                    var officeService = new OfficeConversionService();
-                    var conversionResult = await officeService.ConvertExcelToPdf(filePath, tempPdfPath).ConfigureAwait(false);
+                    // Use shared session Excel service instead of creating new instance
+                    if (_sessionExcelService == null)
+                    {
+                        _logger.Warning("Session Excel service not available for Excel to PDF conversion");
+                        return string.Empty;
+                    }
+                    
+                    var conversionResult = await _sessionExcelService.ConvertSpreadsheetToPdf(filePath, tempPdfPath).ConfigureAwait(false);
                     
                     if (!conversionResult.Success)
                     {

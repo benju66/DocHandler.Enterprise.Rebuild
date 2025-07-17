@@ -27,7 +27,6 @@ namespace DocHandler.Services
         private readonly ConfigurationService _configService;
         private readonly PdfCacheService _pdfCacheService;
         private readonly ProcessManager _processManager;
-        private readonly OfficeInstanceTracker? _officeTracker;
         private readonly StaThreadPool _staThreadPool; // Added STA thread pool for COM operations
         
         // Add private disposal tracking
@@ -53,13 +52,12 @@ namespace DocHandler.Services
         public event EventHandler? QueueEmpty;
         public event EventHandler<string>? StatusMessageChanged;
         
-        public SaveQuotesQueueService(ConfigurationService configService, PdfCacheService pdfCacheService, ProcessManager processManager, OfficeInstanceTracker? officeTracker = null)
+        public SaveQuotesQueueService(ConfigurationService configService, PdfCacheService pdfCacheService, ProcessManager processManager, OptimizedFileProcessingService sharedFileProcessingService)
         {
             _logger = Log.ForContext<SaveQuotesQueueService>();
             _configService = configService;
             _pdfCacheService = pdfCacheService;
             _processManager = processManager;
-            _officeTracker = officeTracker;
             
             // Initialize the queue
             _queue = new ConcurrentQueue<SaveQuoteItem>();
@@ -68,8 +66,8 @@ namespace DocHandler.Services
             // CRITICAL FIX: Initialize the CancellationTokenSource
             _cancellationTokenSource = new CancellationTokenSource();
             
-            // Initialize file processing service with all dependencies including office tracker
-            _fileProcessingService = new OptimizedFileProcessingService(_configService, _pdfCacheService, _processManager, _officeTracker);
+            // Use shared file processing service instead of creating new instance
+            _fileProcessingService = sharedFileProcessingService ?? throw new ArgumentNullException(nameof(sharedFileProcessingService));
             
             // Initialize STA thread pool for COM operations
             _staThreadPool = new StaThreadPool(1, "SaveQuotesQueue");
