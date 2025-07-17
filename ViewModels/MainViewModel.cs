@@ -44,9 +44,7 @@ namespace DocHandler.ViewModels
         private readonly PdfCacheService _pdfCacheService;
         private readonly ProcessManager _processManager;
         private readonly OfficeInstanceTracker _officeTracker;
-        private readonly TelemetryService _telemetryService;
-        private readonly SaveQuotesQueueService _queueService;
-        private readonly ApplicationHealthChecker _healthChecker;
+        private SaveQuotesQueueService? _queueService;
         private readonly object _conversionLock = new object();
         private readonly ConcurrentDictionary<string, byte> _tempFilesToCleanup = new();
         
@@ -293,27 +291,7 @@ namespace DocHandler.ViewModels
                 // Initialize scope service
                 _scopeOfWorkService = new ScopeOfWorkService();
                 
-                // Initialize telemetry service
-                try
-                {
-                    _telemetryService = new TelemetryService();
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warning(ex, "Failed to initialize TelemetryService - continuing without it");
-                    _telemetryService = null;
-                }
-                
-                // Initialize application health checker
-                try
-                {
-                    _healthChecker = new ApplicationHealthChecker();
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warning(ex, "Failed to initialize ApplicationHealthChecker - continuing without it");
-                    _healthChecker = null;
-                }
+
                 
                 // COORDINATED OFFICE SERVICES: Use only SessionAware services to reduce instance count
                 // Remove individual OfficeConversionService creation - use SessionAware services for all operations
@@ -377,16 +355,7 @@ namespace DocHandler.ViewModels
                     }
                 }
                 
-                // Initialize queue service with shared file processing service
-                try
-                {
-                    _queueService = new SaveQuotesQueueService(_configService, _pdfCacheService, _processManager, _fileProcessingService);
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error(ex, "Failed to initialize SaveQuotesQueueService");
-                    _queueService = null;
-                }
+                // Queue service will be initialized lazily when needed
                 
                 // Subscribe to events
                 SubscribeToEvents();
@@ -430,18 +399,7 @@ namespace DocHandler.ViewModels
         {
             try
             {
-                // Queue events - only subscribe if queue service is available
-                if (_queueService != null)
-                {
-                    _queueService.ProgressChanged += OnQueueProgressChanged;
-                    _queueService.ItemCompleted += OnQueueItemCompleted;
-                    _queueService.QueueEmpty += OnQueueEmpty;
-                    _queueService.StatusMessageChanged += OnQueueStatusMessageChanged;
-                }
-                else
-                {
-                    _logger.Warning("Queue service is null - queue events will not be available");
-                }
+                // Queue events will be subscribed when queue service is lazily initialized
                 
                 // Performance monitor events - only subscribe if available
                 if (_performanceMonitor != null)
@@ -898,6 +856,32 @@ namespace DocHandler.ViewModels
             {
                 _logger.Debug("Office services not available for pre-warming - they will be initialized when first needed");
             }
+        }
+        
+        private SaveQuotesQueueService GetOrCreateQueueService()
+        {
+            if (_queueService == null)
+            {
+                try
+                {
+                    _logger.Information("Initializing SaveQuotesQueueService on first use");
+                    _queueService = new SaveQuotesQueueService(_configService, _pdfCacheService, _processManager, _fileProcessingService);
+                    
+                    // Subscribe to queue events
+                    _queueService.ProgressChanged += OnQueueProgressChanged;
+                    _queueService.ItemCompleted += OnQueueItemCompleted;
+                    _queueService.QueueEmpty += OnQueueEmpty;
+                    _queueService.StatusMessageChanged += OnQueueStatusMessageChanged;
+                    
+                    _logger.Information("SaveQuotesQueueService initialized successfully");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Failed to initialize SaveQuotesQueueService");
+                    throw new InvalidOperationException("Queue service initialization failed. Save Quotes Mode requires the queue service to function.", ex);
+                }
+            }
+            return _queueService;
         }
         
         private void StartComObjectMonitoring()
@@ -2124,7 +2108,10 @@ namespace DocHandler.ViewModels
         {
             if (_queueWindow == null || !_queueWindow.IsLoaded)
             {
-                _queueWindow = new QueueDetailsWindow(_queueService, _configService)
+                // Ensure queue service is initialized before showing window
+                var queueService = GetOrCreateQueueService();
+                
+                _queueWindow = new QueueDetailsWindow(queueService, _configService)
                 {
                     Owner = Application.Current.MainWindow
                 };
@@ -2197,6 +2184,8 @@ namespace DocHandler.ViewModels
         {
             Application.Current.Dispatcher.Invoke(async () =>
             {
+                if (_queueService == null) return; // Safety check
+                
                 var totalCount = _queueService.TotalCount;
                 var failedCount = _queueService.FailedCount;
                 var successCount = totalCount - failedCount;
@@ -2323,14 +2312,19 @@ namespace DocHandler.ViewModels
         {
             try
             {
-                // Check if queue service is available
-                if (_queueService == null)
+                // Get or create queue service
+                SaveQuotesQueueService queueService;
+                try
+                {
+                    queueService = GetOrCreateQueueService();
+                }
+                catch (Exception ex)
                 {
                     await Application.Current.Dispatcher.InvokeAsync(() =>
                     {
-                        StatusMessage = "Queue service is not available";
+                        StatusMessage = "Queue service initialization failed";
                         MessageBox.Show(
-                            "The queue service could not be initialized. Save Quotes Mode requires the queue service to function.",
+                            $"The queue service could not be initialized:\n\n{ex.Message}",
                             "Service Unavailable",
                             MessageBoxButton.OK,
                             MessageBoxImage.Error);
@@ -2348,7 +2342,7 @@ namespace DocHandler.ViewModels
                 // Add to queue instead of processing directly
                 foreach (var file in pendingFilesList)
                 {
-                    _queueService.AddToQueue(file, selectedScope, companyName, outputDir);
+                    queueService.AddToQueue(file, selectedScope, companyName, outputDir);
                 }
                 
                 // Clear UI immediately on UI thread
@@ -2362,13 +2356,13 @@ namespace DocHandler.ViewModels
                 });
                 
                 // Start processing if not already running
-                if (!_queueService.IsProcessing)
+                if (!queueService.IsProcessing)
                 {
                     _ = Task.Run(async () =>
                     {
                         try
                         {
-                            await _queueService.StartProcessingAsync();
+                            await queueService.StartProcessingAsync();
                         }
                         catch (Exception ex)
                         {
