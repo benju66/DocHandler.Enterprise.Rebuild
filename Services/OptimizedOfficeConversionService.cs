@@ -6,6 +6,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -30,6 +31,13 @@ namespace DocHandler.Services
         private readonly ProcessManager? _processManager;
         private readonly StaThreadPool _staThreadPool;
         private readonly OfficeInstanceTracker? _officeTracker;
+
+        // Windows API imports for safe process ID retrieval
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindow(IntPtr hWnd);
         
         public OptimizedOfficeConversionService(int maxInstances = 0, ConfigurationService? configService = null, ProcessManager? processManager = null, OfficeInstanceTracker? officeTracker = null)
         {
@@ -74,6 +82,171 @@ namespace DocHandler.Services
             }
             
             return true;
+        }
+
+        /// <summary>
+        /// Safely gets Word process ID using window handle approach instead of ProcessID property
+        /// </summary>
+        private int GetWordProcessIdSafely(dynamic wordApp)
+        {
+            try
+            {
+                IntPtr hwnd = IntPtr.Zero;
+                
+                // Method 1: Try to get application window handle (Word 2010+)
+                try
+                {
+                    hwnd = new IntPtr((int)wordApp.Hwnd);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Debug("Could not get Hwnd property: {Message}", ex.Message);
+                    
+                    // Method 2: Try ActiveWindow.Hwnd (if document is open)
+                    try
+                    {
+                        if (wordApp.ActiveWindow != null)
+                        {
+                            hwnd = new IntPtr((int)wordApp.ActiveWindow.Hwnd);
+                        }
+                    }
+                    catch (Exception ex2)
+                    {
+                        _logger.Debug("Could not get ActiveWindow.Hwnd: {Message}", ex2.Message);
+                    }
+                }
+                
+                // If we got a valid window handle, get the process ID
+                if (hwnd != IntPtr.Zero && IsWindow(hwnd))
+                {
+                    uint processId;
+                    if (GetWindowThreadProcessId(hwnd, out processId) != 0)
+                    {
+                        _logger.Debug("Successfully retrieved process ID {ProcessId} via window handle", processId);
+                        return (int)processId;
+                    }
+                }
+                
+                _logger.Debug("Could not retrieve process ID - window handle method failed");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug("Error getting Word process ID safely: {Message}", ex.Message);
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Safely sets Word application properties with DISP_E_UNKNOWNNAME error handling
+        /// </summary>
+        private bool SafeSetProperty(dynamic obj, string propertyName, object value)
+        {
+            try
+            {
+                obj.GetType().InvokeMember(propertyName, 
+                    System.Reflection.BindingFlags.SetProperty, null, obj, new[] { value });
+                return true;
+            }
+            catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
+            {
+                _logger.Debug("Property {Property} not found (DISP_E_UNKNOWNNAME) - version compatibility issue", propertyName);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug("Failed to set property {Property}: {Message}", propertyName, ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Safely opens a Word document with fallback parameter sets for version compatibility
+        /// </summary>
+        private dynamic OpenDocumentSafely(dynamic wordApp, string filePath)
+        {
+            try
+            {
+                // Try with full parameters first (Word 2010+)
+                return wordApp.Documents.Open(
+                    filePath,
+                    ReadOnly: true,
+                    AddToRecentFiles: false,
+                    Repair: false,
+                    ShowRepairs: false,
+                    OpenAndRepair: false,
+                    NoEncodingDialog: true,
+                    Revert: false
+                );
+            }
+            catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
+            {
+                _logger.Debug("Extended Open parameters not supported, using basic Open");
+                // Fallback to basic Open (Word 2007+)
+                return wordApp.Documents.Open(filePath, ReadOnly: true);
+            }
+        }
+
+        /// <summary>
+        /// Safely saves document as PDF with fallback methods for version compatibility
+        /// </summary>
+        private bool SaveAsPdfSafely(dynamic doc, string outputPath)
+        {
+            try
+            {
+                // Try SaveAs2 with full parameters (Word 2010+)
+                doc.SaveAs2(
+                    outputPath,
+                    FileFormat: 17, // wdFormatPDF
+                    EmbedTrueTypeFonts: false,
+                    SaveNativePictureFormat: false,
+                    SaveFormsData: false,
+                    CompressLevel: 0,
+                    UseDocumentImageQuality: false,
+                    IncludeDocProps: false,
+                    KeepIRM: false,
+                    CreateBookmarks: false,
+                    DocStructureTags: false,
+                    BitmapMissingFonts: false
+                );
+                _logger.Debug("Document saved with extended SaveAs2 parameters");
+                return true;
+            }
+            catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
+            {
+                _logger.Debug("SaveAs2 with extended parameters not available, trying basic SaveAs2");
+                try
+                {
+                    // Fallback to basic SaveAs2
+                    doc.SaveAs2(outputPath, FileFormat: 17);
+                    _logger.Debug("Document saved with basic SaveAs2");
+                    return true;
+                }
+                catch (COMException ex2) when (ex2.HResult == unchecked((int)0x80020006))
+                {
+                    _logger.Debug("SaveAs2 not available, trying SaveAs");
+                    // Final fallback to SaveAs (Word 2007)
+                    doc.SaveAs(outputPath, FileFormat: 17);
+                    _logger.Debug("Document saved with legacy SaveAs");
+                    return true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Gets a user-friendly error message for COM exceptions
+        /// </summary>
+        private string GetCOMErrorMessage(COMException ex)
+        {
+            return ex.HResult switch
+            {
+                unchecked((int)0x80020006) => "Property or method not found (DISP_E_UNKNOWNNAME) - Word version incompatibility",
+                unchecked((int)0x800A11FD) => "Document window is not active",
+                -2147221164 => "COM threading error (RPC_E_CANTCALLOUT_ININPUTSYNCCALL)",
+                unchecked((int)0x80010108) => "COM object has been disconnected from its underlying RPC server",
+                unchecked((int)0x800706BE) => "Remote procedure call failed",
+                _ => $"COM error: {ex.Message} (HResult: {ex.HResult:X8})"
+            };
         }
 
         private int DetermineOptimalInstanceCount()
@@ -157,12 +330,25 @@ namespace DocHandler.Services
                     ComHelper.TrackComObjectCreation("WordApp", "CreateOptimizedWordApplication");
                     _logger.Information("Word Application COM object created successfully");
                     
-                    // Get process ID for tracking
-                    var processId = (int)wordApp.GetType().InvokeMember("ProcessID", 
-                        System.Reflection.BindingFlags.GetProperty, null, wordApp, null);
+                    // ProcessID tracking is optional - if we can't get it, we continue without it
+                    int processId = 0;
+                    try
+                    {
+                        // Some Word versions don't expose ProcessID through COM
+                        processId = GetWordProcessIdSafely(wordApp);
+                        _logger.Information("Word ProcessID accessed: {ProcessId}", processId);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Debug("ProcessID not available (expected on some Word versions): {Message}", ex.Message);
+                        // Continue without process tracking - not critical
+                    }
                     
-                    // Register with office tracker to prevent closing user instances
-                    _officeTracker?.RegisterAppCreatedWordProcess(processId);
+                    // Only register if we got a valid ProcessID
+                    if (processId > 0 && _officeTracker != null)
+                    {
+                        _officeTracker.RegisterAppCreatedWordProcess(processId);
+                    }
                     
                     // Apply optimizations
                     ApplyWordOptimizations(wordApp);
@@ -171,13 +357,13 @@ namespace DocHandler.Services
                     var instance = new WordAppInstance
                     {
                         Application = wordApp,
-                        ProcessId = processId,
+                        ProcessId = processId, // Will be 0 if not available
                         CreatedAt = DateTime.UtcNow,
                         LastUsed = DateTime.UtcNow,
                         IsHealthy = true
                     };
 
-                    _logger.Information("Created optimized Word application with PID {ProcessId}", processId);
+                    _logger.Information("Created optimized Word application");
                     return instance;
                 }
                 catch (Exception ex)
@@ -190,30 +376,29 @@ namespace DocHandler.Services
 
         private void ApplyWordOptimizations(dynamic wordApp)
         {
-            // Critical performance optimizations
-            wordApp.Visible = false;
-            wordApp.DisplayAlerts = 0; // wdAlertsNone
-            wordApp.ScreenUpdating = false; // Major performance boost
-            wordApp.EnableEvents = false; // Disable events for performance
-            wordApp.DisplayRecentFiles = false;
-            wordApp.DisplayScrollBars = false;
-            wordApp.DisplayStatusBar = false;
+            // Critical performance optimizations - these should work on all versions
+            SafeSetProperty(wordApp, "Visible", false);
+            SafeSetProperty(wordApp, "DisplayAlerts", 0); // wdAlertsNone
+            SafeSetProperty(wordApp, "ScreenUpdating", false); // Major performance boost
+            SafeSetProperty(wordApp, "EnableEvents", false); // Disable events for performance
+            SafeSetProperty(wordApp, "DisplayRecentFiles", false);
+            SafeSetProperty(wordApp, "DisplayScrollBars", false);
+            SafeSetProperty(wordApp, "DisplayStatusBar", false);
             
-            // CONSERVATIVE: Only essential performance optimizations
+            // CONSERVATIVE: Only essential performance optimizations with error handling
             try
             {
-                wordApp.Options.CheckGrammarAsYouType = false;
-                wordApp.Options.CheckSpellingAsYouType = false;
-                wordApp.Options.BackgroundSave = false;
-                wordApp.Options.SaveInterval = 0; // Disable auto-save
-                
-                // Removed potentially unstable options:
-                // - PaginationView, WPHelp, AnimateScreenMovements (UI-related)
-                // - SuggestSpellingCorrections (can cause dialog issues)
+                if (wordApp.Options != null)
+                {
+                    SafeSetProperty(wordApp.Options, "CheckGrammarAsYouType", false);
+                    SafeSetProperty(wordApp.Options, "CheckSpellingAsYouType", false);
+                    SafeSetProperty(wordApp.Options, "BackgroundSave", false);
+                    SafeSetProperty(wordApp.Options, "SaveInterval", 0); // Disable auto-save
+                }
             }
             catch (Exception optEx)
             {
-                _logger.Warning(optEx, "Failed to set some Word optimization options");
+                _logger.Debug("Some Word Options properties not available: {Message}", optEx.Message);
             }
         }
 
@@ -306,6 +491,207 @@ namespace DocHandler.Services
                 };
             }
 
+            // Always use synchronous conversion when on STA thread (queue processing)
+            // This avoids the nested STA thread pool issue
+            if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
+            {
+                _logger.Debug("On STA thread, using direct synchronous conversion (avoiding nested thread pools)");
+                return ConvertWordToPdfSync(inputPath, outputPath);
+            }
+
+            // Only use the pooled approach for non-STA thread calls (rare case)
+            _logger.Debug("On non-STA thread, using pooled conversion approach");
+            return await ConvertWordToPdfWithPooling(inputPath, outputPath);
+        }
+
+        /// <summary>
+        /// Synchronous Word to PDF conversion for use when already on STA thread
+        /// </summary>
+        private ConversionResult ConvertWordToPdfSync(string inputPath, string outputPath)
+        {
+            var result = new ConversionResult();
+            dynamic? wordApp = null;
+            dynamic? doc = null;
+            var stopwatch = Stopwatch.StartNew();
+
+            try
+            {
+                _logger.Information("Converting Word to PDF (sync): {InputPath} -> {OutputPath}", inputPath, outputPath);
+                
+                // Verify STA thread state
+                var apartmentState = Thread.CurrentThread.GetApartmentState();
+                _logger.Debug("ConvertWordToPdfSync: Running on {ApartmentState} thread {ThreadId}", 
+                    apartmentState, Thread.CurrentThread.ManagedThreadId);
+                
+                if (apartmentState != ApartmentState.STA)
+                {
+                    return new ConversionResult
+                    {
+                        Success = false,
+                        ErrorMessage = $"Thread must be STA for COM operations. Current state: {apartmentState}"
+                    };
+                }
+                
+                // Create Word application directly on current STA thread
+                Type? wordType = Type.GetTypeFromProgID("Word.Application");
+                if (wordType == null)
+                {
+                    _logger.Error("ConvertWordToPdfSync: Word.Application ProgID not found");
+                    return new ConversionResult
+                    {
+                        Success = false,
+                        ErrorMessage = "Microsoft Word is not installed or accessible - ProgID not found."
+                    };
+                }
+
+                _logger.Debug("ConvertWordToPdfSync: Creating Word application instance");
+                
+                try
+                {
+                    wordApp = Activator.CreateInstance(wordType);
+                }
+                catch (COMException comEx)
+                {
+                    _logger.Error(comEx, "ConvertWordToPdfSync: COM exception creating Word application - HResult={HResult}", comEx.HResult);
+                    return new ConversionResult
+                    {
+                        Success = false,
+                        ErrorMessage = $"COM error creating Word application: {comEx.Message} (HResult: {comEx.HResult:X8})"
+                    };
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "ConvertWordToPdfSync: Exception creating Word application");
+                    return new ConversionResult
+                    {
+                        Success = false,
+                        ErrorMessage = $"Error creating Word application: {ex.Message}"
+                    };
+                }
+                
+                if (wordApp == null)
+                {
+                    _logger.Error("ConvertWordToPdfSync: Word application creation returned null");
+                    return new ConversionResult
+                    {
+                        Success = false,
+                        ErrorMessage = "Failed to create Word application instance - Activator returned null."
+                    };
+                }
+                
+                ComHelper.TrackComObjectCreation("WordApp", "OptimizedSyncConversion");
+                _logger.Debug("ConvertWordToPdfSync: Word application created successfully");
+                
+                // Configure Word for optimal conversion performance
+                try
+                {
+                    wordApp.Visible = false;
+                    wordApp.DisplayAlerts = 0; // wdAlertsNone
+                    wordApp.ScreenUpdating = false;
+                    _logger.Debug("ConvertWordToPdfSync: Word application configured for conversion");
+                }
+                catch (Exception configEx)
+                {
+                    _logger.Warning(configEx, "ConvertWordToPdfSync: Failed to configure Word application - continuing anyway");
+                }
+
+                // Handle network paths by copying locally if needed
+                var workingInputPath = inputPath;
+                string? tempFilePath = null;
+                
+                if (IsNetworkPath(inputPath))
+                {
+                    tempFilePath = Path.Combine(Path.GetTempPath(), $"DocHandler_{Guid.NewGuid()}.docx");
+                    File.Copy(inputPath, tempFilePath, true);
+                    workingInputPath = tempFilePath;
+                    _logger.Debug("Network path detected, using local copy: {TempPath}", tempFilePath);
+                }
+
+                try
+                {
+                    // Open document with performance-optimized settings
+                    doc = OpenDocumentSafely(wordApp, workingInputPath);
+                    ComHelper.TrackComObjectCreation("Document", "OptimizedSyncConversion");
+
+                    // Convert to PDF with optimized settings for speed
+                    if (SaveAsPdfSafely(doc, outputPath))
+                    {
+                        result.Success = true;
+                        result.OutputPath = outputPath;
+                        
+                        stopwatch.Stop();
+                        _logger.Information("Successfully converted Word to PDF in {ElapsedMs}ms (sync)", stopwatch.ElapsedMilliseconds);
+                    }
+                    else
+                    {
+                        _logger.Error("Failed to save document as PDF (sync)");
+                        result.Success = false;
+                        result.ErrorMessage = "Failed to save document as PDF.";
+                    }
+                }
+                finally
+                {
+                    // Clean up temporary file
+                    if (tempFilePath != null && File.Exists(tempFilePath))
+                    {
+                        try { File.Delete(tempFilePath); } catch { }
+                    }
+                }
+            }
+            catch (System.Runtime.InteropServices.COMException comEx)
+            {
+                _logger.Error(comEx, "COM error during synchronous conversion: {HResult}", comEx.HResult);
+                result.Success = false;
+                result.ErrorMessage = GetCOMErrorMessage(comEx);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to convert Word document (sync): {Path}", inputPath);
+                result.Success = false;
+                result.ErrorMessage = $"Conversion failed: {ex.Message}";
+            }
+            finally
+            {
+                // Clean up document
+                if (doc != null)
+                {
+                    try
+                    {
+                        doc.Close(SaveChanges: false);
+                        ComHelper.SafeReleaseComObject(doc, "Document", "OptimizedSyncConversion");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Error closing Word document (sync)");
+                    }
+                }
+
+                // Clean up Word application
+                if (wordApp != null)
+                {
+                    try
+                    {
+                        wordApp.Quit(SaveChanges: false);
+                        ComHelper.SafeReleaseComObject(wordApp, "WordApp", "OptimizedSyncConversion");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Error closing Word application (sync)");
+                    }
+                }
+
+                // Force COM cleanup
+                ComHelper.ForceComCleanup("OptimizedSyncConversion");
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Pooled conversion approach for non-STA thread calls
+        /// </summary>
+        private async Task<ConversionResult> ConvertWordToPdfWithPooling(string inputPath, string outputPath)
+        {
             await _poolSemaphore.WaitAsync();
             WordAppInstance? wordInstance = null;
             
@@ -386,28 +772,73 @@ namespace DocHandler.Services
         {
             try
             {
-                // Check if process is still running
-                if (!IsProcessRunning(instance.ProcessId))
+                // Check process if we have a valid ProcessId
+                if (instance.ProcessId > 0 && !IsProcessRunning(instance.ProcessId))
                 {
                     instance.IsHealthy = false;
                     return false;
                 }
 
-                // Simple health check - try to access Word application properties
-                var isHealthy = await _staThreadPool.ExecuteAsync(async () =>
+                // Comprehensive health check - try multiple properties to verify Word is responsive
+                var isHealthy = await _staThreadPool.ExecuteAsync(() =>
                 {
                     ValidateSTAThread("WordInstanceHealthCheck");
                     
-                    var _ = instance.Application.Version;
-                    var documentCount = instance.Application.Documents.Count;
-                    return true;
+                    try
+                    {
+                        // Check 1: Can access application object
+                        if (instance.Application == null)
+                            return false;
+                        
+                        // Check 2: Try to access Documents collection
+                        var docCount = instance.Application.Documents.Count;
+                        
+                        // Check 3: Try to access Version (basic property that should always work)
+                        try
+                        {
+                            var version = instance.Application.Version;
+                        }
+                        catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
+                        {
+                            // Version property not available - but that's okay, continue
+                            _logger.Debug("Version property not available during health check");
+                        }
+                        
+                        // Check 4: Verify application is responding (not in a hung state)
+                        try
+                        {
+                            var visible = instance.Application.Visible;
+                        }
+                        catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
+                        {
+                            // Visible property not available - but that's okay, continue
+                            _logger.Debug("Visible property not available during health check");
+                        }
+                        
+                        return true;
+                    }
+                    catch (COMException comEx)
+                    {
+                        _logger.Debug("Word instance COM health check failed: {Message}", GetCOMErrorMessage(comEx));
+                        return false;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Debug("Word instance health check failed: {Message}", ex.Message);
+                        return false;
+                    }
                 });
+
+                if (!isHealthy)
+                {
+                    instance.IsHealthy = false;
+                }
 
                 return isHealthy;
             }
             catch (Exception ex)
             {
-                _logger.Warning(ex, "Word instance health check failed for PID {ProcessId}", instance.ProcessId);
+                _logger.Warning(ex, "Word instance health check failed");
                 instance.IsHealthy = false;
                 return false;
             }
@@ -435,9 +866,14 @@ namespace DocHandler.Services
             
             try
             {
-                // SIMPLIFIED: We're already on STA thread from queue processing
-                if (!ValidateSTAThread("ConvertWordToPdfWithInstance"))
+                // Log current thread state for debugging, but don't fail if already on STA thread
+                var apartmentState = Thread.CurrentThread.GetApartmentState();
+                _logger.Debug("ConvertWordToPdfWithInstance: Thread {ThreadId} apartment state is {ApartmentState}", 
+                    Thread.CurrentThread.ManagedThreadId, apartmentState);
+                
+                if (apartmentState != ApartmentState.STA)
                 {
+                    _logger.Error("ConvertWordToPdfWithInstance: Thread is not STA - COM operations will fail");
                     return new ConversionResult
                     {
                         Success = false,
@@ -466,40 +902,25 @@ namespace DocHandler.Services
                     try
                     {
                         // Open document with performance-optimized settings
-                        doc = wordInstance.Application.Documents.Open(
-                            workingInputPath,
-                            ReadOnly: true,
-                            AddToRecentFiles: false,
-                            Repair: false,
-                            ShowRepairs: false,
-                            OpenAndRepair: false,
-                            NoEncodingDialog: true,
-                            Revert: false
-                        );
+                        doc = OpenDocumentSafely(wordInstance.Application, workingInputPath);
                         ComHelper.TrackComObjectCreation("Document", "OptimizedConversion");
 
                         // Convert to PDF with optimized settings for speed
-                        doc.SaveAs2(
-                            outputPath,
-                            FileFormat: 17, // wdFormatPDF
-                            EmbedTrueTypeFonts: false, // Faster
-                            SaveNativePictureFormat: false, // Faster
-                            SaveFormsData: false, // Faster
-                            CompressLevel: 0, // Fastest compression
-                            UseDocumentImageQuality: false, // Faster
-                            IncludeDocProps: false, // Faster
-                            KeepIRM: false, // Faster
-                            CreateBookmarks: false, // Faster
-                            DocStructureTags: false, // Faster
-                            BitmapMissingFonts: false // Faster
-                        );
-
-                        result.Success = true;
-                        result.OutputPath = outputPath;
-                        
-                        stopwatch.Stop();
-                        _logger.Information("Converted {File} in {ElapsedMs}ms using PID {ProcessId}", 
-                            Path.GetFileName(inputPath), stopwatch.ElapsedMilliseconds, wordInstance.ProcessId);
+                        if (SaveAsPdfSafely(doc, outputPath))
+                        {
+                            result.Success = true;
+                            result.OutputPath = outputPath;
+                            
+                            stopwatch.Stop();
+                            _logger.Information("Converted {File} in {ElapsedMs}ms", 
+                                Path.GetFileName(inputPath), stopwatch.ElapsedMilliseconds);
+                        }
+                        else
+                        {
+                            _logger.Error("Failed to save document as PDF (pooled)");
+                            result.Success = false;
+                            result.ErrorMessage = "Failed to save document as PDF.";
+                        }
                     }
                     finally
                     {
@@ -529,7 +950,7 @@ namespace DocHandler.Services
                     }
                     else
                     {
-                        result.ErrorMessage = $"COM error: {comEx.Message}";
+                        result.ErrorMessage = GetCOMErrorMessage(comEx);
                     }
                     
                     result.Success = false;
@@ -620,7 +1041,7 @@ namespace DocHandler.Services
                     }
                     else
                     {
-                        _logger.Information("Disposing unhealthy Word instance PID {ProcessId}", instance.ProcessId);
+                        _logger.Information("Disposing unhealthy Word instance");
                         _ = DisposeWordInstance(instance);
                     }
                 }
@@ -657,8 +1078,11 @@ namespace DocHandler.Services
             {
                 if (instance.Application != null)
                 {
-                    // Unregister from office tracker first
-                    _officeTracker?.UnregisterAppCreatedWordProcess(instance.ProcessId);
+                    // Only unregister if we have a valid ProcessId
+                    if (instance.ProcessId > 0 && _officeTracker != null)
+                    {
+                        _officeTracker.UnregisterAppCreatedWordProcess(instance.ProcessId);
+                    }
                     
                     await _staThreadPool.ExecuteAsync(async () =>
                     {
@@ -684,7 +1108,7 @@ namespace DocHandler.Services
                             instance.Application.Quit();
                             ComHelper.SafeReleaseComObject(instance.Application, "WordApp", "DisposeWordInstance");
                             
-                            _logger.Information("Disposed Word application PID {ProcessId}", instance.ProcessId);
+                            _logger.Information("Disposed Word application");
                         }
                         catch (Exception ex)
                         {
@@ -695,7 +1119,7 @@ namespace DocHandler.Services
             }
             catch (Exception ex)
             {
-                _logger.Warning(ex, "Failed to dispose Word instance PID {ProcessId}", instance.ProcessId);
+                _logger.Warning(ex, "Failed to dispose Word instance");
             }
         }
 

@@ -1874,7 +1874,7 @@ namespace DocHandler.ViewModels
                 
                 var diagnosticResult = await Task.Run(async () => 
                 {
-                    return await QuickDiagnostic.TestQueueProcessing();
+                    return await QuickDiagnostic.RunQueueDiagnosticAsync();
                 });
                 
                 // Show results in a message box

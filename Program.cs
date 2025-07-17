@@ -1,6 +1,8 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using DocHandler.Services;
@@ -11,7 +13,16 @@ namespace DocHandler
     public class Program
     {
         [STAThread]
-        public static void Main()
+        public static void Main(string[] args)
+        {
+            // Ensure STA thread for WPF - critical for COM operations
+            Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
+            
+            // Run async main method synchronously to preserve STA context
+            MainAsync(args).GetAwaiter().GetResult();
+        }
+
+        private static async Task MainAsync(string[] args)
         {
             Console.WriteLine("DocHandler Enterprise starting...");
             
@@ -34,6 +45,48 @@ namespace DocHandler
                 Log.Information("DocHandler Enterprise starting...");
                 Console.WriteLine("Logger initialized successfully");
                 
+                // Check for command line arguments
+                if (args.Contains("--diagnostic"))
+                {
+                    Console.WriteLine("Running diagnostic mode...");
+                    Log.Information("Running diagnostic mode from command line");
+                    
+                    try
+                    {
+                        Console.WriteLine("Starting queue diagnostic...");
+                        var diagnosticResult = await QuickDiagnostic.RunQueueDiagnosticAsync();
+                        
+                        Console.WriteLine("\n" + diagnosticResult);
+                        
+                        Console.WriteLine("\nDiagnostic completed.");
+                        
+                        // Try to wait for key, but don't fail if console is redirected
+                        try
+                        {
+                            if (Console.IsInputRedirected == false && Console.KeyAvailable == false)
+                            {
+                                Console.WriteLine("Press any key to exit...");
+                                Console.ReadKey();
+                            }
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            // Console is redirected, just wait a moment
+                            await Task.Delay(1000);
+                        }
+                        
+                        return;
+                    }
+                    catch (Exception diagEx)
+                    {
+                        Console.WriteLine($"Diagnostic failed: {diagEx.Message}");
+                        Console.WriteLine($"Stack trace: {diagEx.StackTrace}");
+                        Log.Error(diagEx, "Diagnostic execution failed");
+                        Environment.Exit(1);
+                        return;
+                    }
+                }
+                
                 // Ensure single instance (optional)
                 var mutex = new Mutex(true, "DocHandlerEnterprise", out bool createdNew);
                 
@@ -52,6 +105,15 @@ namespace DocHandler
 
                 try
                 {
+                    // Verify we're still on STA thread after async operations
+                    if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
+                    {
+                        Log.Error("Thread is not STA after async operations - this should not happen");
+                        throw new InvalidOperationException("Main thread lost STA state during async operations");
+                    }
+                    
+                    Console.WriteLine($"Thread apartment state verified: {Thread.CurrentThread.GetApartmentState()}");
+                    
                     // Create dependency injection container
                     Console.WriteLine("Creating service collection...");
                     var services = new ServiceCollection();

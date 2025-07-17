@@ -22,12 +22,95 @@ namespace DocHandler.Services
         private DateTime _lastHealthCheck = DateTime.Now;
         private readonly TimeSpan _healthCheckInterval = TimeSpan.FromMinutes(5);
         private readonly ConversionCircuitBreaker _circuitBreaker;
+
+        // Windows API imports for safe process ID retrieval
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindow(IntPtr hWnd);
         
         public SessionAwareOfficeService()
         {
             _logger = Log.ForContext<SessionAwareOfficeService>();
             _circuitBreaker = new ConversionCircuitBreaker();
             _logger.Information("Initializing session-aware Office service with circuit breaker protection");
+        }
+
+        /// <summary>
+        /// Safely gets Word process ID using window handle approach instead of ProcessID property
+        /// </summary>
+        private int GetWordProcessIdSafely(dynamic wordApp)
+        {
+            try
+            {
+                IntPtr hwnd = IntPtr.Zero;
+                
+                // Method 1: Try to get application window handle (Word 2010+)
+                try
+                {
+                    hwnd = new IntPtr((int)wordApp.Hwnd);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Debug("Could not get Hwnd property: {Message}", ex.Message);
+                    
+                    // Method 2: Try ActiveWindow.Hwnd (if document is open)
+                    try
+                    {
+                        if (wordApp.ActiveWindow != null)
+                        {
+                            hwnd = new IntPtr((int)wordApp.ActiveWindow.Hwnd);
+                        }
+                    }
+                    catch (Exception ex2)
+                    {
+                        _logger.Debug("Could not get ActiveWindow.Hwnd: {Message}", ex2.Message);
+                    }
+                }
+                
+                // If we got a valid window handle, get the process ID
+                if (hwnd != IntPtr.Zero && IsWindow(hwnd))
+                {
+                    uint processId;
+                    if (GetWindowThreadProcessId(hwnd, out processId) != 0)
+                    {
+                        _logger.Debug("Successfully retrieved process ID {ProcessId} via window handle", processId);
+                        return (int)processId;
+                    }
+                }
+                
+                _logger.Debug("Could not retrieve process ID - window handle method failed");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug("Error getting Word process ID safely: {Message}", ex.Message);
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Safely sets Word application properties with DISP_E_UNKNOWNNAME error handling
+        /// </summary>
+        private bool SafeSetProperty(dynamic obj, string propertyName, object value)
+        {
+            try
+            {
+                obj.GetType().InvokeMember(propertyName, 
+                    System.Reflection.BindingFlags.SetProperty, null, obj, new[] { value });
+                return true;
+            }
+            catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
+            {
+                _logger.Debug("Property {Property} not found (DISP_E_UNKNOWNNAME) - version compatibility issue", propertyName);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug("Failed to set property {Property}: {Message}", propertyName, ex.Message);
+                return false;
+            }
         }
         
         private bool IsOfficeAvailable()
@@ -72,81 +155,28 @@ namespace DocHandler.Services
                         
                         _wordApp = Activator.CreateInstance(wordType);
                         
-                        // Make Word invisible and optimize for speed
-                        _wordApp.Visible = false;
-                        _wordApp.DisplayAlerts = 0; // wdAlertsNone
+                        // Apply optimizations safely
+                        ApplyWordOptimizations(_wordApp);
                         
-                        // SAFE: Only set properties that don't require active documents
+                        // Get process ID safely for tracking
                         try
                         {
-                            _wordApp.ScreenUpdating = false;
+                            var processId = GetWordProcessIdSafely(_wordApp);
+                            if (processId > 0)
+                            {
+                                _logger.Information("Word application created with process ID: {ProcessId}", processId);
+                            }
                         }
-                        catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x800A11FD))
+                        catch (Exception ex)
                         {
-                            // Ignore "document window is not active" error during pre-warm
-                            _logger.Debug("Skipping ScreenUpdating property - no active document during pre-warm");
+                            _logger.Debug("Could not get process ID: {Message}", ex.Message);
                         }
                         
-                        try
-                        {
-                            _wordApp.DisplayRecentFiles = false;
-                            _wordApp.DisplayScrollBars = false;
-                            _wordApp.DisplayStatusBar = false;
-                        }
-                        catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x800A11FD))
-                        {
-                            // Ignore properties that require active document
-                            _logger.Debug("Skipping UI properties - no active document during pre-warm");
-                        }
-                        
-                        // SAFE: Window state can be set without active document
-                        try
-                        {
-                            // Minimize window to prevent any flashing
-                            _wordApp.WindowState = -2; // wdWindowStateMinimize
-                        }
-                        catch (System.Runtime.InteropServices.COMException)
-                        {
-                            // Ignore if window state cannot be set
-                            _logger.Debug("Could not set WindowState during pre-warm");
-                        }
-                        
-                        // Set last health check time
                         _lastHealthCheck = DateTime.Now;
+                        _logger.Information("Word application initialized for session");
                         
-                        // REDUCED: Only essential optimization settings to prevent instability
-                        try
-                        {
-                            // Critical performance optimizations (safe)
-                            _wordApp.Options.CheckGrammarAsYouType = false;
-                            _wordApp.Options.CheckSpellingAsYouType = false;
-                            _wordApp.Options.BackgroundSave = false;
-                            _wordApp.Options.SaveInterval = 0; // Disable auto-save
-                            
-                            // Removed potentially unstable options:
-                            // - EnableAutoRecovery, AllowFastSave, CreateBackup (can cause file locks)
-                            // - UpdateLinksAtOpen (can cause hanging on network resources)
-                            // - AnimateScreenMovements, PaginationView (UI-related, can cause issues)
-                            // - SavePropertiesPrompt, WPHelp (dialog-related, can cause hangs)
-                        }
-                        catch (Exception optEx)
-                        {
-                            _logger.Warning(optEx, "Some Word optimization options could not be set");
-                        }
-                        
-                        // Get process ID for monitoring
-                        try
-                        {
-                            var processId = (int)_wordApp.GetType().InvokeMember("ProcessID", 
-                                System.Reflection.BindingFlags.GetProperty, null, _wordApp, null);
-                            _logger.Information("Word application created with PID: {ProcessId}", processId);
-                        }
-                        catch { }
-                        
-                        // Start idle cleanup timer
-                        _idleTimer = new Timer(CheckIdleTimeout, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
-                        
-                        _logger.Information("Word application created and optimized for session");
+                        // Set up idle timer
+                        _idleTimer = new Timer(CheckIdleTimeout, null, _idleTimeout, _idleTimeout);
                     }
                     catch (Exception ex)
                     {
@@ -158,7 +188,121 @@ namespace DocHandler.Services
                 return _wordApp;
             }
         }
+
+        private void ApplyWordOptimizations(dynamic wordApp)
+        {
+            // Core optimizations that should work on all versions
+            SafeSetProperty(wordApp, "Visible", false);
+            SafeSetProperty(wordApp, "DisplayAlerts", 0); // wdAlertsNone
+            
+            // SAFE: Only set properties that don't require active documents
+            try
+            {
+                SafeSetProperty(wordApp, "ScreenUpdating", false);
+            }
+            catch (COMException ex) when (ex.HResult == unchecked((int)0x800A11FD))
+            {
+                // Ignore "document window is not active" error during pre-warm
+                _logger.Debug("Skipping ScreenUpdating property - no active document during pre-warm");
+            }
+            
+            SafeSetProperty(wordApp, "DisplayRecentFiles", false);
+            SafeSetProperty(wordApp, "DisplayScrollBars", false);
+            SafeSetProperty(wordApp, "DisplayStatusBar", false);
+            
+            try
+            {
+                SafeSetProperty(wordApp, "WindowState", -2); // wdWindowStateMinimize
+            }
+            catch (COMException ex) when (ex.HResult == unchecked((int)0x800A11FD))
+            {
+                _logger.Debug("Cannot minimize window - no document context");
+            }
+            
+            // Advanced optimizations with error handling
+            try
+            {
+                if (wordApp.Options != null)
+                {
+                    SafeSetProperty(wordApp.Options, "CheckGrammarAsYouType", false);
+                    SafeSetProperty(wordApp.Options, "CheckSpellingAsYouType", false);
+                    SafeSetProperty(wordApp.Options, "BackgroundSave", false);
+                    SafeSetProperty(wordApp.Options, "SaveInterval", 0); // Disable auto-save
+                }
+            }
+            catch (Exception optEx)
+            {
+                _logger.Debug("Some Word Options properties not available: {Message}", optEx.Message);
+            }
+        }
         
+        /// <summary>
+        /// Safely opens a Word document with fallback parameter sets for version compatibility
+        /// </summary>
+        private dynamic OpenDocumentSafely(dynamic wordApp, string filePath)
+        {
+            try
+            {
+                // Try with full parameters first (Word 2010+)
+                return wordApp.Documents.Open(
+                    filePath,
+                    ReadOnly: true,
+                    AddToRecentFiles: false,
+                    Repair: false,
+                    ShowRepairs: false,
+                    OpenAndRepair: false,
+                    NoEncodingDialog: true,
+                    Revert: false
+                );
+            }
+            catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
+            {
+                _logger.Debug("Extended Open parameters not supported, using basic Open");
+                // Fallback to basic Open (Word 2007+)
+                return wordApp.Documents.Open(filePath, ReadOnly: true);
+            }
+        }
+
+        /// <summary>
+        /// Safely saves document as PDF with fallback methods for version compatibility
+        /// </summary>
+        private bool SaveAsPdfSafely(dynamic doc, string outputPath)
+        {
+            try
+            {
+                // Try SaveAs2 with optimized parameters (Word 2010+)
+                doc.SaveAs2(
+                    outputPath, 
+                    FileFormat: 17, // wdFormatPDF
+                    EmbedTrueTypeFonts: false,
+                    SaveNativePictureFormat: false,
+                    SaveFormsData: false,
+                    CompressLevel: 0
+                );
+                _logger.Debug("Document saved with optimized SaveAs2 parameters");
+                return true;
+            }
+            catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
+            {
+                _logger.Debug("SaveAs2 with extended parameters not available, trying basic SaveAs2");
+                try
+                {
+                    // Fallback to basic SaveAs2
+                    doc.SaveAs2(outputPath, FileFormat: 17);
+                    _logger.Debug("Document saved with basic SaveAs2");
+                    return true;
+                }
+                catch (COMException ex2) when (ex2.HResult == unchecked((int)0x80020006))
+                {
+                    _logger.Debug("SaveAs2 not available, trying SaveAs");
+                    // Final fallback to SaveAs (Word 2007)
+                    doc.SaveAs(outputPath, FileFormat: 17);
+                    _logger.Debug("Document saved with legacy SaveAs");
+                    return true;
+                }
+            }
+        }
+
         private void CheckIdleTimeout(object state)
         {
             lock (_wordLock)
@@ -234,28 +378,15 @@ namespace DocHandler.Services
                         
                         _logger.Debug("Opening document: {Path}", inputPath);
                         
-                        doc = wordApp.Documents.Open(
-                            inputPath,
-                            ReadOnly: true,
-                            AddToRecentFiles: false,
-                            Repair: false,
-                            ShowRepairs: false,
-                            OpenAndRepair: false,
-                            NoEncodingDialog: true,
-                            Revert: false
-                        );
+                        doc = OpenDocumentSafely(wordApp, inputPath);
                         
                         _logger.Debug("Saving as PDF: {Path}", outputPath);
                         
-                        // Save as PDF with optimized settings
-                        doc.SaveAs2(
-                            outputPath, 
-                            FileFormat: 17, // wdFormatPDF
-                            EmbedTrueTypeFonts: false,
-                            SaveNativePictureFormat: false,
-                            SaveFormsData: false,
-                            CompressLevel: 0
-                        );
+                        // Save as PDF with version-safe method
+                        if (!SaveAsPdfSafely(doc, outputPath))
+                        {
+                            throw new InvalidOperationException("Failed to save document as PDF");
+                        }
                         
                         result.Success = true;
                         result.OutputPath = outputPath;

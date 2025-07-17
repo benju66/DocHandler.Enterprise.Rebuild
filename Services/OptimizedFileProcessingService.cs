@@ -401,6 +401,62 @@ namespace DocHandler.Services
         {
             return await ConvertSingleFile(inputPath, outputPath, null);
         }
+
+        // Synchronous single file conversion for STA thread pool usage
+        public ConversionResult ConvertSingleFileSync(string inputPath, string outputPath)
+        {
+            var fileName = Path.GetFileName(inputPath);
+            var extension = Path.GetExtension(inputPath).ToLowerInvariant();
+            
+            _logger.Information("=== CONVERT SINGLE FILE SYNC START ===");
+            _logger.Information("CONVERT: Input: {InputPath}", inputPath);
+            _logger.Information("CONVERT: Output: {OutputPath}", outputPath);
+            _logger.Information("CONVERT: Extension: {Extension}", extension);
+            
+            try
+            {
+                ConversionResult result;
+                
+                if (extension == ".pdf")
+                {
+                    File.Copy(inputPath, outputPath, true);
+                    result = new ConversionResult { Success = true, OutputPath = outputPath };
+                }
+                else if (extension == ".doc" || extension == ".docx")
+                {
+                    _logger.Information("CONVERT: Word document detected, calling OptimizedOfficeService synchronously...");
+                    
+                    // Use the synchronous method from OptimizedOfficeConversionService
+                    result = _optimizedOfficeService.ConvertWordToPdf(inputPath, outputPath).GetAwaiter().GetResult();
+                    
+                    _logger.Information("CONVERT: OptimizedOfficeService returned - Success: {Success}, Error: {Error}", 
+                        result.Success, result.ErrorMessage ?? "None");
+                }
+                else if (extension == ".xls" || extension == ".xlsx")
+                {
+                    result = _excelService.ConvertSpreadsheetToPdf(inputPath, outputPath).GetAwaiter().GetResult();
+                }
+                else
+                {
+                    result = new ConversionResult
+                    {
+                        Success = false,
+                        ErrorMessage = $"Unsupported file type: {extension}"
+                    };
+                }
+                
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to convert file synchronously: {InputPath}", inputPath);
+                return new ConversionResult
+                {
+                    Success = false,
+                    ErrorMessage = $"Conversion failed: {ex.Message}"
+                };
+            }
+        }
         
         // Update ConvertSingleFile to report progress
         public async Task<ConversionResult> ConvertSingleFile(

@@ -199,68 +199,136 @@ namespace DocHandler.Services
 
         /// <summary>
         /// Safely cleans up only app-created Office processes
+        /// Enhanced safety: never kill processes unless absolutely certain they belong to the app
         /// </summary>
         public void CleanupAppCreatedProcesses()
         {
             lock (_lockObject)
             {
-                _logger.Information("Starting cleanup of app-created Office processes");
+                _logger.Information("Starting safe cleanup of app-created Office processes");
 
-                // Cleanup app-created Word processes
+                // Cleanup app-created Word processes with extra safety checks
                 var wordProcessesToCleanup = _appCreatedWordProcesses.ToList();
                 foreach (var processId in wordProcessesToCleanup)
                 {
                     try
                     {
+                        // Multiple safety checks before killing any process
+                        if (!IsDefinitelyAppCreated(processId, _appCreatedWordProcesses, _preExistingWordProcesses))
+                        {
+                            _logger.Warning("Skipping process PID {ProcessId} - safety check failed", processId);
+                            continue;
+                        }
+
                         var process = Process.GetProcessById(processId);
                         if (!process.HasExited)
                         {
-                            _logger.Information("Terminating app-created Word process PID {ProcessId}", processId);
-                            process.Kill();
-                            process.WaitForExit(5000);
+                            _logger.Information("Gracefully closing app-created Word process PID {ProcessId}", processId);
+                            
+                            // Try graceful shutdown first
+                            if (!process.CloseMainWindow())
+                            {
+                                _logger.Debug("CloseMainWindow failed for process {ProcessId}, trying WM_CLOSE", processId);
+                                // Send WM_CLOSE message as backup
+                                try
+                                {
+                                    SendCloseMessage(process.MainWindowHandle);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.Debug(ex, "Could not send close message to process {ProcessId}", processId);
+                                }
+                            }
+                            
+                            // Wait for graceful exit
+                            if (!process.WaitForExit(10000)) // 10 second timeout
+                            {
+                                _logger.Warning("Process {ProcessId} did not close gracefully, forcing termination", processId);
+                                process.Kill();
+                                process.WaitForExit(5000);
+                            }
+                            else
+                            {
+                                _logger.Information("Process {ProcessId} closed gracefully", processId);
+                            }
                         }
                         _appCreatedWordProcesses.Remove(processId);
                         process.Dispose();
                     }
                     catch (ArgumentException)
                     {
-                        // Process already gone
+                        // Process already gone - remove from tracking
                         _appCreatedWordProcesses.Remove(processId);
+                        _logger.Debug("Process PID {ProcessId} already exited", processId);
                     }
                     catch (Exception ex)
                     {
-                        _logger.Warning(ex, "Failed to terminate app-created Word process PID {ProcessId}", processId);
+                        _logger.Warning(ex, "Error during safe cleanup of Word process PID {ProcessId}", processId);
+                        // Don't remove from tracking if we couldn't clean it up
                     }
                 }
 
-                // Cleanup app-created Excel processes
+                // Cleanup app-created Excel processes with same safety measures
                 var excelProcessesToCleanup = _appCreatedExcelProcesses.ToList();
                 foreach (var processId in excelProcessesToCleanup)
                 {
                     try
                     {
+                        // Multiple safety checks before killing any process
+                        if (!IsDefinitelyAppCreated(processId, _appCreatedExcelProcesses, _preExistingExcelProcesses))
+                        {
+                            _logger.Warning("Skipping Excel process PID {ProcessId} - safety check failed", processId);
+                            continue;
+                        }
+
                         var process = Process.GetProcessById(processId);
                         if (!process.HasExited)
                         {
-                            _logger.Information("Terminating app-created Excel process PID {ProcessId}", processId);
-                            process.Kill();
-                            process.WaitForExit(5000);
+                            _logger.Information("Gracefully closing app-created Excel process PID {ProcessId}", processId);
+                            
+                            // Try graceful shutdown first
+                            if (!process.CloseMainWindow())
+                            {
+                                _logger.Debug("CloseMainWindow failed for Excel process {ProcessId}, trying WM_CLOSE", processId);
+                                try
+                                {
+                                    SendCloseMessage(process.MainWindowHandle);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.Debug(ex, "Could not send close message to Excel process {ProcessId}", processId);
+                                }
+                            }
+                            
+                            // Wait for graceful exit
+                            if (!process.WaitForExit(10000)) // 10 second timeout
+                            {
+                                _logger.Warning("Excel process {ProcessId} did not close gracefully, forcing termination", processId);
+                                process.Kill();
+                                process.WaitForExit(5000);
+                            }
+                            else
+                            {
+                                _logger.Information("Excel process {ProcessId} closed gracefully", processId);
+                            }
                         }
                         _appCreatedExcelProcesses.Remove(processId);
                         process.Dispose();
                     }
                     catch (ArgumentException)
                     {
-                        // Process already gone
+                        // Process already gone - remove from tracking
                         _appCreatedExcelProcesses.Remove(processId);
+                        _logger.Debug("Excel process PID {ProcessId} already exited", processId);
                     }
                     catch (Exception ex)
                     {
-                        _logger.Warning(ex, "Failed to terminate app-created Excel process PID {ProcessId}", processId);
+                        _logger.Warning(ex, "Error during safe cleanup of Excel process PID {ProcessId}", processId);
+                        // Don't remove from tracking if we couldn't clean it up
                     }
                 }
 
-                _logger.Information("Cleanup completed. Terminated {WordCount} Word and {ExcelCount} Excel app-created processes",
+                _logger.Information("Safe cleanup completed. Processed {WordCount} Word and {ExcelCount} Excel app-created processes",
                     wordProcessesToCleanup.Count, excelProcessesToCleanup.Count);
 
                 // Log remaining user processes (should not be touched)
@@ -273,6 +341,67 @@ namespace DocHandler.Services
                 foreach (var process in remainingExcel) process.Dispose();
             }
         }
+
+        /// <summary>
+        /// Performs multiple safety checks to ensure a process is definitely app-created
+        /// </summary>
+        private bool IsDefinitelyAppCreated(int processId, ConcurrentHashSet<int> appCreated, ConcurrentHashSet<int> preExisting)
+        {
+            // Safety check 1: Must be in app-created list
+            if (!appCreated.Contains(processId))
+            {
+                _logger.Debug("Process {ProcessId} not in app-created list", processId);
+                return false;
+            }
+
+            // Safety check 2: Must NOT be in pre-existing list
+            if (preExisting.Contains(processId))
+            {
+                _logger.Warning("Process {ProcessId} was pre-existing - should not kill!", processId);
+                return false;
+            }
+
+            // Safety check 3: Process must exist and be accessible
+            try
+            {
+                var process = Process.GetProcessById(processId);
+                var canAccess = !process.HasExited;
+                process.Dispose();
+                
+                if (!canAccess)
+                {
+                    _logger.Debug("Process {ProcessId} has already exited", processId);
+                    return false;
+                }
+            }
+            catch (ArgumentException)
+            {
+                _logger.Debug("Process {ProcessId} does not exist", processId);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug(ex, "Cannot access process {ProcessId}", processId);
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Sends WM_CLOSE message to a window handle for graceful shutdown
+        /// </summary>
+        private void SendCloseMessage(IntPtr windowHandle)
+        {
+            if (windowHandle != IntPtr.Zero)
+            {
+                const int WM_CLOSE = 0x0010;
+                SendMessage(windowHandle, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            }
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
 
         public void Dispose()
         {

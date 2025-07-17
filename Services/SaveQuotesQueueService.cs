@@ -229,8 +229,8 @@ namespace DocHandler.Services
                     _logger.Information("QUEUE: Now executing on STA thread {ThreadId} (Apartment: {ApartmentState})", 
                         Thread.CurrentThread.ManagedThreadId, Thread.CurrentThread.GetApartmentState());
                         
-                    // Use synchronous execution to maintain STA context
-                    return _fileProcessingService.ConvertSingleFile(item.File.FilePath, outputPath).GetAwaiter().GetResult();
+                    // Use synchronous conversion method to avoid async/await issues on STA thread
+                    return _fileProcessingService.ConvertSingleFileSync(item.File.FilePath, outputPath);
                 });
 
                 _logger.Information("QUEUE: Conversion completed - Success: {Success}, Error: {Error}", 

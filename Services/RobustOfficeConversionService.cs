@@ -28,6 +28,13 @@ namespace DocHandler.Services
         // Simple Word app pool - create on demand, dispose when unhealthy
         private readonly ConcurrentQueue<WordAppInfo> _wordAppPool = new();
 
+        // Windows API imports for safe process ID retrieval
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindow(IntPtr hWnd);
+        
         public RobustOfficeConversionService(int maxConcurrency = 0)
         {
             _logger = Log.ForContext<RobustOfficeConversionService>();
@@ -41,6 +48,59 @@ namespace DocHandler.Services
             // Cleanup timer - every 5 minutes
             _cleanupTimer = new Timer(PerformCleanup, null, 
                 TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+        }
+
+        /// <summary>
+        /// Safely gets Word process ID using window handle approach instead of ProcessID property
+        /// </summary>
+        private int GetWordProcessIdSafely(dynamic wordApp)
+        {
+            try
+            {
+                IntPtr hwnd = IntPtr.Zero;
+                
+                // Method 1: Try to get application window handle (Word 2010+)
+                try
+                {
+                    hwnd = new IntPtr((int)wordApp.Hwnd);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Debug("Could not get Hwnd property: {Message}", ex.Message);
+                    
+                    // Method 2: Try ActiveWindow.Hwnd (if document is open)
+                    try
+                    {
+                        if (wordApp.ActiveWindow != null)
+                        {
+                            hwnd = new IntPtr((int)wordApp.ActiveWindow.Hwnd);
+                        }
+                    }
+                    catch (Exception ex2)
+                    {
+                        _logger.Debug("Could not get ActiveWindow.Hwnd: {Message}", ex2.Message);
+                    }
+                }
+                
+                // If we got a valid window handle, get the process ID
+                if (hwnd != IntPtr.Zero && IsWindow(hwnd))
+                {
+                    uint processId;
+                    if (GetWindowThreadProcessId(hwnd, out processId) != 0)
+                    {
+                        _logger.Debug("Successfully retrieved process ID {ProcessId} via window handle", processId);
+                        return (int)processId;
+                    }
+                }
+                
+                _logger.Debug("Could not retrieve process ID - window handle method failed");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug("Error getting Word process ID safely: {Message}", ex.Message);
+                return 0;
+            }
         }
 
         private bool IsOfficeAvailable()
@@ -225,9 +285,8 @@ namespace DocHandler.Services
                     wordApp.DisplayAlerts = 0;
                     wordApp.ScreenUpdating = false;
                     
-                    // Get process ID
-                    var processId = (int)wordApp.GetType().InvokeMember("ProcessID", 
-                        System.Reflection.BindingFlags.GetProperty, null, wordApp, null);
+                    // Get process ID safely
+                    var processId = GetWordProcessIdSafely(wordApp);
 
                     var wordInfo = new WordAppInfo
                     {
