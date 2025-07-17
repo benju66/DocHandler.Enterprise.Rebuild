@@ -14,6 +14,8 @@ namespace DocHandler.Services
         private bool _disposed;
         private DateTime _lastHealthCheck = DateTime.Now;
         private readonly TimeSpan _healthCheckInterval = TimeSpan.FromMinutes(5);
+        private bool _isWarmingUp = false;
+        private readonly object _warmUpLock = new object();
         
         public SessionAwareExcelService()
         {
@@ -32,6 +34,10 @@ namespace DocHandler.Services
                 
                 _excelApp = Activator.CreateInstance(excelType);
                 ComHelper.TrackComObjectCreation("ExcelApp", "SessionAwareExcelService");
+                
+                _logger.Information("Excel app created - Thread: {ThreadId}, Time: {Time}", 
+                    System.Threading.Thread.CurrentThread.ManagedThreadId, DateTime.Now);
+                    
                 _excelApp.Visible = false;
                 _excelApp.DisplayAlerts = false;
                 _excelApp.ScreenUpdating = false;
@@ -98,12 +104,15 @@ namespace DocHandler.Services
                     
                     try
                     {
-                        workbook = _excelApp.Workbooks.Open(inputPath, ReadOnly: true);
-                        ComHelper.TrackComObjectCreation("Workbook", "SessionAwareConvertToPdf");
-                        workbook.ExportAsFixedFormat(
-                            Type: 0, // xlTypePDF
-                            Filename: outputPath,
-                            Quality: 0); // xlQualityStandard
+                        using (var comScope = new ComResourceScope())
+                        {
+                            workbook = comScope.OpenExcelWorkbook(_excelApp, inputPath, readOnly: true);
+                            // ComResourceScope already tracks the workbook - removed duplicate tracking
+                            workbook.ExportAsFixedFormat(
+                                Type: 0, // xlTypePDF
+                                Filename: outputPath,
+                                Quality: 0); // xlQualityStandard
+                        }
                         
                         result.OutputPath = outputPath;
                         _logger.Debug("Converted Excel to PDF: {Input} -> {Output}", 
@@ -138,12 +147,41 @@ namespace DocHandler.Services
         
         public void WarmUp()
         {
+            lock (_warmUpLock)
+            {
+                if (_isWarmingUp) return; // Prevent multiple warm-ups
+                _isWarmingUp = true;
+            }
+            
+            try
+            {
+                lock (_conversionLock)
+                {
+                    if (_excelApp == null)
+                    {
+                        InitializeExcel();
+                        _logger.Information("Excel pre-warmed for Save Quotes Mode");
+                    }
+                }
+            }
+            finally
+            {
+                lock (_warmUpLock)
+                {
+                    _isWarmingUp = false;
+                }
+            }
+        }
+        
+        // Add method to dispose when Save Quotes Mode is disabled
+        public void DisposeIfIdle()
+        {
             lock (_conversionLock)
             {
-                if (_excelApp == null)
+                if (_excelApp != null)
                 {
-                    InitializeExcel();
-                    _logger.Information("Excel pre-warmed for Save Quotes Mode");
+                    _logger.Information("Disposing idle Excel instance");
+                    DisposeExcel();
                 }
             }
         }
@@ -157,21 +195,23 @@ namespace DocHandler.Services
                     try
                     {
                         // Try to close all workbooks first
-                        var workbooks = _excelApp.Workbooks;
-                        if (workbooks != null && workbooks.Count > 0)
+                        using (var comScope = new ComResourceScope())
                         {
-                            _logger.Warning("Closing {Count} open workbooks", workbooks.Count);
-                            foreach (dynamic wb in workbooks)
+                            var workbooks = comScope.GetWorkbooks(_excelApp, "DisposeExcel");
+                            if (workbooks != null && workbooks.Count > 0)
                             {
-                                                                        try
-                                        {
-                                            wb.Close(false);
-                                            ComHelper.SafeReleaseComObject(wb, "Workbook", "DisposeExcel");
-                                        }
-                                        catch { }
+                                _logger.Warning("Closing {Count} open workbooks", workbooks.Count);
+                                foreach (dynamic wb in workbooks)
+                                {
+                                    try
+                                    {
+                                        wb.Close(false);
+                                        comScope.Track(wb, "Workbook", "DisposeExcel");
+                                    }
+                                    catch { }
+                                }
                             }
-                            ComHelper.SafeReleaseComObject(workbooks, "Workbooks", "DisposeExcel");
-                        }
+                        } // workbooks collection automatically released here
                     }
                     catch { }
                     
@@ -182,7 +222,8 @@ namespace DocHandler.Services
                     // Force garbage collection
                     ComHelper.ForceComCleanup("SessionAwareExcelService");
                     
-                    _logger.Information("Excel application disposed");
+                    _logger.Information("Excel app disposed - Thread: {ThreadId}, Time: {Time}", 
+                        System.Threading.Thread.CurrentThread.ManagedThreadId, DateTime.Now);
                 }
             }
             catch (Exception ex)

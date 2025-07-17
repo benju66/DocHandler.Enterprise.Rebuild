@@ -165,25 +165,40 @@ namespace DocHandler.Services
         /// </summary>
         private dynamic OpenDocumentSafely(dynamic wordApp, string filePath)
         {
+            dynamic documents = null;
             try
             {
+                documents = wordApp.Documents;
+                ComHelper.TrackComObjectCreation("Documents", "OpenDocument");
+                
                 // Try with full parameters first (Word 2010+)
-                return wordApp.Documents.Open(
-                    filePath,
-                    ReadOnly: true,
-                    AddToRecentFiles: false,
-                    Repair: false,
-                    ShowRepairs: false,
-                    OpenAndRepair: false,
-                    NoEncodingDialog: true,
-                    Revert: false
-                );
+                try
+                {
+                    return documents.Open(
+                        filePath,
+                        ReadOnly: true,
+                        AddToRecentFiles: false,
+                        Repair: false,
+                        ShowRepairs: false,
+                        OpenAndRepair: false,
+                        NoEncodingDialog: true,
+                        Revert: false
+                    );
+                }
+                catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
+                {
+                    _logger.Debug("Extended Open parameters not supported, using basic Open");
+                    // Fallback to basic Open (Word 2007+)
+                    return documents.Open(filePath, ReadOnly: true);
+                }
             }
-            catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
+            finally
             {
-                _logger.Debug("Extended Open parameters not supported, using basic Open");
-                // Fallback to basic Open (Word 2007+)
-                return wordApp.Documents.Open(filePath, ReadOnly: true);
+                // Always release the Documents collection, but NOT the returned document
+                if (documents != null)
+                {
+                    ComHelper.SafeReleaseComObject(documents, "Documents", "OpenDocument");
+                }
             }
         }
 
@@ -791,7 +806,11 @@ namespace DocHandler.Services
                             return false;
                         
                         // Check 2: Try to access Documents collection
-                        var docCount = instance.Application.Documents.Count;
+                        using (var comScope = new ComResourceScope())
+                        {
+                            var documents = comScope.GetDocuments(instance.Application, "HealthCheck");
+                            var docCount = documents.Count;
+                        } // documents collection automatically released here
                         
                         // Check 3: Try to access Version (basic property that should always work)
                         try
@@ -1089,20 +1108,22 @@ namespace DocHandler.Services
                         try
                         {
                             // Close all documents
-                            var documents = instance.Application.Documents;
-                            if (documents != null && documents.Count > 0)
+                            using (var comScope = new ComResourceScope())
                             {
-                                foreach (dynamic doc in documents)
+                                var documents = comScope.GetDocuments(instance.Application, "DisposeWordInstance");
+                                if (documents != null && documents.Count > 0)
                                 {
-                                    try
+                                    foreach (dynamic doc in documents)
                                     {
-                                        doc.Close(SaveChanges: false);
-                                        ComHelper.SafeReleaseComObject(doc, "Document", "DisposeWordInstance");
+                                        try
+                                        {
+                                            doc.Close(SaveChanges: false);
+                                            comScope.Track(doc, "Document", "DisposeWordInstance");
+                                        }
+                                        catch { }
                                     }
-                                    catch { }
                                 }
-                                ComHelper.SafeReleaseComObject(documents, "Documents", "DisposeWordInstance");
-                            }
+                            } // documents collection automatically released here
                             
                             // Quit Word application
                             instance.Application.Quit();

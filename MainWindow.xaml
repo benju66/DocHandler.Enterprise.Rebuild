@@ -94,6 +94,16 @@
                         <ui:SymbolIcon Symbol="Repair"/>
                     </MenuItem.Icon>
                 </MenuItem>
+                <MenuItem Header="COM Object Statistics..." Command="{Binding ShowComStatsCommand}">
+                    <MenuItem.Icon>
+                        <ui:SymbolIcon Symbol="Repair"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Reset COM Statistics" Command="{Binding ResetComStatsCommand}">
+                    <MenuItem.Icon>
+                        <ui:SymbolIcon Symbol="Delete"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <MenuItem Header="_About..." Command="{Binding AboutCommand}">
                     <MenuItem.Icon>

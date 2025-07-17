@@ -903,10 +903,20 @@ namespace DocHandler.ViewModels
                         _sessionExcelService.WarmUp();
                         
                         _logger.Information("✓ Shared Office services pre-warmed successfully");
+                        
+                        // Log COM stats after warm-up to track any leaks
+                        ComHelper.LogComObjectStats();
                     }
                     catch (Exception ex)
                     {
                         _logger.Warning(ex, "Failed to pre-warm Office services");
+                        // Ensure cleanup on warm-up failure
+                        try
+                        {
+                            _sessionOfficeService?.Dispose();
+                            _sessionExcelService?.Dispose();
+                        }
+                        catch { }
                     }
                 });
             }
@@ -2119,6 +2129,109 @@ namespace DocHandler.ViewModels
             {
                 IsDetectingCompany = false;
                 UpdateUI();
+            }
+        }
+
+        [RelayCommand]
+        private async Task ShowComStatsAsync()
+        {
+            try
+            {
+                // Run on background thread like other diagnostics
+                await Task.Run(() =>
+                {
+                    // Get current stats
+                    var stats = ComHelper.GetComObjectSummary();
+                    
+                    // Log to file for record keeping
+                    _logger.Information("COM Statistics requested by user");
+                    ComHelper.LogComObjectStats();
+                    
+                    // Build the message
+                    var message = new StringBuilder();
+                    message.AppendLine("COM Object Lifecycle Statistics");
+                    message.AppendLine("================================\n");
+                    
+                    message.AppendLine($"Total Created:  {stats.TotalCreated,8}");
+                    message.AppendLine($"Total Released: {stats.TotalReleased,8}");
+                    message.AppendLine($"Net Objects:    {stats.NetObjects,8}");
+                    message.AppendLine();
+                    
+                    if (stats.NetObjects == 0)
+                    {
+                        message.AppendLine("✓ All COM objects properly released!");
+                        message.AppendLine("  No memory leaks detected.");
+                    }
+                    else
+                    {
+                        message.AppendLine("⚠ Potential COM object leaks detected!");
+                        message.AppendLine("\nUnreleased objects by type:");
+                        
+                        foreach (var kvp in stats.ObjectStats.Where(s => s.Value.Net > 0).OrderByDescending(s => s.Value.Net))
+                        {
+                            var stat = kvp.Value;
+                            message.AppendLine($"\n  {stat.ObjectType} ({stat.Context}):");
+                            message.AppendLine($"    Created:  {stat.Created}");
+                            message.AppendLine($"    Released: {stat.Released}");
+                            message.AppendLine($"    Leaked:   {stat.Net}");
+                        }
+                        
+                        message.AppendLine("\nRecommendation: Check the log file for details.");
+                    }
+                    
+                    message.AppendLine($"\nStats tracking started: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                    
+                    // Show the stats window on UI thread
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        MessageBox.Show(
+                            Application.Current.MainWindow,
+                            message.ToString(),
+                            "COM Object Statistics",
+                            MessageBoxButton.OK,
+                            stats.NetObjects > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
+                    });
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error showing COM statistics");
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    MessageBox.Show(
+                        $"Error displaying COM statistics: {ex.Message}",
+                        "Error",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                });
+            }
+        }
+
+        [RelayCommand]
+        private async Task ResetComStatsAsync()
+        {
+            var result = MessageBox.Show(
+                "This will reset all COM object tracking statistics.\n\n" +
+                "This is useful when you want to start fresh monitoring from a specific point.\n\n" +
+                "Continue?",
+                "Reset COM Statistics",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+                
+            if (result == MessageBoxResult.Yes)
+            {
+                await Task.Run(() =>
+                {
+                    ComHelper.ResetStats();
+                    _logger.Information("COM statistics reset by user");
+                });
+                
+                MessageBox.Show(
+                    "COM object statistics have been reset.\n\n" +
+                    "All counters are now at zero.",
+                    "Statistics Reset",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
             }
         }
 
