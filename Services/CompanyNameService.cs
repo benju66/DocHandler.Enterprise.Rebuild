@@ -86,6 +86,11 @@ namespace DocHandler.Services
         private readonly PerformanceMetrics _performanceMetrics;
         private DateTime _lastMemoryCheck = DateTime.Now;
         
+        // Async loading support
+        private readonly SemaphoreSlim _dataLoadSemaphore = new(1);
+        private bool _dataLoaded = false;
+        private Task? _loadingTask;
+        
         // Performance metrics
         private int _detectionCount = 0;
         private readonly object _metricsLock = new object();
@@ -113,7 +118,18 @@ namespace DocHandler.Services
         private static readonly Regex MultipleSpacesRegex = new(@"\s+", RegexOptions.Compiled);
         private static readonly Regex NonWordCharactersRegex = new(@"[^\w\s.,&\-()]", RegexOptions.Compiled);
         
-        public List<CompanyInfo> Companies => _data.Companies;
+        public List<CompanyInfo> Companies 
+        {
+            get
+            {
+                // Synchronously ensure data is loaded for backward compatibility
+                if (!_dataLoaded)
+                {
+                    Task.Run(async () => await EnsureDataLoadedAsync()).Wait();
+                }
+                return _data.Companies;
+            }
+        }
         
         public CompanyNameService()
         {
@@ -134,11 +150,15 @@ namespace DocHandler.Services
             // Store data in AppData
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             var appFolder = Path.Combine(appDataPath, "DocHandler");
-            Directory.CreateDirectory(appFolder);
+            
+            // Create directory asynchronously to avoid blocking
+            _ = Task.Run(() => Directory.CreateDirectory(appFolder));
             
             _dataPath = appFolder;
             _companyNamesPath = Path.Combine(appFolder, "company_names.json");
-            _data = LoadCompanyNames();
+            
+            // Initialize with empty data, will load asynchronously
+            _data = new CompanyNamesData { Companies = new List<CompanyInfo>() };
             
             // Start periodic cache cleanup every 15 minutes
             _cacheCleanupTimer = new Timer(
@@ -164,13 +184,47 @@ namespace DocHandler.Services
             _logger.Information("Updated .doc file size limit to {LimitMB}MB", limitMB);
         }
         
-        private CompanyNamesData LoadCompanyNames()
+        /// <summary>
+        /// Ensures data is loaded before accessing it
+        /// </summary>
+        private async Task EnsureDataLoadedAsync()
+        {
+            if (_dataLoaded) return;
+            
+            await _dataLoadSemaphore.WaitAsync();
+            try
+            {
+                if (!_dataLoaded)
+                {
+                    _data = await LoadCompanyNamesAsync();
+                    _dataLoaded = true;
+                }
+            }
+            finally
+            {
+                _dataLoadSemaphore.Release();
+            }
+        }
+        
+        /// <summary>
+        /// Loads data asynchronously for use during initialization
+        /// </summary>
+        public async Task LoadDataAsync()
+        {
+            if (_loadingTask == null)
+            {
+                _loadingTask = EnsureDataLoadedAsync();
+            }
+            await _loadingTask;
+        }
+        
+        private async Task<CompanyNamesData> LoadCompanyNamesAsync()
         {
             try
             {
                 if (File.Exists(_companyNamesPath))
                 {
-                    var json = File.ReadAllText(_companyNamesPath);
+                    var json = await File.ReadAllTextAsync(_companyNamesPath);
                     var options = new JsonSerializerOptions
                     {
                         PropertyNameCaseInsensitive = true,
@@ -195,7 +249,7 @@ namespace DocHandler.Services
             _logger.Information("Creating default company names data");
             var defaultData = CreateDefaultData();
             
-            // Save the default data immediately
+            // Save the default data asynchronously
             _ = SaveCompanyNames();
             
             return defaultData;
@@ -239,6 +293,9 @@ namespace DocHandler.Services
         {
             try
             {
+                // Ensure data is loaded
+                await EnsureDataLoadedAsync();
+                
                 name = name.Trim();
                 
                 // Check if already exists
@@ -274,6 +331,9 @@ namespace DocHandler.Services
         {
             try
             {
+                // Ensure data is loaded
+                await EnsureDataLoadedAsync();
+                
                 var company = _data.Companies.FirstOrDefault(c => 
                     c.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
                 
@@ -302,6 +362,9 @@ namespace DocHandler.Services
             
             try
             {
+                // Ensure data is loaded before scanning
+                await EnsureDataLoadedAsync();
+                
                 progress?.Report(10); // Starting scan
                 
                 // Check cache first
@@ -1814,6 +1877,12 @@ namespace DocHandler.Services
         
         public List<CompanyInfo> GetMostUsedCompanies(int count = 10)
         {
+            // Ensure data is loaded (synchronous for backward compatibility)
+            if (!_dataLoaded)
+            {
+                Task.Run(async () => await EnsureDataLoadedAsync()).Wait();
+            }
+            
             return _data.Companies
                 .OrderByDescending(c => c.UsageCount)
                 .ThenByDescending(c => c.LastUsed)
@@ -1823,6 +1892,12 @@ namespace DocHandler.Services
         
         public List<CompanyInfo> SearchCompanies(string searchTerm)
         {
+            // Ensure data is loaded (synchronous for backward compatibility)
+            if (!_dataLoaded)
+            {
+                Task.Run(async () => await EnsureDataLoadedAsync()).Wait();
+            }
+            
             if (string.IsNullOrWhiteSpace(searchTerm))
                 return _data.Companies;
             

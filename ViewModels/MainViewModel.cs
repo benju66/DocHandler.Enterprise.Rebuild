@@ -366,6 +366,9 @@ namespace DocHandler.ViewModels
                 // Restore queue window if needed
                 RestoreQueueWindowIfNeeded();
                 
+                // Load service data asynchronously after initial UI is shown
+                _ = Task.Run(async () => await LoadServiceDataAsync());
+                
                 _logger.Information("MainViewModel initialized successfully");
             }
             catch (Exception ex)
@@ -392,6 +395,61 @@ namespace DocHandler.ViewModels
                     // Even minimal initialization failed
                     StatusMessage = "Initialization failed - limited functionality";
                 }
+            }
+        }
+        
+        /// <summary>
+        /// Loads service data asynchronously to avoid blocking UI thread during startup
+        /// </summary>
+        private async Task LoadServiceDataAsync()
+        {
+            try
+            {
+                _logger.Information("Starting async service data loading...");
+                
+                // Load data in parallel
+                var loadTasks = new List<Task>();
+                
+                if (_companyNameService != null)
+                {
+                    loadTasks.Add(_companyNameService.LoadDataAsync());
+                }
+                
+                if (_scopeOfWorkService != null)
+                {
+                    loadTasks.Add(_scopeOfWorkService.LoadDataAsync());
+                }
+                
+                await Task.WhenAll(loadTasks);
+                
+                _logger.Information("Service data loaded successfully");
+                
+                // Update UI collections on dispatcher thread
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    try
+                    {
+                        // Reload scopes now that data is available
+                        LoadScopesOfWork();
+                        LoadRecentScopes();
+                        
+                        // If in Save Quotes Mode, ensure scopes are filtered
+                        if (SaveQuotesMode)
+                        {
+                            FilterScopes();
+                        }
+                        
+                        _logger.Information("UI collections updated with loaded data");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Failed to update UI collections after data load");
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to load service data asynchronously");
             }
         }
 

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Serilog;
 
@@ -13,6 +14,11 @@ namespace DocHandler.Services
         private readonly string _configPath;
         private AppConfiguration _config;
         
+        // Debouncing for configuration saves
+        private Timer? _saveTimer;
+        private readonly SemaphoreSlim _saveSemaphore = new(1);
+        private bool _saveScheduled = false;
+        
         public AppConfiguration Config => _config;
         
         public ConfigurationService()
@@ -22,7 +28,9 @@ namespace DocHandler.Services
             // Store config in AppData
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             var appFolder = Path.Combine(appDataPath, "DocHandler");
-            Directory.CreateDirectory(appFolder);
+            
+            // Create directory asynchronously to avoid blocking
+            _ = Task.Run(() => Directory.CreateDirectory(appFolder));
             
             _configPath = Path.Combine(appFolder, "config.json");
             _config = LoadConfiguration();
@@ -47,6 +55,35 @@ namespace DocHandler.Services
             catch (Exception ex)
             {
                 _logger.Error(ex, "Failed to load configuration");
+            }
+            
+            // Return default configuration
+            _logger.Information("Using default configuration");
+            return CreateDefaultConfiguration();
+        }
+        
+        /// <summary>
+        /// Loads configuration asynchronously
+        /// </summary>
+        public async Task<AppConfiguration> LoadConfigurationAsync()
+        {
+            try
+            {
+                if (File.Exists(_configPath))
+                {
+                    var json = await File.ReadAllTextAsync(_configPath);
+                    var config = JsonSerializer.Deserialize<AppConfiguration>(json);
+                    
+                    if (config != null)
+                    {
+                        _logger.Information("Configuration loaded asynchronously from {Path}", _configPath);
+                        return config;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to load configuration asynchronously");
             }
             
             // Return default configuration
@@ -79,6 +116,37 @@ namespace DocHandler.Services
         
         public async Task SaveConfiguration()
         {
+            // Use debounced save for better performance
+            await SaveConfigurationDebounced();
+        }
+        
+        /// <summary>
+        /// Saves configuration with debouncing to prevent excessive file writes
+        /// </summary>
+        private async Task SaveConfigurationDebounced()
+        {
+            _saveScheduled = true;
+            
+            // Cancel any existing timer
+            _saveTimer?.Dispose();
+            
+            // Schedule save after 500ms of inactivity
+            _saveTimer = new Timer(async _ => 
+            {
+                if (_saveScheduled)
+                {
+                    _saveScheduled = false;
+                    await SaveConfigurationImmediate();
+                }
+            }, null, 500, Timeout.Infinite);
+        }
+        
+        /// <summary>
+        /// Forces an immediate save of configuration
+        /// </summary>
+        private async Task SaveConfigurationImmediate()
+        {
+            await _saveSemaphore.WaitAsync();
             try
             {
                 var options = new JsonSerializerOptions
@@ -89,11 +157,15 @@ namespace DocHandler.Services
                 var json = JsonSerializer.Serialize(_config, options);
                 await File.WriteAllTextAsync(_configPath, json);
                 
-                _logger.Information("Configuration saved to {Path}", _configPath);
+                _logger.Debug("Configuration saved to {Path}", _configPath);
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Failed to save configuration");
+            }
+            finally
+            {
+                _saveSemaphore.Release();
             }
         }
         

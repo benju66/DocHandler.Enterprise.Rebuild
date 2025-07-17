@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Serilog;
 
@@ -18,8 +19,36 @@ namespace DocHandler.Services
         private ScopeOfWorkData _data;
         private RecentScopesData _recentData;
         
-        public List<ScopeOfWork> Scopes => _data.Scopes;
-        public List<string> RecentScopes => _recentData.RecentScopes;
+        // Async loading support
+        private readonly SemaphoreSlim _dataLoadSemaphore = new(1);
+        private bool _dataLoaded = false;
+        private Task? _loadingTask;
+        
+        public List<ScopeOfWork> Scopes 
+        {
+            get
+            {
+                // Synchronously ensure data is loaded for backward compatibility
+                if (!_dataLoaded)
+                {
+                    Task.Run(async () => await EnsureDataLoadedAsync()).Wait();
+                }
+                return _data.Scopes;
+            }
+        }
+        
+        public List<string> RecentScopes 
+        {
+            get
+            {
+                // Synchronously ensure data is loaded for backward compatibility
+                if (!_dataLoaded)
+                {
+                    Task.Run(async () => await EnsureDataLoadedAsync()).Wait();
+                }
+                return _recentData.RecentScopes;
+            }
+        }
         
         public ScopeOfWorkService()
         {
@@ -28,25 +57,63 @@ namespace DocHandler.Services
             // Store data in AppData
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             var appFolder = Path.Combine(appDataPath, "DocHandler");
-            Directory.CreateDirectory(appFolder);
+            
+            // Create directory asynchronously to avoid blocking
+            _ = Task.Run(() => Directory.CreateDirectory(appFolder));
             
             _dataPath = appFolder;
             _scopesPath = Path.Combine(appFolder, "scopes_of_work.json");
             _recentScopesPath = Path.Combine(appFolder, "recent_scopes.json");
             _defaultScopesPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data", "default_scopes.json");
             
-            _data = LoadScopesOfWork();
-            _recentData = LoadRecentScopes();
+            // Initialize with empty data, will load asynchronously
+            _data = new ScopeOfWorkData { Scopes = new List<ScopeOfWork>() };
+            _recentData = new RecentScopesData { RecentScopes = new List<string>() };
         }
         
-        private ScopeOfWorkData LoadScopesOfWork()
+        /// <summary>
+        /// Ensures data is loaded before accessing it
+        /// </summary>
+        private async Task EnsureDataLoadedAsync()
+        {
+            if (_dataLoaded) return;
+            
+            await _dataLoadSemaphore.WaitAsync();
+            try
+            {
+                if (!_dataLoaded)
+                {
+                    _data = await LoadScopesOfWorkAsync();
+                    _recentData = await LoadRecentScopesAsync();
+                    _dataLoaded = true;
+                }
+            }
+            finally
+            {
+                _dataLoadSemaphore.Release();
+            }
+        }
+        
+        /// <summary>
+        /// Loads data asynchronously for use during initialization
+        /// </summary>
+        public async Task LoadDataAsync()
+        {
+            if (_loadingTask == null)
+            {
+                _loadingTask = EnsureDataLoadedAsync();
+            }
+            await _loadingTask;
+        }
+        
+        private async Task<ScopeOfWorkData> LoadScopesOfWorkAsync()
         {
             try
             {
                 // First check if user has their own scopes file
                 if (File.Exists(_scopesPath))
                 {
-                    var json = File.ReadAllText(_scopesPath);
+                    var json = await File.ReadAllTextAsync(_scopesPath);
                     var data = JsonSerializer.Deserialize<ScopeOfWorkData>(json);
                     
                     if (data != null && data.Scopes != null && data.Scopes.Any())
@@ -61,34 +128,19 @@ namespace DocHandler.Services
                 _logger.Error(ex, "Failed to load user scopes of work");
             }
             
-            // If no user data, load defaults
-            return LoadDefaultScopes();
-        }
-        
-        private ScopeOfWorkData LoadDefaultScopes()
-        {
+            // Try to load default scopes
             try
             {
-                // Try to load from default scopes file
                 if (File.Exists(_defaultScopesPath))
                 {
-                    var json = File.ReadAllText(_defaultScopesPath);
+                    var json = await File.ReadAllTextAsync(_defaultScopesPath);
                     var data = JsonSerializer.Deserialize<ScopeOfWorkData>(json);
                     
-                    if (data != null && data.Scopes != null && data.Scopes.Any())
+                    if (data != null && data.Scopes != null)
                     {
-                        // Initialize runtime properties for each scope
-                        foreach (var scope in data.Scopes)
-                        {
-                            if (scope.DateAdded == default(DateTime))
-                                scope.DateAdded = DateTime.Now;
-                            scope.UsageCount = 0;
-                            scope.LastUsed = null;
-                        }
+                        _logger.Information("Loaded {Count} default scopes of work", data.Scopes.Count);
                         
-                        _logger.Information("Loaded {Count} default scopes from file", data.Scopes.Count);
-                        
-                        // Save to user's location for future editing
+                        // Save as user data for future use
                         _ = SaveScopesOfWork();
                         
                         return data;
@@ -97,11 +149,16 @@ namespace DocHandler.Services
             }
             catch (Exception ex)
             {
-                _logger.Warning(ex, "Could not load default scopes file from {Path}", _defaultScopesPath);
+                _logger.Error(ex, "Failed to load default scopes of work");
             }
             
-            // Return minimal starter set if file not found
-            _logger.Warning("Default scopes file not found, creating minimal set");
+            // Return default data if all else fails
+            _logger.Information("Creating default scopes of work data");
+            return CreateDefaultData();
+        }
+        
+        private ScopeOfWorkData CreateDefaultData()
+        {
             return new ScopeOfWorkData
             {
                 Scopes = new List<ScopeOfWork>
@@ -111,16 +168,16 @@ namespace DocHandler.Services
             };
         }
         
-        private RecentScopesData LoadRecentScopes()
+        private async Task<RecentScopesData> LoadRecentScopesAsync()
         {
             try
             {
                 if (File.Exists(_recentScopesPath))
                 {
-                    var json = File.ReadAllText(_recentScopesPath);
+                    var json = await File.ReadAllTextAsync(_recentScopesPath);
                     var data = JsonSerializer.Deserialize<RecentScopesData>(json);
                     
-                    if (data != null)
+                    if (data != null && data.RecentScopes != null)
                     {
                         _logger.Information("Loaded {Count} recent scopes", data.RecentScopes.Count);
                         return data;
@@ -487,14 +544,30 @@ namespace DocHandler.Services
         {
             try
             {
-                _data = LoadDefaultScopes();
+                // Load default scopes from file
+                if (File.Exists(_defaultScopesPath))
+                {
+                    var json = await File.ReadAllTextAsync(_defaultScopesPath);
+                    var data = JsonSerializer.Deserialize<ScopeOfWorkData>(json);
+                    
+                    if (data != null && data.Scopes != null)
+                    {
+                        _data = data;
+                        await SaveScopesOfWork();
+                        _logger.Information("Reset scopes to defaults");
+                        return true;
+                    }
+                }
+                
+                // Fall back to minimal defaults
+                _data = CreateDefaultData();
                 await SaveScopesOfWork();
-                _logger.Information("Reset scopes to defaults");
+                _logger.Information("Reset scopes to minimal defaults");
                 return true;
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Failed to reset scopes to defaults");
+                _logger.Error(ex, "Failed to reset to defaults");
                 return false;
             }
         }

@@ -32,10 +32,12 @@ namespace DocHandler.Services
             _logger = Log.ForContext<PdfCacheService>();
             _cache = new ConcurrentDictionary<string, CachedPdf>();
             
-            // Create cache directory
+            // Create cache directory asynchronously to avoid blocking
             var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             _cacheDirectory = Path.Combine(appData, "DocHandler", "PdfCache");
-            Directory.CreateDirectory(_cacheDirectory);
+            
+            // Create directory asynchronously
+            _ = Task.Run(() => Directory.CreateDirectory(_cacheDirectory));
             
             // Start cleanup timer
             _cleanupTimer = new Timer(CleanupExpiredCache, null, 
