@@ -294,30 +294,47 @@ namespace DocHandler.ViewModels
 
                 
                 // COORDINATED OFFICE SERVICES: Use only SessionAware services to reduce instance count
-                // Remove individual OfficeConversionService creation - use SessionAware services for all operations
+                // CRITICAL FIX: Create SessionAware services on UI thread (STA) to prevent COM memory leaks
                 try
                 {
-                    var timeoutTask = Task.Delay(10000); // 10 second timeout
-                    var initTask = Task.Run(() => 
-                    {
-                        var tempOfficeService = new SessionAwareOfficeService();
-                        var tempExcelService = new SessionAwareExcelService();
-                        return (tempOfficeService, tempExcelService);
-                    });
+                    // Verify we're on STA thread (WPF UI thread is STA by default)
+                    var currentThread = System.Threading.Thread.CurrentThread;
+                    _logger.Information("Initializing Office services on thread {ThreadId} with apartment state {ApartmentState}", 
+                        currentThread.ManagedThreadId, currentThread.GetApartmentState());
                     
-                    if (Task.WhenAny(initTask, timeoutTask).Result == initTask && initTask.IsCompletedSuccessfully)
+                    if (currentThread.GetApartmentState() == ApartmentState.STA)
                     {
-                        var result = initTask.Result;
-                        _sessionOfficeService = result.tempOfficeService;
-                        _sessionExcelService = result.tempExcelService;
-                        _logger.Information("Shared SessionAware Office services initialized successfully");
+                        // Safe to create COM objects on STA thread
+                        _sessionOfficeService = new SessionAwareOfficeService();
+                        _sessionExcelService = new SessionAwareExcelService();
+                        
+                        // Also create regular OfficeConversionService for fallback operations
+                        _officeConversionService = new OfficeConversionService(_configService, _processManager);
+                        
+                        _logger.Information("Shared SessionAware Office services initialized successfully on STA thread");
                     }
                     else
                     {
-                        // Initialize with null - will be initialized later when needed
+                        // This shouldn't happen in WPF constructor, but handle it defensively
+                        _logger.Error("MainViewModel constructor not on STA thread! Apartment state: {ApartmentState}", 
+                            currentThread.GetApartmentState());
                         _sessionOfficeService = null;
                         _sessionExcelService = null;
-                        _logger.Warning("SessionAware Office services initialization timed out, will initialize when needed");
+                        
+                        // Schedule creation on UI thread
+                        Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            try
+                            {
+                                _sessionOfficeService = new SessionAwareOfficeService();
+                                _sessionExcelService = new SessionAwareExcelService();
+                                _logger.Information("Office services initialized on UI thread via Dispatcher");
+                            }
+                            catch (Exception dispatcherEx)
+                            {
+                                _logger.Error(dispatcherEx, "Failed to initialize Office services on UI thread");
+                            }
+                        }));
                     }
                 }
                 catch (Exception ex)

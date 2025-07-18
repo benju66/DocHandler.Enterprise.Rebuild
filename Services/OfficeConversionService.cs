@@ -118,20 +118,16 @@ namespace DocHandler.Services
             var timeoutSeconds = _configService?.Config.ConversionTimeoutSeconds ?? 30;
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
             
-            await Task.Run(() =>
+            // CRITICAL FIX: Remove Task.Run - already on STA thread from caller
+            lock (_wordLock)
             {
-                // CRITICAL: Set apartment state before any COM operations
-                Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
-                
                 // Validate apartment state
                 if (!ValidateSTAThread("ConvertWordToPdf"))
                 {
                     result.Success = false;
-                    result.ErrorMessage = "Thread apartment state is not STA - COM operations may fail";
-                    return;
+                    result.ErrorMessage = "Thread apartment state is not STA - Word operations will fail";
+                    return result;
                 }
-                
-                lock (_wordLock)
                 {
                     dynamic? doc = null;
                     
@@ -150,7 +146,7 @@ namespace DocHandler.Services
                                 {
                                     result.Success = false;
                                     result.ErrorMessage = "Microsoft Word is not installed.";
-                                    return;
+                                    return result;
                                 }
                                 
                                 _wordApp = Activator.CreateInstance(wordType);
@@ -163,19 +159,20 @@ namespace DocHandler.Services
                                 _logger.Error(ex, "Failed to create Word application");
                                 result.Success = false;
                                 result.ErrorMessage = "Microsoft Word is not installed or accessible.";
-                                return;
+                                return result;
                             }
                         }
                         
                         // Check for cancellation before document operations
                         cts.Token.ThrowIfCancellationRequested();
                         
-                        // FIXED: Direct COM operations on single STA thread - no nested Task.Run()
+                        // CRITICAL FIX: Use ComResourceScope for automatic COM object cleanup
                         _logger.Debug("Opening Word document: {Path}", inputPath);
-                        dynamic documents = _wordApp.Documents;
-                        doc = documents.Open(inputPath, ReadOnly: true);
-                        ComHelper.TrackComObjectCreation("Document", "ConvertWordToPdf");
-                        ComHelper.SafeReleaseComObject(documents, "Documents", "ConvertWordToPdf");
+                        
+                        using (var comScope = new ComResourceScope())
+                        {
+                            doc = comScope.OpenWordDocument(_wordApp, inputPath);
+                        } // Documents collection automatically released here
                         
                         // Check for cancellation before PDF conversion
                         cts.Token.ThrowIfCancellationRequested();
@@ -247,7 +244,7 @@ namespace DocHandler.Services
                         ComHelper.ForceComCleanup("ConvertWordToPdf");
                     }
                 }
-            }, cts.Token);
+            }
             
             return result;
         }
@@ -297,10 +294,12 @@ namespace DocHandler.Services
                         }
                     }
                     
-                    // Open the document
+                    // Open the document using ComResourceScope for automatic cleanup
                     _logger.Information("Opening Word document: {Path}", inputPath);
-                    doc = _wordApp.Documents.Open(inputPath, ReadOnly: true);
-                    ComHelper.TrackComObjectCreation("Document", "ConvertWordToPdfSync");
+                    using (var comScope = new ComResourceScope())
+                    {
+                        doc = comScope.OpenWordDocument(_wordApp, inputPath);
+                    } // Documents collection automatically released here
                     
                     // Save as PDF (17 = wdFormatPDF)
                     _logger.Information("Converting to PDF: {Path}", outputPath);
@@ -355,110 +354,98 @@ namespace DocHandler.Services
             
             _logger.Information("Converting Excel to PDF: {ExcelPath} -> {PdfPath}", inputPath, outputPath);
 
-                    return await Task.Run(() =>
-        {
-            // CRITICAL: Set apartment state before any COM operations
-            Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
-            
-            // Validate apartment state
-            if (!ValidateSTAThread("ConvertExcelToPdf"))
-            {
-                return new ConversionResult
-                {
-                    Success = false,
-                    ErrorMessage = "Thread apartment state is not STA - Excel operations may fail"
-                };
-            }
-            
-            dynamic? workbook = null;
+            // CRITICAL FIX: Remove Task.Run - already on STA thread from caller
             var result = new ConversionResult();
+            dynamic? workbook = null;
 
-            // CRITICAL FIX #4: Thread-safe lock for Excel operations
             lock (_excelLock)
             {
-                    try
+                // Validate apartment state
+                if (!ValidateSTAThread("ConvertExcelToPdf"))
+                {
+                    result.Success = false;
+                    result.ErrorMessage = "Thread apartment state is not STA - Excel operations will fail";
+                    return result;
+                }
+                
+                try
+                {
+                    // Create Excel application if needed using late binding
+                    if (_excelApp == null)
                     {
-                        // Create Excel application if needed using late binding
-                        if (_excelApp == null)
+                        try
                         {
-                            try
+                            Type? excelType = Type.GetTypeFromProgID("Excel.Application");
+                            if (excelType == null)
                             {
-                                Type? excelType = Type.GetTypeFromProgID("Excel.Application");
-                                if (excelType == null)
-                                {
-                                    result.Success = false;
-                                    result.ErrorMessage = "Microsoft Excel is not installed.";
-                                    return result;
-                                }
-                                
-                                _excelApp = Activator.CreateInstance(excelType);
-                                ComHelper.TrackComObjectCreation("ExcelApp", "OfficeConversionService");
-                                _excelApp.Visible = false;
-                                _excelApp.DisplayAlerts = false;
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.Error(ex, "Failed to create Excel application");
                                 result.Success = false;
-                                result.ErrorMessage = "Microsoft Excel is not installed or accessible.";
+                                result.ErrorMessage = "Microsoft Excel is not installed.";
                                 return result;
                             }
+                            
+                            _excelApp = Activator.CreateInstance(excelType);
+                            ComHelper.TrackComObjectCreation("ExcelApp", "OfficeConversionService");
+                            _excelApp.Visible = false;
+                            _excelApp.DisplayAlerts = false;
                         }
-
-                        // Open the workbook
-                        dynamic workbooks = _excelApp.Workbooks;
-                        workbook = workbooks.Open(
-                            inputPath,
-                            ReadOnly: true,
-                            IgnoreReadOnlyRecommended: true,
-                            Notify: false);
-                        ComHelper.TrackComObjectCreation("Workbook", "ConvertExcelToPdf");
-                        ComHelper.SafeReleaseComObject(workbooks, "Workbooks", "ConvertExcelToPdf");
-
-                        // Export as PDF (0 = xlTypePDF)
-                        workbook.ExportAsFixedFormat(
-                            Type: 0,
-                            Filename: outputPath,
-                            Quality: 0, // xlQualityStandard
-                            IncludeDocProperties: true,
-                            IgnorePrintAreas: false,
-                            OpenAfterPublish: false);
-
-                        _logger.Information("Successfully converted Excel to PDF");
-                        result.Success = true;
-                        result.OutputPath = outputPath;
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex, "Failed to convert Excel to PDF");
-                        result.Success = false;
-                        result.ErrorMessage = $"Excel conversion failed: {ex.Message}";
-                    }
-                    finally
-                    {
-                        // CRITICAL FIX #4: Proper cleanup in finally block
-                        // Clean up
-                        if (workbook != null)
+                        catch (Exception ex)
                         {
-                            try
-                            {
-                                workbook.Close(false);
-                                ComHelper.SafeReleaseComObject(workbook, "Workbook", "ConvertExcelToPdf");
-                                workbook = null;
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.Warning(ex, "Error closing Excel workbook");
-                            }
+                            _logger.Error(ex, "Failed to create Excel application");
+                            result.Success = false;
+                            result.ErrorMessage = "Microsoft Excel is not installed or accessible.";
+                            return result;
                         }
-                        
-                        // CRITICAL FIX #4: Force garbage collection after COM operations
-                        ComHelper.ForceComCleanup("ConvertExcelToPdf");
                     }
-                }
 
-                return result;
-            });
+                    // Open the workbook using ComResourceScope for automatic cleanup
+                    using (var comScope = new ComResourceScope())
+                    {
+                        workbook = comScope.OpenExcelWorkbook(_excelApp, inputPath, readOnly: true);
+                    } // Workbooks collection automatically released here
+
+                    // Export as PDF (0 = xlTypePDF)
+                    workbook.ExportAsFixedFormat(
+                        Type: 0,
+                        Filename: outputPath,
+                        Quality: 0, // xlQualityStandard
+                        IncludeDocProperties: true,
+                        IgnorePrintAreas: false,
+                        OpenAfterPublish: false);
+
+                    _logger.Information("Successfully converted Excel to PDF");
+                    result.Success = true;
+                    result.OutputPath = outputPath;
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Failed to convert Excel to PDF");
+                    result.Success = false;
+                    result.ErrorMessage = $"Excel conversion failed: {ex.Message}";
+                }
+                finally
+                {
+                    // CRITICAL FIX #4: Proper cleanup in finally block
+                    // Clean up
+                    if (workbook != null)
+                    {
+                        try
+                        {
+                            workbook.Close(false);
+                            ComHelper.SafeReleaseComObject(workbook, "Workbook", "ConvertExcelToPdf");
+                            workbook = null;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Error closing Excel workbook");
+                        }
+                    }
+                    
+                    // CRITICAL FIX #4: Force garbage collection after COM operations
+                    ComHelper.ForceComCleanup("ConvertExcelToPdf");
+                }
+            }
+            
+            return result;
         }
         
         public bool IsOfficeInstalled()

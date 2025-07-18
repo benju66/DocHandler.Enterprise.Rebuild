@@ -236,6 +236,7 @@ namespace DocHandler.Services
         private dynamic OpenDocumentSafely(dynamic wordApp, string filePath)
         {
             dynamic documents = null;
+            dynamic doc = null;
             try
             {
                 documents = wordApp.Documents;
@@ -244,7 +245,7 @@ namespace DocHandler.Services
                 // Try with full parameters first (Word 2010+)
                 try
                 {
-                    return documents.Open(
+                    doc = documents.Open(
                         filePath,
                         ReadOnly: true,
                         AddToRecentFiles: false,
@@ -259,8 +260,16 @@ namespace DocHandler.Services
                 {
                     _logger.Debug("Extended Open parameters not supported, using basic Open");
                     // Fallback to basic Open (Word 2007+)
-                    return documents.Open(filePath, ReadOnly: true);
+                    doc = documents.Open(filePath, ReadOnly: true);
                 }
+                
+                // CRITICAL FIX: Track the document creation to match the release tracking
+                if (doc != null)
+                {
+                    ComHelper.TrackComObjectCreation("Document", "SessionAwareConversion");
+                }
+                
+                return doc;
             }
             finally
             {
@@ -320,6 +329,9 @@ namespace DocHandler.Services
                 {
                     _logger.Information("Word application idle for {Minutes} minutes, disposing", _idleTimeout.TotalMinutes);
                     DisposeWordApp();
+                    
+                    // CRITICAL FIX: Ensure timer is cleared after disposing Word to prevent further callbacks
+                    _idleTimer = null;
                 }
             }
         }
@@ -370,13 +382,12 @@ namespace DocHandler.Services
             {
                 return await _circuitBreaker.ExecuteAsync(async () =>
                 {
-                    return await Task.Run(() =>
-            {
-                lock (_wordLock)
-                {
-                    var result = new ConversionResult();
-                    dynamic doc = null;
-                    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                    // CRITICAL FIX: Remove Task.Run - already on STA thread from caller
+                    lock (_wordLock)
+                    {
+                        var result = new ConversionResult();
+                        dynamic doc = null;
+                        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                     
                     try
                     {
@@ -436,7 +447,6 @@ namespace DocHandler.Services
                     
                     return result;
                 }
-            });
                 });
             }
             catch (InvalidOperationException circuitEx) when (circuitEx.Message.Contains("Circuit breaker is open"))
@@ -464,6 +474,21 @@ namespace DocHandler.Services
         
         private void DisposeWordApp()
         {
+            // CRITICAL FIX: Dispose timer first to prevent callbacks during disposal
+            if (_idleTimer != null)
+            {
+                try
+                {
+                    _idleTimer.Dispose();
+                    _idleTimer = null;
+                    _logger.Debug("Idle timer disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing idle timer");
+                }
+            }
+            
             if (_wordApp != null)
             {
                 try
@@ -519,10 +544,21 @@ namespace DocHandler.Services
         
         public void Dispose()
         {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+        
+        protected virtual void Dispose(bool disposing)
+        {
             if (!_disposed)
             {
-                _idleTimer?.Dispose();
+                if (disposing)
+                {
+                    // Dispose managed resources
+                    _idleTimer?.Dispose();
+                }
                 
+                // Dispose unmanaged resources (COM objects)
                 lock (_wordLock)
                 {
                     DisposeWordApp();
@@ -531,6 +567,12 @@ namespace DocHandler.Services
                 _disposed = true;
                 _logger.Information("SessionAwareOfficeService disposed");
             }
+        }
+        
+        // CRITICAL FIX: Finalizer ensures COM objects are released even if Dispose isn't called
+        ~SessionAwareOfficeService()
+        {
+            Dispose(false);
         }
     }
 } 

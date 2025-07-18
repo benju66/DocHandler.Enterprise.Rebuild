@@ -2308,19 +2308,38 @@ namespace DocHandler.Services
             }
             finally
             {
-                // Clean up temporary PDF
-                if (File.Exists(tempPdf))
+                // Enhanced cleanup for temporary PDF
+                if (!string.IsNullOrEmpty(tempPdf) && File.Exists(tempPdf))
                 {
                     try
                     {
                         File.Delete(tempPdf);
+                        _logger.Debug("Deleted temporary PDF: {Path}", tempPdf);
                     }
                     catch (Exception ex)
                     {
                         _logger.Warning(ex, "Failed to delete temporary PDF: {Path}", tempPdf);
+                        // Schedule for delayed deletion
+                        ScheduleDelayedDeletion(tempPdf);
                     }
                 }
             }
+        }
+        
+        private void ScheduleDelayedDeletion(string filePath)
+        {
+            Task.Delay(TimeSpan.FromMinutes(5)).ContinueWith(_ =>
+            {
+                try
+                {
+                    if (File.Exists(filePath))
+                    {
+                        File.Delete(filePath);
+                        _logger.Information("Successfully deleted previously locked file: {Path}", filePath);
+                    }
+                }
+                catch { /* Ignore - file may be in use or already deleted */ }
+            }, TaskScheduler.Default);
         }
         
         public void Dispose()

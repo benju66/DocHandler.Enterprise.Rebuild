@@ -260,10 +260,27 @@ namespace DocHandler.Services
             {
                 try
                 {
-                    // Ensure STA thread for COM
-                    if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
+                    // CRITICAL FIX: Validate STA thread for COM
+                    var currentApartment = Thread.CurrentThread.GetApartmentState();
+                    if (currentApartment != ApartmentState.STA)
                     {
-                        Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
+                        _logger.Error("CreateWordAppInfo: Thread is not STA ({ApartmentState}) - attempting to set", currentApartment);
+                        try
+                        {
+                            Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Error(ex, "Failed to set STA apartment state");
+                            throw new InvalidOperationException($"Thread must be STA for COM operations. Current state: {currentApartment}");
+                        }
+                        
+                        // Verify it was set
+                        currentApartment = Thread.CurrentThread.GetApartmentState();
+                        if (currentApartment != ApartmentState.STA)
+                        {
+                            throw new InvalidOperationException($"Failed to set STA state. Current state: {currentApartment}");
+                        }
                     }
 
                     Type? wordType = Type.GetTypeFromProgID("Word.Application");
@@ -320,6 +337,15 @@ namespace DocHandler.Services
                 
                 try
                 {
+                    // CRITICAL: Validate STA thread for COM operations
+                    var apartmentState = Thread.CurrentThread.GetApartmentState();
+                    if (apartmentState != ApartmentState.STA)
+                    {
+                        _logger.Error("ConvertUsingWordApp: Thread is not STA ({ApartmentState}) - COM operations will fail", apartmentState);
+                        result.Success = false;
+                        result.ErrorMessage = "Thread must be STA for COM operations";
+                        return result;
+                    }
                     // Handle network paths
                     var workingInputPath = inputPath;
                     string? tempFilePath = null;
@@ -334,19 +360,15 @@ namespace DocHandler.Services
 
                     try
                     {
-                        // Open document
-                        dynamic documents = wordInfo.Application.Documents;
-                        doc = documents.Open(
-                            workingInputPath,
-                            ReadOnly: true,
-                            AddToRecentFiles: false,
-                            Repair: false,
-                            ShowRepairs: false
-                        );
-                        ComHelper.SafeReleaseComObject(documents, "Documents", "ConvertWordToPdf");
-
-                        // Convert to PDF
-                        doc.SaveAs2(outputPath, FileFormat: 17);
+                        // CRITICAL FIX: Use ComResourceScope for automatic COM object cleanup
+                        using (var comScope = new ComResourceScope())
+                        {
+                            // Open document - ComResourceScope ensures Documents collection is released
+                            doc = comScope.OpenWordDocument(wordInfo.Application, workingInputPath);
+                            
+                            // Convert to PDF
+                            doc.SaveAs2(outputPath, FileFormat: 17);
+                        }
 
                         result.Success = true;
                         result.OutputPath = outputPath;
@@ -483,10 +505,20 @@ namespace DocHandler.Services
 
         public void Dispose()
         {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
             if (!_disposed)
             {
-                _cleanupTimer?.Dispose();
-                _conversionSemaphore?.Dispose();
+                if (disposing)
+                {
+                    // Dispose managed resources
+                    _cleanupTimer?.Dispose();
+                    _conversionSemaphore?.Dispose();
+                }
                 
                 // Dispose all pooled Word applications
                 while (_wordAppPool.TryDequeue(out var instance))
@@ -494,12 +526,18 @@ namespace DocHandler.Services
                     _ = DisposeWordAppInfo(instance);
                 }
                 
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
+                // CRITICAL FIX: Force COM cleanup
+                ComHelper.ForceComCleanup("RobustOfficeConversionService");
                 
                 _disposed = true;
                 _logger.Information("Robust Office conversion service disposed");
             }
+        }
+
+        // CRITICAL FIX: Add finalizer for unmanaged resource cleanup
+        ~RobustOfficeConversionService()
+        {
+            Dispose(false);
         }
     }
 

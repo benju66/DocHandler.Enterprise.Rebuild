@@ -106,10 +106,9 @@ namespace DocHandler.Services
         
         public async Task<ConversionResult> ConvertSpreadsheetToPdf(string inputPath, string outputPath)
         {
-            return await Task.Run(() =>
+            // CRITICAL FIX: Remove Task.Run - already on STA thread from caller
+            lock (_conversionLock)
             {
-                lock (_conversionLock)
-                {
                     _lastUsed = DateTime.Now;
                     
                     if (_excelApp == null)
@@ -153,7 +152,8 @@ namespace DocHandler.Services
                             try
                             {
                                 workbook.Close(false);
-                                ComHelper.SafeReleaseComObject(workbook, "Workbook", "SessionAwareConvertToPdf");
+                                // CRITICAL FIX: Don't release workbook here - ComResourceScope already handled it
+                                // ComHelper.SafeReleaseComObject(workbook, "Workbook", "SessionAwareConvertToPdf");
                             }
                             catch (Exception ex)
                             {
@@ -164,7 +164,6 @@ namespace DocHandler.Services
                     
                     return result;
                 }
-            });
         }
         
         public void WarmUp()
@@ -210,6 +209,21 @@ namespace DocHandler.Services
         
         private void DisposeExcel()
         {
+            // CRITICAL FIX: Dispose timer first to prevent callbacks during disposal
+            if (_idleTimer != null)
+            {
+                try
+                {
+                    _idleTimer.Dispose();
+                    _idleTimer = null;
+                    _logger.Debug("Idle timer disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing idle timer");
+                }
+            }
+            
             try
             {
                 if (_excelApp != null)
@@ -265,18 +279,40 @@ namespace DocHandler.Services
                 {
                     _logger.Information("Excel application idle for {Minutes} minutes, disposing", _idleTimeout.TotalMinutes);
                     DisposeExcel();
+                    
+                    // CRITICAL FIX: Ensure timer is cleared after disposing Excel to prevent further callbacks
+                    _idleTimer = null;
                 }
             }
         }
         
         public void Dispose()
         {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+        
+        protected virtual void Dispose(bool disposing)
+        {
             if (!_disposed)
             {
+                if (disposing)
+                {
+                    // Dispose managed resources
+                    _idleTimer?.Dispose();
+                }
+                
+                // Dispose unmanaged resources (COM objects)
                 DisposeExcel();
+                
                 _disposed = true;
-                GC.SuppressFinalize(this);
             }
+        }
+        
+        // CRITICAL FIX: Finalizer ensures COM objects are released even if Dispose isn't called
+        ~SessionAwareExcelService()
+        {
+            Dispose(false);
         }
     }
 } 
