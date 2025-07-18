@@ -22,6 +22,10 @@ namespace DocHandler.Services
         private DateTime _lastHealthCheck = DateTime.Now;
         private readonly TimeSpan _healthCheckInterval = TimeSpan.FromMinutes(5);
         private readonly ConversionCircuitBreaker _circuitBreaker;
+        
+        // Diagnostic tracking fields
+        private DateTime _createdAt;
+        private bool _wasCreatedByUs = false;
 
         // Windows API imports for safe process ID retrieval
         [DllImport("user32.dll")]
@@ -163,6 +167,10 @@ namespace DocHandler.Services
                         
                         _wordApp = Activator.CreateInstance(wordType);
                         ComHelper.TrackComObjectCreation("WordApp", "SessionAwareOfficeService");
+                        
+                        // Set diagnostic tracking
+                        _createdAt = DateTime.Now;
+                        _wasCreatedByUs = true;
                         
                         // Apply optimizations safely
                         ApplyWordOptimizations(_wordApp);
@@ -474,6 +482,8 @@ namespace DocHandler.Services
         
         private void DisposeWordApp()
         {
+            _logger.Information("DisposeWordApp called, _wordApp is {Status}", _wordApp != null ? "not null" : "null");
+            
             // CRITICAL FIX: Dispose timer first to prevent callbacks during disposal
             if (_idleTimer != null)
             {
@@ -493,6 +503,19 @@ namespace DocHandler.Services
             {
                 try
                 {
+                    // Diagnostic logging before disposal
+                    int processId = 0;
+                    bool isVisible = false;
+                    try 
+                    {
+                        processId = GetWordProcessIdSafely(_wordApp);
+                        isVisible = _wordApp.Visible;
+                    }
+                    catch { }
+                    
+                    _logger.Information("Disposing Word - PID: {ProcessId}, Visible: {Visible}, CreatedByUs: {CreatedByUs}, CreatedAt: {CreatedAt}", 
+                        processId, isVisible, _wasCreatedByUs, _createdAt);
+                    
                     // Try to close all open documents first
                     try
                     {
@@ -519,20 +542,39 @@ namespace DocHandler.Services
                     }
                     catch { }
                     
-                    _wordApp.Quit(SaveChanges: false);
+                    // Enhanced Quit() with better error handling
+                    try
+                    {
+                        _wordApp.Quit(SaveChanges: false);
+                        _logger.Information("Word Quit() completed successfully");
+                    }
+                    catch (COMException comEx)
+                    {
+                        _logger.Warning(comEx, "COM exception during Word Quit() - app may be disconnected (HRESULT: 0x{HResult:X8})", comEx.HResult);
+                    }
+                    catch (Exception quitEx)
+                    {
+                        _logger.Warning(quitEx, "Unexpected exception during Word Quit()");
+                    }
+                    
                     ComHelper.SafeReleaseComObject(_wordApp, "WordApp", "SessionAwareDispose");
+                    _logger.Information("Word COM object released and set to null");
                     _wordApp = null;
+                    
+                    // Reset tracking
+                    _wasCreatedByUs = false;
+                    _createdAt = default;
                     
                     // Force garbage collection
                     GC.Collect();
                     GC.WaitForPendingFinalizers();
                     GC.Collect();
                     
-                    _logger.Information("Word application disposed");
+                    _logger.Information("Word disposal completed successfully");
                 }
                 catch (Exception ex)
                 {
-                    _logger.Warning(ex, "Error disposing Word application");
+                    _logger.Error(ex, "Error in DisposeWordApp - disposal may be incomplete");
                 }
             }
         }
@@ -550,6 +592,8 @@ namespace DocHandler.Services
         
         protected virtual void Dispose(bool disposing)
         {
+            _logger.Information("SessionAwareOfficeService.Dispose called with disposing={Disposing}", disposing);
+            
             if (!_disposed)
             {
                 if (disposing)

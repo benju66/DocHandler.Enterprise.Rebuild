@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Serilog;
 using System.Runtime.InteropServices;
@@ -22,6 +23,10 @@ namespace DocHandler.Services
         private DateTime _lastUsed = DateTime.Now;
         private Timer? _idleTimer;
         private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(5);
+        
+        // Diagnostic tracking fields
+        private DateTime _createdAt;
+        private bool _wasCreatedByUs = false;
         
         public SessionAwareExcelService()
         {
@@ -49,6 +54,10 @@ namespace DocHandler.Services
                 _excelApp = Activator.CreateInstance(excelType);
                 ComHelper.TrackComObjectCreation("ExcelApp", "SessionAwareExcelService");
                 
+                // Set diagnostic tracking
+                _createdAt = DateTime.Now;
+                _wasCreatedByUs = true;
+                
                 _logger.Information("Excel app created - Thread: {ThreadId}, Time: {Time}", 
                     System.Threading.Thread.CurrentThread.ManagedThreadId, DateTime.Now);
                     
@@ -56,8 +65,7 @@ namespace DocHandler.Services
                 _excelApp.DisplayAlerts = false;
                 _excelApp.ScreenUpdating = false;
                 
-                // Minimize window
-                _excelApp.WindowState = -4137; // xlMinimized
+                // Do not set WindowState - it can cause Excel to briefly flash visible
                 
                 _lastHealthCheck = DateTime.Now;
                 _lastUsed = DateTime.Now;
@@ -209,6 +217,8 @@ namespace DocHandler.Services
         
         private void DisposeExcel()
         {
+            _logger.Information("DisposeExcel called, _excelApp is {Status}", _excelApp != null ? "not null" : "null");
+            
             // CRITICAL FIX: Dispose timer first to prevent callbacks during disposal
             if (_idleTimer != null)
             {
@@ -230,44 +240,90 @@ namespace DocHandler.Services
                 {
                     try
                     {
-                        // Try to close all workbooks first
-                        using (var comScope = new ComResourceScope())
+                        // Diagnostic logging before disposal
+                        int processId = 0;
+                        bool isVisible = false;
+                        try 
                         {
-                            var workbooks = comScope.GetWorkbooks(_excelApp, "DisposeExcel");
-                            if (workbooks != null && workbooks.Count > 0)
+                            // Try to get process ID (Excel doesn't have the safe method like Word)
+                            var process = System.Diagnostics.Process.GetProcessesByName("EXCEL")
+                                .FirstOrDefault(p => !p.HasExited);
+                            if (process != null)
                             {
-                                _logger.Warning("Closing {Count} open workbooks", workbooks.Count);
-                                // Use for loop instead of foreach to avoid COM enumerator leak
-                                int count = workbooks.Count;
-                                for (int i = count; i >= 1; i--) // Excel collections are 1-based, iterate backwards
-                                {
-                                    try
-                                    {
-                                        dynamic wb = workbooks[i];
-                                        wb.Close(false);
-                                        comScope.Track(wb, "Workbook", "DisposeExcel");
-                                    }
-                                    catch { }
-                                }
+                                processId = process.Id;
+                                process.Dispose();
                             }
-                        } // workbooks collection automatically released here
+                            isVisible = _excelApp.Visible;
+                        }
+                        catch { }
+                        
+                        _logger.Information("Disposing Excel - PID: {ProcessId}, Visible: {Visible}, CreatedByUs: {CreatedByUs}, CreatedAt: {CreatedAt}", 
+                            processId, isVisible, _wasCreatedByUs, _createdAt);
+                        
+                        // Try to close all workbooks first
+                        try
+                        {
+                            using (var comScope = new ComResourceScope())
+                            {
+                                var workbooks = comScope.GetWorkbooks(_excelApp, "DisposeExcel");
+                                if (workbooks != null && workbooks.Count > 0)
+                                {
+                                    _logger.Warning("Closing {Count} open workbooks", workbooks.Count);
+                                    // Use for loop instead of foreach to avoid COM enumerator leak
+                                    int count = workbooks.Count;
+                                    for (int i = count; i >= 1; i--) // Excel collections are 1-based, iterate backwards
+                                    {
+                                        try
+                                        {
+                                            dynamic wb = workbooks[i];
+                                            wb.Close(false);
+                                            comScope.Track(wb, "Workbook", "DisposeExcel");
+                                        }
+                                        catch { }
+                                    }
+                                }
+                            } // workbooks collection automatically released here
+                        }
+                        catch { }
+                        
+                        // Enhanced Quit() with better error handling
+                        try
+                        {
+                            _excelApp.Quit();
+                            _logger.Information("Excel Quit() completed successfully");
+                        }
+                        catch (COMException comEx)
+                        {
+                            _logger.Warning(comEx, "COM exception during Excel Quit() - app may be disconnected (HRESULT: 0x{HResult:X8})", comEx.HResult);
+                        }
+                        catch (Exception quitEx)
+                        {
+                            _logger.Warning(quitEx, "Unexpected exception during Excel Quit()");
+                        }
+                        
+                        ComHelper.SafeReleaseComObject(_excelApp, "ExcelApp", "DisposeExcel");
+                        _logger.Information("Excel COM object released and set to null");
+                        _excelApp = null;
+                        
+                        // Reset tracking
+                        _wasCreatedByUs = false;
+                        _createdAt = default;
+                        
+                        // Force garbage collection
+                        ComHelper.ForceComCleanup("SessionAwareExcelService");
+                        
+                        _logger.Information("Excel disposal completed successfully - Thread: {ThreadId}, Time: {Time}", 
+                            System.Threading.Thread.CurrentThread.ManagedThreadId, DateTime.Now);
                     }
-                    catch { }
-                    
-                    _excelApp.Quit();
-                    ComHelper.SafeReleaseComObject(_excelApp, "ExcelApp", "DisposeExcel");
-                    _excelApp = null;
-                    
-                    // Force garbage collection
-                    ComHelper.ForceComCleanup("SessionAwareExcelService");
-                    
-                    _logger.Information("Excel app disposed - Thread: {ThreadId}, Time: {Time}", 
-                        System.Threading.Thread.CurrentThread.ManagedThreadId, DateTime.Now);
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error disposing Excel application");
+                    }
                 }
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Error disposing Excel application");
+                _logger.Error(ex, "Error in DisposeExcel");
             }
         }
         
@@ -294,6 +350,8 @@ namespace DocHandler.Services
         
         protected virtual void Dispose(bool disposing)
         {
+            _logger.Information("SessionAwareExcelService.Dispose called with disposing={Disposing}", disposing);
+            
             if (!_disposed)
             {
                 if (disposing)

@@ -2869,36 +2869,49 @@ namespace DocHandler.ViewModels
                 }
             
                 // Dispose queue service first (it uses file processing service)
-                try
+                if (_queueService != null)
                 {
-                    _queueService?.Dispose();
-                    _logger.Information("Queue service disposed");
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error(ex, "Error disposing queue service");
+                    try
+                    {
+                        _logger.Information("Disposing QueueService...");
+                        _queueService.Dispose();
+                        _queueService = null;
+                        _logger.Information("QueueService disposed successfully");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error disposing QueueService");
+                    }
                 }
                 
                 // Dispose file processing service
-                try
+                if (_fileProcessingService != null)
                 {
-                    _fileProcessingService?.Dispose();
-                    _logger.Information("File processing service disposed");
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error(ex, "Error disposing file processing service");
+                    try
+                    {
+                        _logger.Information("Disposing FileProcessingService...");
+                        _fileProcessingService.Dispose();
+                        _logger.Information("FileProcessingService disposed successfully");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error disposing FileProcessingService");
+                    }
                 }
                 
                 // Dispose company name service
-                try
+                if (_companyNameService != null)
                 {
-                    _companyNameService?.Dispose();
-                    _logger.Information("Company name service disposed");
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error(ex, "Error disposing company name service");
+                    try
+                    {
+                        _logger.Information("Disposing CompanyNameService...");
+                        _companyNameService.Dispose();
+                        _logger.Information("CompanyNameService disposed successfully");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error disposing CompanyNameService");
+                    }
                 }
                 
                 // Dispose Office services last (after services that use them)
@@ -2906,12 +2919,14 @@ namespace DocHandler.ViewModels
                 {
                     try
                     {
+                        _logger.Information("Disposing SessionOfficeService...");
                         _sessionOfficeService.Dispose();
-                        _logger.Information("Session Office service disposed");
+                        _sessionOfficeService = null;
+                        _logger.Information("SessionOfficeService disposed successfully");
                     }
                     catch (Exception ex)
                     {
-                        _logger.Error(ex, "Error disposing Session Office service");
+                        _logger.Error(ex, "Error disposing SessionOfficeService");
                     }
                 }
                 
@@ -2919,12 +2934,14 @@ namespace DocHandler.ViewModels
                 {
                     try
                     {
+                        _logger.Information("Disposing SessionExcelService...");
                         _sessionExcelService.Dispose();
-                        _logger.Information("Session Excel service disposed");
+                        _sessionExcelService = null;
+                        _logger.Information("SessionExcelService disposed successfully");
                     }
                     catch (Exception ex)
                     {
-                        _logger.Error(ex, "Error disposing Session Excel service");
+                        _logger.Error(ex, "Error disposing SessionExcelService");
                     }
                 }
                 
@@ -2932,12 +2949,13 @@ namespace DocHandler.ViewModels
                 {
                     try
                     {
+                        _logger.Information("Disposing OfficeConversionService...");
                         _officeConversionService.Dispose();
-                        _logger.Information("Office conversion service disposed");
+                        _logger.Information("OfficeConversionService disposed successfully");
                     }
                     catch (Exception ex)
                     {
-                        _logger.Error(ex, "Error disposing Office conversion service");
+                        _logger.Error(ex, "Error disposing OfficeConversionService");
                     }
                 }
                 
@@ -2948,16 +2966,49 @@ namespace DocHandler.ViewModels
                 ComHelper.LogComObjectStats();
                 
                 // Dispose performance monitor
-                _performanceMonitor?.Dispose();
-                _logger.Information("Performance monitor disposed");
+                if (_performanceMonitor != null)
+                {
+                    try
+                    {
+                                                 _logger.Information("Disposing PerformanceMonitor...");
+                         _performanceMonitor.Dispose();
+                         _logger.Information("PerformanceMonitor disposed successfully");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error disposing PerformanceMonitor");
+                    }
+                }
                 
                 // Dispose office instance tracker (before process manager)
-                _officeTracker?.Dispose();
-                _logger.Information("Office instance tracker disposed");
+                if (_officeTracker != null)
+                {
+                    try
+                    {
+                                                 _logger.Information("Disposing OfficeTracker...");
+                         _officeTracker.Dispose();
+                         _logger.Information("OfficeTracker disposed successfully");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error disposing OfficeTracker");
+                    }
+                }
                 
                 // Dispose process manager last
-                _processManager?.Dispose();
-                _logger.Information("Process manager disposed");
+                if (_processManager != null)
+                {
+                    try
+                    {
+                                                 _logger.Information("Disposing ProcessManager...");
+                         _processManager.Dispose();
+                         _logger.Information("ProcessManager disposed successfully");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error disposing ProcessManager");
+                    }
+                }
                 
                 _logger.Information("MainViewModel cleanup completed");
             }
@@ -3108,11 +3159,37 @@ namespace DocHandler.ViewModels
         #region IDisposable Implementation
         
         private bool _disposed = false;
+        private bool _isDisposing = false;
         
         public void Dispose()
         {
+            if (_isDisposing) 
+            {
+                _logger.Warning("MainViewModel.Dispose called multiple times - ignoring duplicate call");
+                return;
+            }
+            _isDisposing = true;
+            
+            _logger.Information("MainViewModel.Dispose starting...");
+            
             Dispose(true);
             GC.SuppressFinalize(this);
+            
+            // Force COM cleanup and wait briefly for it to complete
+            ComHelper.ForceComCleanup("MainViewModelDispose");
+            System.Threading.Thread.Sleep(100); // Give COM time to clean up
+
+            // Log final COM statistics to verify cleanup
+            var summary = ComHelper.GetComObjectSummary();
+            _logger.Information("Final COM statistics after disposal - Net Objects: {NetObjects}", summary.NetObjects);
+
+            if (summary.NetObjects > 0)
+            {
+                _logger.Error("COM objects still not released after disposal! Check disposal chain.");
+                ComHelper.LogComObjectStats();
+            }
+
+            _logger.Information("MainViewModel disposed");
         }
         
         protected virtual void Dispose(bool disposing)
