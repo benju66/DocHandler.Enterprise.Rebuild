@@ -146,6 +146,14 @@ namespace DocHandler.Services
                 {
                     try
                     {
+                        // Validate STA thread before COM operations
+                        var apartmentState = Thread.CurrentThread.GetApartmentState();
+                        if (apartmentState != ApartmentState.STA)
+                        {
+                            _logger.Error("GetOrCreateWordApp: Thread is not STA ({ApartmentState}) - COM operations may fail", apartmentState);
+                            throw new InvalidOperationException($"Thread must be STA for COM operations. Current state: {apartmentState}");
+                        }
+                        
                         _logger.Information("Creating new Word application instance for session");
                         Type wordType = Type.GetTypeFromProgID("Word.Application");
                         if (wordType == null)
@@ -154,6 +162,7 @@ namespace DocHandler.Services
                         }
                         
                         _wordApp = Activator.CreateInstance(wordType);
+                        ComHelper.TrackComObjectCreation("WordApp", "SessionAwareOfficeService");
                         
                         // Apply optimizations safely
                         ApplyWordOptimizations(_wordApp);
@@ -191,32 +200,17 @@ namespace DocHandler.Services
 
         private void ApplyWordOptimizations(dynamic wordApp)
         {
-            // Core optimizations that should work on all versions
-            SafeSetProperty(wordApp, "Visible", false);
-            SafeSetProperty(wordApp, "DisplayAlerts", 0); // wdAlertsNone
-            
-            // SAFE: Only set properties that don't require active documents
             try
             {
-                SafeSetProperty(wordApp, "ScreenUpdating", false);
+                // Only set the most essential properties
+                wordApp.Visible = false;
+                wordApp.DisplayAlerts = 0; // wdAlertsNone
+                // Skip other properties during warm-up to avoid COM object creation
             }
-            catch (COMException ex) when (ex.HResult == unchecked((int)0x800A11FD))
+            catch (Exception ex)
             {
-                // Ignore "document window is not active" error during pre-warm
-                _logger.Debug("Skipping ScreenUpdating property - no active document during pre-warm");
-            }
-            
-            SafeSetProperty(wordApp, "DisplayRecentFiles", false);
-            SafeSetProperty(wordApp, "DisplayScrollBars", false);
-            SafeSetProperty(wordApp, "DisplayStatusBar", false);
-            
-            try
-            {
-                SafeSetProperty(wordApp, "WindowState", -2); // wdWindowStateMinimize
-            }
-            catch (COMException ex) when (ex.HResult == unchecked((int)0x800A11FD))
-            {
-                _logger.Debug("Cannot minimize window - no document context");
+                _logger.Debug("Error applying Word optimizations: {Message}", ex.Message);
+                // Continue anyway - these are just optimizations
             }
             
             // Advanced optimizations with error handling
@@ -336,8 +330,8 @@ namespace DocHandler.Services
             {
                 if (_wordApp == null) return false;
                 
-                // Try to access a property to verify Word is responsive
-                var _ = _wordApp.Version;
+                // Don't access properties during health check - they create COM objects
+                // Just check if the reference is not null
                 return true;
             }
             catch
@@ -483,10 +477,13 @@ namespace DocHandler.Services
                             if (documents != null && documents.Count > 0)
                             {
                                 _logger.Warning("Closing {Count} open documents", documents.Count);
-                                foreach (dynamic doc in documents)
+                                // Use for loop instead of foreach to avoid COM enumerator leak
+                                int count = documents.Count;
+                                for (int i = count; i >= 1; i--) // Word collections are 1-based, iterate backwards
                                 {
                                     try
                                     {
+                                        dynamic doc = documents[i];
                                         doc.Close(SaveChanges: false);
                                         comScope.Track(doc, "Document", "SessionAwareDispose");
                                     }

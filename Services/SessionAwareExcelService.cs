@@ -3,6 +3,7 @@ using System.IO;
 using System.Threading.Tasks;
 using Serilog;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace DocHandler.Services
 {
@@ -17,6 +18,11 @@ namespace DocHandler.Services
         private bool _isWarmingUp = false;
         private readonly object _warmUpLock = new object();
         
+        // Add idle timer mechanism
+        private DateTime _lastUsed = DateTime.Now;
+        private Timer? _idleTimer;
+        private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(5);
+        
         public SessionAwareExcelService()
         {
             _logger = Log.ForContext<SessionAwareExcelService>();
@@ -26,6 +32,14 @@ namespace DocHandler.Services
         {
             try
             {
+                // Validate STA thread before COM operations
+                var apartmentState = Thread.CurrentThread.GetApartmentState();
+                if (apartmentState != ApartmentState.STA)
+                {
+                    _logger.Error("InitializeExcel: Thread is not STA ({ApartmentState}) - COM operations may fail", apartmentState);
+                    throw new InvalidOperationException($"Thread must be STA for COM operations. Current state: {apartmentState}");
+                }
+                
                 Type? excelType = Type.GetTypeFromProgID("Excel.Application");
                 if (excelType == null)
                 {
@@ -46,6 +60,11 @@ namespace DocHandler.Services
                 _excelApp.WindowState = -4137; // xlMinimized
                 
                 _lastHealthCheck = DateTime.Now;
+                _lastUsed = DateTime.Now;
+                
+                // Start idle timer
+                _idleTimer = new Timer(CheckIdleTimeout, null, _idleTimeout, _idleTimeout);
+                
                 _logger.Information("Excel application initialized for session (hidden mode)");
             }
             catch (Exception ex)
@@ -60,7 +79,8 @@ namespace DocHandler.Services
             try
             {
                 if (_excelApp == null) return false;
-                var _ = _excelApp.Version;
+                // Don't access any properties - just check if not null
+                // The real test happens when we try to use it
                 return true;
             }
             catch
@@ -90,6 +110,8 @@ namespace DocHandler.Services
             {
                 lock (_conversionLock)
                 {
+                    _lastUsed = DateTime.Now;
+                    
                     if (_excelApp == null)
                     {
                         InitializeExcel();
@@ -201,10 +223,13 @@ namespace DocHandler.Services
                             if (workbooks != null && workbooks.Count > 0)
                             {
                                 _logger.Warning("Closing {Count} open workbooks", workbooks.Count);
-                                foreach (dynamic wb in workbooks)
+                                // Use for loop instead of foreach to avoid COM enumerator leak
+                                int count = workbooks.Count;
+                                for (int i = count; i >= 1; i--) // Excel collections are 1-based, iterate backwards
                                 {
                                     try
                                     {
+                                        dynamic wb = workbooks[i];
                                         wb.Close(false);
                                         comScope.Track(wb, "Workbook", "DisposeExcel");
                                     }
@@ -229,6 +254,18 @@ namespace DocHandler.Services
             catch (Exception ex)
             {
                 _logger.Error(ex, "Error disposing Excel application");
+            }
+        }
+        
+        private void CheckIdleTimeout(object? state)
+        {
+            lock (_conversionLock)
+            {
+                if (_excelApp != null && DateTime.Now - _lastUsed > _idleTimeout)
+                {
+                    _logger.Information("Excel application idle for {Minutes} minutes, disposing", _idleTimeout.TotalMinutes);
+                    DisposeExcel();
+                }
             }
         }
         

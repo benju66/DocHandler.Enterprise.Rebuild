@@ -191,3 +191,131 @@ Expected healthy state:
 - Net Objects: 0 (all created objects have been released)
 - No "ExcelApp" entries in object details when idle
 - Stable memory usage after processing files 
+
+## Latest Fixes - Cross-Thread COM Access (December 2024)
+
+### 1. **Fixed Cross-Thread COM Object Creation**
+**Problem**: WarmUp methods were creating COM objects on MTA threads via Task.Run
+```csharp
+// OLD - Creates COM objects on MTA thread pool
+_ = Task.Run(() =>
+{
+    _sessionOfficeService.WarmUp();
+    _sessionExcelService.WarmUp();
+});
+```
+
+**Fix**: Ensure COM objects are created on UI thread (STA)
+```csharp
+// FIXED - Creates COM objects on UI thread
+if (Application.Current.Dispatcher.CheckAccess())
+{
+    _sessionOfficeService.WarmUp();
+    _sessionExcelService.WarmUp();
+}
+else
+{
+    Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+    {
+        PreWarmOfficeServicesForSaveQuotes();
+    }));
+}
+```
+
+### 2. **Fixed Health Check COM Object Creation**
+**Problem**: Health checks were accessing COM properties that create hidden objects
+```csharp
+// OLD - Creates COM objects during health check
+var _ = _excelApp.Version;
+var documents = wordApp.Documents;
+var docCount = documents.Count;
+```
+
+**Fix**: Simplified health checks to avoid property access
+```csharp
+// FIXED - No COM property access
+if (_excelApp == null) return false;
+return true; // Just check reference
+```
+
+### 3. **Fixed Service Disposal Order**
+**Problem**: Services depending on Office were disposed before Office services
+**Fix**: Dispose in correct order:
+1. Queue service (uses file processing)
+2. File processing service (uses Office)
+3. Company name service (uses Office)
+4. Office services last
+5. Force COM cleanup
+6. Log final stats
+
+### 4. **Fixed WarmUp Property Access**
+**Problem**: Setting many Word properties during warm-up creates COM objects
+**Fix**: Only set essential properties:
+```csharp
+wordApp.Visible = false;
+wordApp.DisplayAlerts = 0;
+// Skip other properties
+```
+
+## Latest Fixes - Additional COM Memory Leaks (December 2024)
+
+### 5. **Fixed foreach Loops Over COM Collections**
+**Problem**: Using foreach on COM collections creates hidden enumerator objects
+```csharp
+// OLD - Creates COM enumerator that leaks
+foreach (dynamic doc in documents)
+{
+    doc.Close(SaveChanges: false);
+}
+```
+
+**Fix**: Use indexed for loops instead
+```csharp
+// FIXED - No enumerator created
+int count = documents.Count;
+for (int i = count; i >= 1; i--) // COM collections are 1-based
+{
+    dynamic doc = documents[i];
+    doc.Close(SaveChanges: false);
+    ComHelper.SafeReleaseComObject(doc, "Document", "Dispose");
+}
+```
+
+**Fixed in:**
+- OfficeConversionService.cs (Word and Excel disposal)
+- SessionAwareOfficeService.cs (Word disposal)
+- SessionAwareExcelService.cs (Excel disposal)
+- OptimizedOfficeConversionService.cs (Word instance disposal)
+
+### 6. **Fixed ConvertWordToPdfSync Orphaned Apps**
+**Problem**: Nested try-catch blocks with early returns bypassed cleanup
+```csharp
+// OLD - Early returns bypass finally block
+try
+{
+    wordApp = Activator.CreateInstance(wordType);
+}
+catch (Exception ex)
+{
+    return new ConversionResult { ... }; // Bypasses finally!
+}
+```
+
+**Fix**: Removed nested try-catch, let exceptions bubble up
+```csharp
+// FIXED - Exceptions bubble to main try-catch
+wordApp = Activator.CreateInstance(wordType);
+if (wordApp == null)
+{
+    throw new InvalidOperationException("Failed to create Word application");
+}
+// Main finally block will always run
+```
+
+## Verification Steps
+1. Run application and enable Save Quotes Mode
+2. Check COM Statistics (Help → COM Object Statistics...)
+3. Process several files
+4. Check stats again - Net Objects should be 0
+5. Close application - should close cleanly without hanging
+6. Check Task Manager - no orphaned WINWORD.EXE or EXCEL.EXE processes 

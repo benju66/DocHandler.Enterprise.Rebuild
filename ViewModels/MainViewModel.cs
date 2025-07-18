@@ -892,33 +892,36 @@ namespace DocHandler.ViewModels
         {
             if (_sessionOfficeService != null && _sessionExcelService != null)
             {
-                _ = Task.Run(() =>
+                // Check if we're on UI thread (which is STA)
+                if (Application.Current.Dispatcher.CheckAccess())
                 {
                     try
                     {
-                        _logger.Information("Pre-warming shared Office services for Save Quotes Mode...");
+                        _logger.Information("Pre-warming Office services on UI thread (STA)...");
+                        _logger.Information("Thread {ThreadId} apartment state: {ApartmentState}", 
+                            System.Threading.Thread.CurrentThread.ManagedThreadId, 
+                            System.Threading.Thread.CurrentThread.GetApartmentState());
                         
-                        // Pre-warm both services using the shared instances
                         _sessionOfficeService.WarmUp();
                         _sessionExcelService.WarmUp();
                         
-                        _logger.Information("✓ Shared Office services pre-warmed successfully");
-                        
-                        // Log COM stats after warm-up to track any leaks
+                        _logger.Information("✓ Office services pre-warmed successfully");
                         ComHelper.LogComObjectStats();
                     }
                     catch (Exception ex)
                     {
                         _logger.Warning(ex, "Failed to pre-warm Office services");
-                        // Ensure cleanup on warm-up failure
-                        try
-                        {
-                            _sessionOfficeService?.Dispose();
-                            _sessionExcelService?.Dispose();
-                        }
-                        catch { }
                     }
-                });
+                }
+                else
+                {
+                    // Schedule on UI thread
+                    _logger.Information("Scheduling Office warm-up on UI thread...");
+                    Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        PreWarmOfficeServicesForSaveQuotes();
+                    }));
+                }
             }
             else
             {
@@ -2881,18 +2884,51 @@ namespace DocHandler.ViewModels
                     _logger.Error(ex, "Error disposing company name service");
                 }
                 
-                // Dispose Office services
-                try
+                // Dispose Office services last (after services that use them)
+                if (_sessionOfficeService != null)
                 {
-                    _officeConversionService?.Dispose();
-                    _sessionOfficeService?.Dispose();
-                    _sessionExcelService?.Dispose();
-                    _logger.Information("Office services disposed");
+                    try
+                    {
+                        _sessionOfficeService.Dispose();
+                        _logger.Information("Session Office service disposed");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error disposing Session Office service");
+                    }
                 }
-                catch (Exception ex)
+                
+                if (_sessionExcelService != null)
                 {
-                    _logger.Error(ex, "Error disposing Office services");
+                    try
+                    {
+                        _sessionExcelService.Dispose();
+                        _logger.Information("Session Excel service disposed");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error disposing Session Excel service");
+                    }
                 }
+                
+                if (_officeConversionService != null)
+                {
+                    try
+                    {
+                        _officeConversionService.Dispose();
+                        _logger.Information("Office conversion service disposed");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error disposing Office conversion service");
+                    }
+                }
+                
+                // Force COM cleanup before disposing other services
+                ComHelper.ForceComCleanup("MainViewModelCleanup");
+                
+                // Log final COM stats
+                ComHelper.LogComObjectStats();
                 
                 // Dispose performance monitor
                 _performanceMonitor?.Dispose();
@@ -2902,14 +2938,9 @@ namespace DocHandler.ViewModels
                 _officeTracker?.Dispose();
                 _logger.Information("Office instance tracker disposed");
                 
-                // Dispose process manager and log final COM stats
+                // Dispose process manager last
                 _processManager?.Dispose();
                 _logger.Information("Process manager disposed");
-                
-                // Force garbage collection to ensure COM cleanup
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
                 
                 _logger.Information("MainViewModel cleanup completed");
             }

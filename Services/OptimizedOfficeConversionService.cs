@@ -561,37 +561,12 @@ namespace DocHandler.Services
 
                 _logger.Debug("ConvertWordToPdfSync: Creating Word application instance");
                 
-                try
-                {
-                    wordApp = Activator.CreateInstance(wordType);
-                }
-                catch (COMException comEx)
-                {
-                    _logger.Error(comEx, "ConvertWordToPdfSync: COM exception creating Word application - HResult={HResult}", comEx.HResult);
-                    return new ConversionResult
-                    {
-                        Success = false,
-                        ErrorMessage = $"COM error creating Word application: {comEx.Message} (HResult: {comEx.HResult:X8})"
-                    };
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error(ex, "ConvertWordToPdfSync: Exception creating Word application");
-                    return new ConversionResult
-                    {
-                        Success = false,
-                        ErrorMessage = $"Error creating Word application: {ex.Message}"
-                    };
-                }
+                // Create Word app without nested try-catch to ensure finally block runs
+                wordApp = Activator.CreateInstance(wordType);
                 
                 if (wordApp == null)
                 {
-                    _logger.Error("ConvertWordToPdfSync: Word application creation returned null");
-                    return new ConversionResult
-                    {
-                        Success = false,
-                        ErrorMessage = "Failed to create Word application instance - Activator returned null."
-                    };
+                    throw new InvalidOperationException("Failed to create Word application instance - Activator returned null.");
                 }
                 
                 ComHelper.TrackComObjectCreation("WordApp", "OptimizedSyncConversion");
@@ -805,34 +780,8 @@ namespace DocHandler.Services
                         if (instance.Application == null)
                             return false;
                         
-                        // Check 2: Try to access Documents collection
-                        using (var comScope = new ComResourceScope())
-                        {
-                            var documents = comScope.GetDocuments(instance.Application, "HealthCheck");
-                            var docCount = documents.Count;
-                        } // documents collection automatically released here
-                        
-                        // Check 3: Try to access Version (basic property that should always work)
-                        try
-                        {
-                            var version = instance.Application.Version;
-                        }
-                        catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
-                        {
-                            // Version property not available - but that's okay, continue
-                            _logger.Debug("Version property not available during health check");
-                        }
-                        
-                        // Check 4: Verify application is responding (not in a hung state)
-                        try
-                        {
-                            var visible = instance.Application.Visible;
-                        }
-                        catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
-                        {
-                            // Visible property not available - but that's okay, continue
-                            _logger.Debug("Visible property not available during health check");
-                        }
+                        // Simplified health check - avoid creating unnecessary COM objects
+                        // The real test happens when we try to use it for conversion
                         
                         return true;
                     }
@@ -1113,10 +1062,13 @@ namespace DocHandler.Services
                                 var documents = comScope.GetDocuments(instance.Application, "DisposeWordInstance");
                                 if (documents != null && documents.Count > 0)
                                 {
-                                    foreach (dynamic doc in documents)
+                                    // Use for loop instead of foreach to avoid COM enumerator leak
+                                    int count = documents.Count;
+                                    for (int i = count; i >= 1; i--) // Word collections are 1-based, iterate backwards
                                     {
                                         try
                                         {
+                                            dynamic doc = documents[i];
                                             doc.Close(SaveChanges: false);
                                             comScope.Track(doc, "Document", "DisposeWordInstance");
                                         }

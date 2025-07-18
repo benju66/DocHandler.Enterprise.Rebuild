@@ -1325,12 +1325,12 @@ namespace DocHandler.Services
                 // Create secure temporary directory with unique name
                 var tempFolderName = $"DocHandler_{Guid.NewGuid():N}";
                 var tempFolder = Path.Combine(Path.GetTempPath(), tempFolderName);
-                Directory.CreateDirectory(tempFolder);
-                
-                var tempPdfPath = Path.Combine(tempFolder, $"{Path.GetFileNameWithoutExtension(filePath)}_scan.pdf");
+                string tempPdfPath = null;
                 
                 try
                 {
+                    Directory.CreateDirectory(tempFolder);
+                    tempPdfPath = Path.Combine(tempFolder, $"{Path.GetFileNameWithoutExtension(filePath)}_scan.pdf");
                     // Use shared session Office service instead of creating new instance
                     if (_sessionOfficeService == null)
                     {
@@ -1383,7 +1383,11 @@ namespace DocHandler.Services
                 }
                 catch (Exception)
                 {
-                    // Clean up on error
+                    throw;
+                }
+                finally
+                {
+                    // Always clean up temp folder
                     try
                     {
                         if (Directory.Exists(tempFolder))
@@ -1391,9 +1395,10 @@ namespace DocHandler.Services
                             Directory.Delete(tempFolder, true);
                         }
                     }
-                    catch { }
-                    
-                    throw;
+                    catch (Exception cleanupEx)
+                    {
+                        _logger.Warning(cleanupEx, "Failed to clean up temp folder: {Path}", tempFolder);
+                    }
                 }
             }
             catch (Exception ex)

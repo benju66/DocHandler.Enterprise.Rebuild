@@ -335,13 +335,15 @@ namespace DocHandler.Services
                     try
                     {
                         // Open document
-                        doc = wordInfo.Application.Documents.Open(
+                        dynamic documents = wordInfo.Application.Documents;
+                        doc = documents.Open(
                             workingInputPath,
                             ReadOnly: true,
                             AddToRecentFiles: false,
                             Repair: false,
                             ShowRepairs: false
                         );
+                        ComHelper.SafeReleaseComObject(documents, "Documents", "ConvertWordToPdf");
 
                         // Convert to PDF
                         doc.SaveAs2(outputPath, FileFormat: 17);

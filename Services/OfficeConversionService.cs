@@ -172,8 +172,10 @@ namespace DocHandler.Services
                         
                         // FIXED: Direct COM operations on single STA thread - no nested Task.Run()
                         _logger.Debug("Opening Word document: {Path}", inputPath);
-                        doc = _wordApp.Documents.Open(inputPath, ReadOnly: true);
+                        dynamic documents = _wordApp.Documents;
+                        doc = documents.Open(inputPath, ReadOnly: true);
                         ComHelper.TrackComObjectCreation("Document", "ConvertWordToPdf");
+                        ComHelper.SafeReleaseComObject(documents, "Documents", "ConvertWordToPdf");
                         
                         // Check for cancellation before PDF conversion
                         cts.Token.ThrowIfCancellationRequested();
@@ -404,12 +406,14 @@ namespace DocHandler.Services
                         }
 
                         // Open the workbook
-                        workbook = _excelApp.Workbooks.Open(
+                        dynamic workbooks = _excelApp.Workbooks;
+                        workbook = workbooks.Open(
                             inputPath,
                             ReadOnly: true,
                             IgnoreReadOnlyRecommended: true,
                             Notify: false);
                         ComHelper.TrackComObjectCreation("Workbook", "ConvertExcelToPdf");
+                        ComHelper.SafeReleaseComObject(workbooks, "Workbooks", "ConvertExcelToPdf");
 
                         // Export as PDF (0 = xlTypePDF)
                         workbook.ExportAsFixedFormat(
@@ -491,10 +495,13 @@ namespace DocHandler.Services
                                 var documents = _wordApp.Documents;
                                 if (documents != null && documents.Count > 0)
                                 {
-                                    foreach (dynamic doc in documents)
+                                    // Use for loop instead of foreach to avoid COM enumerator leak
+                                    int count = documents.Count;
+                                    for (int i = count; i >= 1; i--) // Word collections are 1-based, iterate backwards
                                     {
                                         try
                                         {
+                                            dynamic doc = documents[i];
                                             doc.Close(SaveChanges: false);
                                             ComHelper.SafeReleaseComObject(doc, "Document", "Dispose");
                                         }
@@ -531,10 +538,13 @@ namespace DocHandler.Services
                                 var workbooks = _excelApp.Workbooks;
                                 if (workbooks != null && workbooks.Count > 0)
                                 {
-                                    foreach (dynamic wb in workbooks)
+                                    // Use for loop instead of foreach to avoid COM enumerator leak
+                                    int count = workbooks.Count;
+                                    for (int i = count; i >= 1; i--) // Excel collections are 1-based, iterate backwards
                                     {
                                         try
                                         {
+                                            dynamic wb = workbooks[i];
                                             wb.Close(false);
                                             ComHelper.SafeReleaseComObject(wb, "Workbook", "Dispose");
                                         }
