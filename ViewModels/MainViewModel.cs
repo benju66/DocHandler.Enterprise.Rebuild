@@ -2831,8 +2831,21 @@ namespace DocHandler.ViewModels
             OnPropertyChanged(nameof(CompanyNamePlaceholder));
         }
         
+        // Add disposal guard flag
+        private volatile bool _isCleaningUp = false;
+        
         public async void Cleanup()
         {
+            // Add entry logging and guard
+            _logger.Information("MainViewModel.Cleanup called");
+            
+            if (_isCleaningUp)
+            {
+                _logger.Warning("Cleanup already in progress, skipping");
+                return;
+            }
+            _isCleaningUp = true;
+            
             try
             {
                 _logger.Information("MainViewModel cleanup started");
@@ -3163,9 +3176,16 @@ namespace DocHandler.ViewModels
         
         public void Dispose()
         {
+            // Check _disposed first
+            if (_disposed)
+            {
+                _logger.Warning("MainViewModel.Dispose called on already disposed object");
+                return;
+            }
+            
             if (_isDisposing) 
             {
-                _logger.Warning("MainViewModel.Dispose called multiple times - ignoring duplicate call");
+                _logger.Warning("MainViewModel.Dispose already in progress");
                 return;
             }
             _isDisposing = true;

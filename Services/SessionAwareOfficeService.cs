@@ -331,15 +331,16 @@ namespace DocHandler.Services
 
         private void CheckIdleTimeout(object state)
         {
+            // Check if disposed before proceeding
+            if (_disposed) return;
+            
             lock (_wordLock)
             {
                 if (_wordApp != null && DateTime.Now - _lastUsed > _idleTimeout)
                 {
                     _logger.Information("Word application idle for {Minutes} minutes, disposing", _idleTimeout.TotalMinutes);
                     DisposeWordApp();
-                    
-                    // CRITICAL FIX: Ensure timer is cleared after disposing Word to prevent further callbacks
-                    _idleTimer = null;
+                    // Don't set timer to null here - let Dispose() handle it
                 }
             }
         }
@@ -376,6 +377,15 @@ namespace DocHandler.Services
         
         public async Task<ConversionResult> ConvertWordToPdf(string inputPath, string outputPath)
         {
+            if (_disposed)
+            {
+                return new ConversionResult
+                {
+                    Success = false,
+                    ErrorMessage = "Service has been disposed"
+                };
+            }
+            
             if (!IsOfficeAvailable())
             {
                 return new ConversionResult
@@ -470,6 +480,12 @@ namespace DocHandler.Services
         
         public void WarmUp()
         {
+            if (_disposed)
+            {
+                _logger.Warning("WarmUp called on disposed service");
+                return;
+            }
+            
             lock (_wordLock)
             {
                 if (_wordApp == null)
@@ -482,26 +498,19 @@ namespace DocHandler.Services
         
         private void DisposeWordApp()
         {
-            _logger.Information("DisposeWordApp called, _wordApp is {Status}", _wordApp != null ? "not null" : "null");
+            _logger.Information("DisposeWordApp called");
             
-            // CRITICAL FIX: Dispose timer first to prevent callbacks during disposal
-            if (_idleTimer != null)
+            // Timer disposal has been moved to Dispose method to prevent issues
+            
+            if (_wordApp == null)
             {
-                try
-                {
-                    _idleTimer.Dispose();
-                    _idleTimer = null;
-                    _logger.Debug("Idle timer disposed");
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warning(ex, "Error disposing idle timer");
-                }
+                _logger.Debug("_wordApp is already null, nothing to dispose");
+                return;
             }
             
-            if (_wordApp != null)
-            {
-                try
+            _logger.Information("_wordApp is not null, proceeding with disposal");
+            
+            try
                 {
                     // Diagnostic logging before disposal
                     int processId = 0;
@@ -576,7 +585,6 @@ namespace DocHandler.Services
                 {
                     _logger.Error(ex, "Error in DisposeWordApp - disposal may be incomplete");
                 }
-            }
         }
         
         public bool IsOfficeInstalled()
@@ -592,14 +600,27 @@ namespace DocHandler.Services
         
         protected virtual void Dispose(bool disposing)
         {
-            _logger.Information("SessionAwareOfficeService.Dispose called with disposing={Disposing}", disposing);
-            
             if (!_disposed)
             {
+                _logger.Information("SessionAwareOfficeService.Dispose called with disposing={Disposing}", disposing);
+                
                 if (disposing)
                 {
                     // Dispose managed resources
-                    _idleTimer?.Dispose();
+                    if (_idleTimer != null)
+                    {
+                        try
+                        {
+                            _idleTimer.Change(Timeout.Infinite, Timeout.Infinite); // Stop timer first
+                            _idleTimer.Dispose();
+                            _idleTimer = null;
+                            _logger.Debug("Idle timer disposed");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Error disposing idle timer");
+                        }
+                    }
                 }
                 
                 // Dispose unmanaged resources (COM objects)
@@ -610,6 +631,10 @@ namespace DocHandler.Services
                 
                 _disposed = true;
                 _logger.Information("SessionAwareOfficeService disposed");
+            }
+            else
+            {
+                _logger.Debug("SessionAwareOfficeService.Dispose called on already disposed object");
             }
         }
         

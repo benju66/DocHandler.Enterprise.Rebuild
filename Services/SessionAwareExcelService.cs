@@ -114,6 +114,15 @@ namespace DocHandler.Services
         
         public async Task<ConversionResult> ConvertSpreadsheetToPdf(string inputPath, string outputPath)
         {
+            if (_disposed)
+            {
+                return new ConversionResult
+                {
+                    Success = false,
+                    ErrorMessage = "Service has been disposed"
+                };
+            }
+            
             // CRITICAL FIX: Remove Task.Run - already on STA thread from caller
             lock (_conversionLock)
             {
@@ -176,6 +185,12 @@ namespace DocHandler.Services
         
         public void WarmUp()
         {
+            if (_disposed)
+            {
+                _logger.Warning("WarmUp called on disposed service");
+                return;
+            }
+            
             lock (_warmUpLock)
             {
                 if (_isWarmingUp) return; // Prevent multiple warm-ups
@@ -217,22 +232,17 @@ namespace DocHandler.Services
         
         private void DisposeExcel()
         {
-            _logger.Information("DisposeExcel called, _excelApp is {Status}", _excelApp != null ? "not null" : "null");
+            _logger.Information("DisposeExcel called");
             
-            // CRITICAL FIX: Dispose timer first to prevent callbacks during disposal
-            if (_idleTimer != null)
+            // Timer disposal has been moved to Dispose method to prevent issues
+            
+            if (_excelApp == null)
             {
-                try
-                {
-                    _idleTimer.Dispose();
-                    _idleTimer = null;
-                    _logger.Debug("Idle timer disposed");
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warning(ex, "Error disposing idle timer");
-                }
+                _logger.Debug("_excelApp is already null, nothing to dispose");
+                return;
             }
+            
+            _logger.Information("_excelApp is not null, proceeding with disposal");
             
             try
             {
@@ -329,15 +339,16 @@ namespace DocHandler.Services
         
         private void CheckIdleTimeout(object? state)
         {
+            // Check if disposed before proceeding
+            if (_disposed) return;
+            
             lock (_conversionLock)
             {
                 if (_excelApp != null && DateTime.Now - _lastUsed > _idleTimeout)
                 {
                     _logger.Information("Excel application idle for {Minutes} minutes, disposing", _idleTimeout.TotalMinutes);
                     DisposeExcel();
-                    
-                    // CRITICAL FIX: Ensure timer is cleared after disposing Excel to prevent further callbacks
-                    _idleTimer = null;
+                    // Don't set timer to null here - let Dispose() handle it
                 }
             }
         }
@@ -350,20 +361,38 @@ namespace DocHandler.Services
         
         protected virtual void Dispose(bool disposing)
         {
-            _logger.Information("SessionAwareExcelService.Dispose called with disposing={Disposing}", disposing);
-            
             if (!_disposed)
             {
+                _logger.Information("SessionAwareExcelService.Dispose called with disposing={Disposing}", disposing);
+                
                 if (disposing)
                 {
                     // Dispose managed resources
-                    _idleTimer?.Dispose();
+                    if (_idleTimer != null)
+                    {
+                        try
+                        {
+                            _idleTimer.Change(Timeout.Infinite, Timeout.Infinite); // Stop timer first
+                            _idleTimer.Dispose();
+                            _idleTimer = null;
+                            _logger.Debug("Idle timer disposed");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Error disposing idle timer");
+                        }
+                    }
                 }
                 
                 // Dispose unmanaged resources (COM objects)
                 DisposeExcel();
                 
                 _disposed = true;
+                _logger.Information("SessionAwareExcelService disposed");
+            }
+            else
+            {
+                _logger.Debug("SessionAwareExcelService.Dispose called on already disposed object");
             }
         }
         

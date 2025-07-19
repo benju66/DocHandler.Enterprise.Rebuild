@@ -83,10 +83,11 @@ namespace DocHandler
         {
             _logger.Information("DocHandler Enterprise shutting down");
             
-            // Ensure proper cleanup
-            if (MainWindow?.DataContext is MainViewModel mainViewModel)
+            // Ensure proper cleanup - use Dispose() instead of Cleanup() to prevent double disposal
+            if (MainWindow?.DataContext is IDisposable disposableViewModel)
             {
-                mainViewModel.Cleanup();
+                _logger.Information("Disposing MainViewModel through IDisposable interface");
+                disposableViewModel.Dispose();
             }
             
             // Stop monitoring timers
