@@ -45,6 +45,7 @@ namespace DocHandler.ViewModels
         private readonly ProcessManager _processManager;
         private SaveQuotesQueueService? _queueService;
         private readonly OfficeHealthMonitor _healthMonitor;
+        private readonly MemoryLeakDetector _memoryLeakDetector;
         private readonly object _conversionLock = new object();
         private readonly ConcurrentDictionary<string, byte> _tempFilesToCleanup = new();
         
@@ -283,6 +284,9 @@ namespace DocHandler.ViewModels
                     _sessionOfficeService?.ForceCleanupIfIdle();
                     _sessionExcelService?.ForceCleanupIfIdle();
                 });
+                
+                // Initialize memory leak detector
+                _memoryLeakDetector = new MemoryLeakDetector();
                 
                 // Initialize PDF cache service
                 _pdfCacheService = new PdfCacheService();
@@ -2144,6 +2148,59 @@ namespace DocHandler.ViewModels
                     return "Error collecting metrics: " + ex.Message;
                 }
             });
+        }
+
+        [RelayCommand]
+        private async Task RunMemoryLeakAnalysis()
+        {
+            try
+            {
+                _logger.Information("Starting memory leak analysis");
+                StatusMessage = "Running memory leak analysis...";
+                
+                await Task.Run(() =>
+                {
+                    var results = _memoryLeakDetector.AnalyzeDirectory(Directory.GetCurrentDirectory());
+                    var report = _memoryLeakDetector.GenerateReport(results);
+                    
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        var reportWindow = new Window
+                        {
+                            Title = "Memory Leak Analysis Report",
+                            Width = 800,
+                            Height = 600,
+                            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                            Owner = Application.Current.MainWindow,
+                            Content = new System.Windows.Controls.ScrollViewer
+                            {
+                                Content = new System.Windows.Controls.TextBlock
+                                {
+                                    Text = report,
+                                    FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+                                    FontSize = 12,
+                                    Padding = new Thickness(10),
+                                    TextWrapping = TextWrapping.Wrap
+                                }
+                            }
+                        };
+                        reportWindow.Show();
+                        
+                        StatusMessage = results.Any() 
+                            ? $"Memory leak analysis complete - {results.Count} issues found"
+                            : "Memory leak analysis complete - No issues found";
+                    });
+                });
+                
+                _logger.Information("Memory leak analysis completed");
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to run memory leak analysis");
+                MessageBox.Show($"Failed to run memory leak analysis:\n\n{ex.Message}", 
+                    "Analysis Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                StatusMessage = "Memory leak analysis failed";
+            }
         }
 
         [RelayCommand]

@@ -15,6 +15,7 @@ namespace DocHandler.Services
             services.AddSingleton<PerformanceMonitor>();
             services.AddSingleton<TelemetryService>();
             services.AddSingleton<PdfCacheService>();
+            services.AddSingleton<MemoryLeakDetector>();
             
             // Data Services (Singleton - shared data access)
             services.AddSingleton<ScopeOfWorkService>();

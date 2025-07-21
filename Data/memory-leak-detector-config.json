@@ -1,0 +1,32 @@
+{
+  "agents": [
+    {
+      "name": "memory-leak-detector",
+      "description": "Detects potential memory leaks and disposal issues",
+      "enabled": true,
+      "mode": "detect-only",
+      "rules": [
+        {
+          "pattern": "new\\s+\\w+\\(\\)(?!.*using\\s*\\()",
+          "message": "Object creation without using statement",
+          "severity": "warning"
+        },
+        {
+          "pattern": "_\\w+App\\.\\w+\\.Open\\([^)]*\\)",
+          "message": "COM collection access - verify disposal",
+          "severity": "critical"
+        },
+        {
+          "pattern": "\\.Documents\\.|Workbooks\\.",
+          "message": "Office collection access - track disposal",
+          "severity": "critical"
+        },
+        {
+          "pattern": "\\+=(?!.*\\-=)",
+          "message": "Event subscription without unsubscribe",
+          "severity": "warning"
+        }
+      ]
+    }
+  ]
+}
