@@ -9,6 +9,7 @@ using System.Windows;
 using System.Text;
 using System.Linq;
 using System.Runtime.InteropServices;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace DocHandler
 {
@@ -141,9 +142,14 @@ namespace DocHandler
         {
             try
             {
-                var configService = new ConfigurationService();
-                var processManager = new ProcessManager();
-                var pdfCacheService = new PdfCacheService();
+                // Use DI container for service instantiation
+                var services = new ServiceCollection();
+                services.RegisterServices();
+                using var serviceProvider = services.BuildServiceProvider();
+                
+                var configService = serviceProvider.GetRequiredService<IConfigurationService>();
+                var processManager = serviceProvider.GetRequiredService<IProcessManager>();
+                var pdfCacheService = serviceProvider.GetRequiredService<IPdfCacheService>();
                 
                 return (true, "");
             }
@@ -212,20 +218,12 @@ namespace DocHandler
         {
             try
             {
-                var configService = new ConfigurationService();
-                var pdfCacheService = new PdfCacheService();
-                var processManager = new ProcessManager();
+                // Use DI container for service instantiation
+                var services = new ServiceCollection();
+                services.RegisterServices();
+                using var serviceProvider = services.BuildServiceProvider();
                 
-                // Create session services for testing
-                var sessionWordService = new SessionAwareOfficeService();
-                var sessionExcelService = new SessionAwareExcelService();
-                
-                // Create file processing service with shared session services
-                var fileProcessingService = new OptimizedFileProcessingService(
-                    configService, pdfCacheService, processManager, null, 
-                    sessionWordService, sessionExcelService);
-                
-                var queueService = new SaveQuotesQueueService(configService, pdfCacheService, processManager, fileProcessingService);
+                var queueService = serviceProvider.GetRequiredService<ISaveQuotesQueueService>();
                 
                 // Test basic properties
                 bool isProcessing = queueService.IsProcessing;
@@ -311,20 +309,12 @@ namespace DocHandler
         {
             try
             {
-                var configService = new ConfigurationService();
-                var pdfCacheService = new PdfCacheService();
-                var processManager = new ProcessManager();
+                // Use DI container for service instantiation
+                var services = new ServiceCollection();
+                services.RegisterServices();
+                using var serviceProvider = services.BuildServiceProvider();
                 
-                // Create session services for testing
-                var sessionWordService = new SessionAwareOfficeService();
-                var sessionExcelService = new SessionAwareExcelService();
-                
-                // Create file processing service with shared session services
-                var fileProcessingService = new OptimizedFileProcessingService(
-                    configService, pdfCacheService, processManager, null, 
-                    sessionWordService, sessionExcelService);
-                
-                using var queueService = new SaveQuotesQueueService(configService, pdfCacheService, processManager, fileProcessingService);
+                using var queueService = serviceProvider.GetRequiredService<ISaveQuotesQueueService>();
                 
                 // Create a test PDF file (since PDFs don't require Office)
                 var testFilePath = Path.Combine(Path.GetTempPath(), "diagnostic_test.pdf");
@@ -387,7 +377,12 @@ namespace DocHandler
                             Log.Information("Testing Word to PDF conversion on STA thread...");
                             
                             // Use the standard OfficeConversionService
-                            var officeService = new OfficeConversionService();
+                            // Use DI container for service instantiation
+                var services = new ServiceCollection();
+                services.RegisterServices();
+                using var serviceProvider = services.BuildServiceProvider();
+                
+                var officeService = serviceProvider.GetRequiredService<IOfficeConversionService>();
                             var result = officeService.ConvertWordToPdf(tempDocPath, tempPdfPath).GetAwaiter().GetResult();
                             return result; // Return the result directly
                         }
@@ -774,12 +769,12 @@ namespace DocHandler
                     Directory.CreateDirectory(tempOutputDir);
                     
                     // Test OptimizedFileProcessingService (what the queue actually uses)
-                    var configService = new ConfigurationService();
-                    var pdfCacheService = new PdfCacheService(); // Fixed - use parameterless constructor
-                    var processManager = new ProcessManager();
-                    
-                    var fileProcessingService = new OptimizedFileProcessingService(
-                        configService, pdfCacheService, processManager, null);
+                                    // Use DI container for service instantiation
+                var services = new ServiceCollection();
+                services.RegisterServices();
+                using var serviceProvider = services.BuildServiceProvider();
+                
+                                 var fileProcessingService = serviceProvider.GetRequiredService<IFileProcessingService>();
                     
                     Log.Information("Testing file processing service conversion...");
                     var result = await fileProcessingService.ConvertSingleFile(tempDocPath, tempPdfPath);

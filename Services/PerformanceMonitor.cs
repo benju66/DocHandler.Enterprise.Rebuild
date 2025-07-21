@@ -10,7 +10,7 @@ using Serilog;
 
 namespace DocHandler.Services
 {
-    public class PerformanceMonitor : IDisposable
+    public class PerformanceMonitor : IPerformanceMonitor
     {
         private static readonly ILogger _logger = Log.ForContext<PerformanceMonitor>();
         private readonly Timer _memoryTimer;

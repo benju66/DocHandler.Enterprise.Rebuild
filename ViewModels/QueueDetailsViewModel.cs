@@ -7,11 +7,11 @@ namespace DocHandler.ViewModels
 {
     public partial class QueueDetailsViewModel : ObservableObject
     {
-        private readonly SaveQuotesQueueService _queueService;
+        private readonly ISaveQuotesQueueService _queueService;
         
         public ObservableCollection<SaveQuoteItem> QueueItems => _queueService.AllItems;
         
-        public QueueDetailsViewModel(SaveQuotesQueueService queueService)
+        public QueueDetailsViewModel(ISaveQuotesQueueService queueService)
         {
             _queueService = queueService;
         }

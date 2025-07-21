@@ -20,10 +20,12 @@ namespace DocHandler.Services
             ".pdf", ".doc", ".docx", ".xls", ".xlsx"
         };
 
-        public FileProcessingService()
+        public FileProcessingService(
+            IOfficeConversionService officeConversionService,
+            IPdfOperationsService pdfOperationsService)
         {
-            _officeConversionService = new OfficeConversionService();
-            _pdfOperationsService = new PdfOperationsService();
+            _officeConversionService = officeConversionService;
+            _pdfOperationsService = pdfOperationsService;
         }
 
         public bool IsFileSupported(string filePath)

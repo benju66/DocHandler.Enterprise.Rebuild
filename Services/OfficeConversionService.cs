@@ -11,7 +11,7 @@ using Task = System.Threading.Tasks.Task;
 
 namespace DocHandler.Services
 {
-    public class OfficeConversionService : IDisposable
+    public class OfficeConversionService : IOfficeConversionService
     {
         private readonly ILogger _logger;
         private dynamic? _wordApp;

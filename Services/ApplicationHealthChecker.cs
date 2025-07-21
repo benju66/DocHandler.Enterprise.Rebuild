@@ -7,6 +7,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32;
 using Serilog;
+using Microsoft.Extensions.DependencyInjection;
+using DocHandler.Services;
 
 namespace DocHandler.Services
 {
@@ -365,8 +367,11 @@ namespace DocHandler.Services
         {
             try
             {
-                // Check if configuration service is accessible
-                var configService = new ConfigurationService();
+                // Check if configuration service is accessible - use DI
+                var services = new ServiceCollection();
+                services.RegisterServices();
+                using var serviceProvider = services.BuildServiceProvider();
+                var configService = serviceProvider.GetRequiredService<IConfigurationService>();
                 var config = configService.Config;
                 
                 if (string.IsNullOrEmpty(config.DefaultSaveLocation))

@@ -12,7 +12,7 @@ using Serilog;
 
 namespace DocHandler.Services
 {
-    public class OptimizedFileProcessingService : IDisposable
+    public class OptimizedFileProcessingService : IFileProcessingService
     {
         private readonly ILogger _logger = Log.ForContext<OptimizedFileProcessingService>();
         // COORDINATED SERVICES: Use shared session services instead of creating own instances
@@ -35,21 +35,20 @@ namespace DocHandler.Services
         };
 
                 public OptimizedFileProcessingService(
-            ConfigurationService? configService = null, 
-            PdfCacheService? pdfCacheService = null,
-            ProcessManager? processManager = null,
-            object? officeTracker = null, // Keep parameter for compatibility, but unused
-            SessionAwareOfficeService? sharedWordService = null,
-            SessionAwareExcelService? sharedExcelService = null)
+            IConfigurationService configService,
+            IPdfCacheService pdfCacheService,
+            IProcessManager processManager,
+            IPdfOperationsService pdfOperationsService,
+            ISessionAwareOfficeService? sharedWordService = null,
+            ISessionAwareExcelService? sharedExcelService = null)
         {
-            // Use shared session services instead of creating new instances
+            // Use shared session services and injected dependencies
             _sharedWordService = sharedWordService;
             _sharedExcelService = sharedExcelService;
-            _pdfOperationsService = new PdfOperationsService();
+            _pdfOperationsService = pdfOperationsService;
             _configService = configService;
             _pdfCacheService = pdfCacheService;
             _processManager = processManager;
-            // officeTracker parameter kept for compatibility but no longer used
             
             _logger.Information("OptimizedFileProcessingService initialized with shared Office instances");
         }

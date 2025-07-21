@@ -9,7 +9,7 @@ namespace DocHandler.Services
     /// <summary>
     /// Maintains a single Word application instance for the session to improve performance
     /// </summary>
-    public class SessionAwareOfficeService : IDisposable
+    public class SessionAwareOfficeService : ISessionAwareOfficeService
     {
         private readonly ILogger _logger;
         private dynamic _wordApp;

@@ -10,7 +10,7 @@ using Task = System.Threading.Tasks.Task;
 
 namespace DocHandler.Services
 {
-    public class PdfOperationsService
+    public class PdfOperationsService : IPdfOperationsService
     {
         private readonly ILogger _logger = Log.ForContext<PdfOperationsService>();
 

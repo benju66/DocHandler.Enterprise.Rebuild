@@ -8,7 +8,7 @@ using System.Collections.Generic; // Added missing import
 
 namespace DocHandler.Services
 {
-    public class PdfCacheService : IDisposable
+    public class PdfCacheService : IPdfCacheService
     {
         private readonly ILogger _logger;
         private readonly ConcurrentDictionary<string, CachedPdf> _cache;

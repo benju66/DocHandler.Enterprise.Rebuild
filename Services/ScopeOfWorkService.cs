@@ -9,7 +9,7 @@ using Serilog;
 
 namespace DocHandler.Services
 {
-    public class ScopeOfWorkService
+    public class ScopeOfWorkService : IScopeOfWorkService
     {
         private readonly ILogger _logger;
         private readonly string _dataPath;

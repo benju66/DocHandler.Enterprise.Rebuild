@@ -83,7 +83,16 @@ namespace DocHandler.Services
         Task AddToRecentAsync(string scopeName);
     }
 
-    // Process Manager Interface - extends existing interface
+    // Process Manager Interface
+    public interface IProcessManager
+    {
+        Task<bool> KillOfficeProcessesAsync();
+        Task<List<System.Diagnostics.Process>> GetOfficeProcessesAsync();
+        Task<bool> IsOfficeRunningAsync();
+        void RegisterOfficeProcess(int processId);
+        void UnregisterOfficeProcess(int processId);
+        Task CleanupOrphanedProcessesAsync();
+    }
 
     // Performance Monitor Interface
     public interface IPerformanceMonitor : IDisposable
@@ -129,6 +138,34 @@ namespace DocHandler.Services
         event EventHandler<SaveQuoteCompletedEventArgs> ItemCompleted;
         event EventHandler QueueEmpty;
         event EventHandler<string> StatusMessageChanged;
+    }
+
+    // Health Monitoring Interfaces
+    public interface IOfficeHealthMonitor : IDisposable
+    {
+        Task<bool> CheckOfficeHealthAsync();
+        void StartMonitoring();
+        void StopMonitoring();
+    }
+
+    public interface IApplicationHealthChecker
+    {
+        Task<HealthCheckResult> CheckSystemHealthAsync();
+        Task<bool> CheckOfficeInstallationAsync();
+        Task<bool> CheckDependenciesAsync();
+    }
+
+    // Circuit Breaker Interfaces
+    public interface ICircuitBreaker
+    {
+        Task<T> ExecuteAsync<T>(Func<Task<T>> operation);
+        void Reset();
+        bool IsOpen { get; }
+    }
+
+    public interface IConversionCircuitBreaker : ICircuitBreaker
+    {
+        Task<string?> ExecuteConversionAsync(Func<Task<string?>> conversion);
     }
 }
 

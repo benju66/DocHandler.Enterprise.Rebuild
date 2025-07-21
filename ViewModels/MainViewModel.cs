@@ -27,24 +27,26 @@ using MessageBox = System.Windows.MessageBox;
 using Application = System.Windows.Application;
 using FolderBrowserDialog = Ookii.Dialogs.Wpf.VistaFolderBrowserDialog;
 using System.Windows.Threading;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace DocHandler.ViewModels
 {
     public partial class MainViewModel : ObservableObject, IDisposable
     {
         private readonly ILogger _logger;
-        private readonly OptimizedFileProcessingService _fileProcessingService;
-        private readonly ConfigurationService _configService;
-        private readonly OfficeConversionService _officeConversionService;
-        private readonly CompanyNameService _companyNameService;
-        private readonly ScopeOfWorkService _scopeOfWorkService;
-        private SessionAwareOfficeService? _sessionOfficeService;
-        private SessionAwareExcelService? _sessionExcelService;
-        private readonly PerformanceMonitor _performanceMonitor;
-        private readonly PdfCacheService _pdfCacheService;
-        private readonly ProcessManager _processManager;
-        private SaveQuotesQueueService? _queueService;
+        private readonly IFileProcessingService _fileProcessingService;
+        private readonly IConfigurationService _configService;
+        private readonly IOfficeConversionService _officeConversionService;
+        private readonly ICompanyNameService _companyNameService;
+        private readonly IScopeOfWorkService _scopeOfWorkService;
+        private ISessionAwareOfficeService? _sessionOfficeService;
+        private ISessionAwareExcelService? _sessionExcelService;
+        private readonly IPerformanceMonitor _performanceMonitor;
+        private readonly IPdfCacheService _pdfCacheService;
+        private readonly IProcessManager _processManager;
+        private ISaveQuotesQueueService? _queueService;
         private readonly OfficeHealthMonitor _healthMonitor;
+        private readonly IServiceProvider _serviceProvider;
         private readonly object _conversionLock = new object();
         private readonly ConcurrentDictionary<string, byte> _tempFilesToCleanup = new();
         
@@ -56,7 +58,7 @@ namespace DocHandler.ViewModels
         private readonly SemaphoreSlim _scanSemaphore = new SemaphoreSlim(1, 1);
         private CancellationTokenSource? _currentScanCancellation;
         
-        public ConfigurationService ConfigService => _configService;
+        public IConfigurationService ConfigService => _configService;
         
         [ObservableProperty]
         private ObservableCollection<FileItem> _pendingFiles = new();
@@ -258,25 +260,35 @@ namespace DocHandler.ViewModels
             }
         }
         
-        public MainViewModel()
+        // Legacy constructor for existing code - deprecated
+        public MainViewModel() : this(CreateLegacyServiceProvider())
         {
+        }
+        
+        private static IServiceProvider CreateLegacyServiceProvider()
+        {
+            var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+            services.RegisterServices();
+            return services.BuildServiceProvider();
+        }
+        
+        // New constructor using dependency injection
+        public MainViewModel(IServiceProvider serviceProvider)
+        {
+            _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
             _logger = Log.ForContext<MainViewModel>();
             
             try 
             {
-                // Initialize configuration first
-                _configService = new ConfigurationService();
+                // Get services from DI container
+                _configService = _serviceProvider.GetRequiredService<IConfigurationService>();
+                _processManager = _serviceProvider.GetRequiredService<IProcessManager>();
+                _performanceMonitor = _serviceProvider.GetRequiredService<IPerformanceMonitor>();
+                _pdfCacheService = _serviceProvider.GetRequiredService<IPdfCacheService>();
+                _companyNameService = _serviceProvider.GetRequiredService<ICompanyNameService>();
+                _scopeOfWorkService = _serviceProvider.GetRequiredService<IScopeOfWorkService>();
                 
-                // Initialize process manager 
-                _processManager = new ProcessManager();
-                
-                // Initialize performance monitor
-                _performanceMonitor = new PerformanceMonitor(_configService.Config.MemoryUsageLimitMB);
-                
-                // Initialize Office instance tracker FIRST (before any Office services)
-                // Office process tracking now handled by ReliableOfficeConverter's OfficeProcessGuard
-                
-                // Initialize health monitor
+                // Initialize health monitor with callback
                 _healthMonitor = new OfficeHealthMonitor((result) =>
                 {
                     _logger.Warning("Health check failed - forcing Office cleanup");
@@ -284,18 +296,9 @@ namespace DocHandler.ViewModels
                     _sessionExcelService?.ForceCleanupIfIdle();
                 });
                 
-                // Initialize PDF cache service
-                _pdfCacheService = new PdfCacheService();
-                
-                // Initialize company detection service
-                _companyNameService = new CompanyNameService();
-                
-                // Initialize scope service
-                _scopeOfWorkService = new ScopeOfWorkService();
-                
 
                 
-                // COORDINATED OFFICE SERVICES: Use only SessionAware services to reduce instance count
+                // COORDINATED OFFICE SERVICES: Get from DI container with STA thread considerations
                 // CRITICAL FIX: Create SessionAware services on UI thread (STA) to prevent COM memory leaks
                 try
                 {
@@ -306,14 +309,12 @@ namespace DocHandler.ViewModels
                     
                     if (currentThread.GetApartmentState() == ApartmentState.STA)
                     {
-                        // Safe to create COM objects on STA thread
-                        _sessionOfficeService = new SessionAwareOfficeService();
-                        _sessionExcelService = new SessionAwareExcelService();
+                        // Safe to create COM objects on STA thread - get from DI container
+                        _sessionOfficeService = _serviceProvider.GetRequiredService<ISessionAwareOfficeService>();
+                        _sessionExcelService = _serviceProvider.GetRequiredService<ISessionAwareExcelService>();
+                        _officeConversionService = _serviceProvider.GetRequiredService<IOfficeConversionService>();
                         
-                        // Also create regular OfficeConversionService for fallback operations
-                        _officeConversionService = new OfficeConversionService(_configService, _processManager);
-                        
-                        _logger.Information("Shared SessionAware Office services initialized successfully on STA thread");
+                        _logger.Information("Shared SessionAware Office services initialized successfully on STA thread via DI");
                     }
                     else
                     {
@@ -328,9 +329,9 @@ namespace DocHandler.ViewModels
                         {
                             try
                             {
-                                _sessionOfficeService = new SessionAwareOfficeService();
-                                _sessionExcelService = new SessionAwareExcelService();
-                                _logger.Information("Office services initialized on UI thread via Dispatcher");
+                                _sessionOfficeService = _serviceProvider.GetRequiredService<ISessionAwareOfficeService>();
+                                _sessionExcelService = _serviceProvider.GetRequiredService<ISessionAwareExcelService>();
+                                _logger.Information("Office services initialized on UI thread via Dispatcher and DI");
                             }
                             catch (Exception dispatcherEx)
                             {
@@ -346,18 +347,16 @@ namespace DocHandler.ViewModels
                     _logger.Warning(ex, "Failed to initialize SessionAware Office services, will initialize when needed");
                 }
                 
-                // Initialize file processing service with shared session services
+                // Get file processing service from DI container
                 try
                 {
-                    _fileProcessingService = new OptimizedFileProcessingService(
-                        _configService, _pdfCacheService, _processManager, null, 
-                        _sessionOfficeService, _sessionExcelService);
-                    _logger.Information("File processing service initialized with shared Office instances");
+                    _fileProcessingService = _serviceProvider.GetRequiredService<IFileProcessingService>();
+                    _logger.Information("File processing service initialized via DI");
                 }
                 catch (Exception ex)
                 {
-                    _logger.Warning(ex, "Failed to initialize OptimizedFileProcessingService");
-                    _fileProcessingService = null;
+                    _logger.Warning(ex, "Failed to initialize FileProcessingService from DI container");
+                    _fileProcessingService = null!;
                 }
                 
                 // Set Office services for company name detection if they were initialized
@@ -404,8 +403,9 @@ namespace DocHandler.ViewModels
                 // Initialize with minimal functionality
                 try
                 {
-                    if (_configService == null)
-                        _configService = new ConfigurationService();
+                    if (_configService == null && _serviceProvider != null)
+                        _configService = _serviceProvider.GetService<IConfigurationService>() ?? 
+                                        new ConfigurationService(); // Last resort fallback
                     
                     InitializeFromConfiguration();
                 }
@@ -904,14 +904,14 @@ namespace DocHandler.ViewModels
             }
         }
         
-        private SaveQuotesQueueService GetOrCreateQueueService()
+        private ISaveQuotesQueueService GetOrCreateQueueService()
         {
             if (_queueService == null)
             {
                 try
                 {
-                    _logger.Information("Initializing SaveQuotesQueueService on first use");
-                    _queueService = new SaveQuotesQueueService(_configService, _pdfCacheService, _processManager, _fileProcessingService);
+                    _logger.Information("Initializing SaveQuotesQueueService on first use via DI");
+                    _queueService = _serviceProvider.GetRequiredService<ISaveQuotesQueueService>();
                     
                     // Subscribe to queue events
                     _queueService.ProgressChanged += OnQueueProgressChanged;

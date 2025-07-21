@@ -74,7 +74,7 @@ namespace DocHandler.Services
         public double ConfidenceScore { get; set; }
     }
 
-    public class CompanyNameService : IDisposable
+    public class CompanyNameService : ICompanyNameService
     {
         private readonly ILogger _logger;
         private readonly string _dataPath;

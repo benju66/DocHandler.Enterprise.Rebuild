@@ -10,7 +10,7 @@ using Serilog;
 
 namespace DocHandler.Services
 {
-    public class TelemetryService : IDisposable
+    public class TelemetryService : ITelemetryService
     {
         private static readonly ILogger _logger = Log.ForContext<TelemetryService>();
         private readonly Timer _flushTimer;
