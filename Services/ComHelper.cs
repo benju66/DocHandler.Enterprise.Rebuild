@@ -138,7 +138,7 @@ namespace DocHandler.Services
         {
             var summary = GetComObjectSummary();
             
-            _logger.Information("COM Object Statistics - Created: {Created}, Released: {Released}, Net: {Net}", 
+            _logger.Debug("COM Object Statistics - Created: {Created}, Released: {Released}, Net: {Net}", 
                 summary.TotalCreated, summary.TotalReleased, summary.NetObjects);
 
             if (summary.NetObjects > 0)
@@ -172,7 +172,7 @@ namespace DocHandler.Services
             Interlocked.Exchange(ref _totalCreated, 0);
             Interlocked.Exchange(ref _totalReleased, 0);
             
-            _logger.Information("COM object tracking statistics reset");
+            _logger.Debug("COM object tracking statistics reset");
         }
 
         /// <summary>

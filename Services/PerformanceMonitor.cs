@@ -34,7 +34,7 @@ namespace DocHandler.Services
         
         // Performance thresholds
         private const int HIGH_MEMORY_THRESHOLD_MB = 500;
-        private const int MEMORY_LEAK_THRESHOLD_MB = 100;
+        private const int MEMORY_LEAK_THRESHOLD_MB = 300; // Increased from 100MB to reduce false positives
         private const int MAX_METRIC_HISTORY = 100;
         
         // Memory pressure monitoring

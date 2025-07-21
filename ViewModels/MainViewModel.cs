@@ -43,7 +43,6 @@ namespace DocHandler.ViewModels
         private readonly PerformanceMonitor _performanceMonitor;
         private readonly PdfCacheService _pdfCacheService;
         private readonly ProcessManager _processManager;
-        private readonly OfficeInstanceTracker _officeTracker;
         private SaveQuotesQueueService? _queueService;
         private readonly OfficeHealthMonitor _healthMonitor;
         private readonly object _conversionLock = new object();
@@ -272,15 +271,7 @@ namespace DocHandler.ViewModels
                 _performanceMonitor = new PerformanceMonitor(_configService.Config.MemoryUsageLimitMB);
                 
                 // Initialize Office instance tracker FIRST (before any Office services)
-                try
-                {
-                    _officeTracker = new OfficeInstanceTracker();
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warning(ex, "Failed to initialize OfficeInstanceTracker - continuing without it");
-                    _officeTracker = null;
-                }
+                // Office process tracking now handled by ReliableOfficeConverter's OfficeProcessGuard
                 
                 // Initialize health monitor
                 _healthMonitor = new OfficeHealthMonitor((result) =>
@@ -356,7 +347,7 @@ namespace DocHandler.ViewModels
                 try
                 {
                     _fileProcessingService = new OptimizedFileProcessingService(
-                        _configService, _pdfCacheService, _processManager, _officeTracker, 
+                        _configService, _pdfCacheService, _processManager, null, 
                         _sessionOfficeService, _sessionExcelService);
                     _logger.Information("File processing service initialized with shared Office instances");
                 }
@@ -2988,20 +2979,7 @@ namespace DocHandler.ViewModels
                     }
                 }
                 
-                // Dispose office instance tracker (before process manager)
-                if (_officeTracker != null)
-                {
-                    try
-                    {
-                        _logger.Information("Disposing OfficeInstanceTracker...");
-                        _officeTracker.Dispose();
-                        _logger.Information("OfficeInstanceTracker disposed successfully");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex, "Error disposing OfficeInstanceTracker");
-                    }
-                }
+                // Office process tracking now handled by ReliableOfficeConverter's OfficeProcessGuard
                 
                 // Dispose health monitor
                 if (_healthMonitor != null)

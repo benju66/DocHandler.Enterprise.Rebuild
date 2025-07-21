@@ -144,7 +144,6 @@ namespace DocHandler
                 var configService = new ConfigurationService();
                 var processManager = new ProcessManager();
                 var pdfCacheService = new PdfCacheService();
-                var officeTracker = new OfficeInstanceTracker();
                 
                 return (true, "");
             }
@@ -216,7 +215,6 @@ namespace DocHandler
                 var configService = new ConfigurationService();
                 var pdfCacheService = new PdfCacheService();
                 var processManager = new ProcessManager();
-                var officeTracker = new OfficeInstanceTracker();
                 
                 // Create session services for testing
                 var sessionWordService = new SessionAwareOfficeService();
@@ -224,7 +222,7 @@ namespace DocHandler
                 
                 // Create file processing service with shared session services
                 var fileProcessingService = new OptimizedFileProcessingService(
-                    configService, pdfCacheService, processManager, officeTracker, 
+                    configService, pdfCacheService, processManager, null, 
                     sessionWordService, sessionExcelService);
                 
                 var queueService = new SaveQuotesQueueService(configService, pdfCacheService, processManager, fileProcessingService);
@@ -316,7 +314,6 @@ namespace DocHandler
                 var configService = new ConfigurationService();
                 var pdfCacheService = new PdfCacheService();
                 var processManager = new ProcessManager();
-                var officeTracker = new OfficeInstanceTracker();
                 
                 // Create session services for testing
                 var sessionWordService = new SessionAwareOfficeService();
@@ -324,7 +321,7 @@ namespace DocHandler
                 
                 // Create file processing service with shared session services
                 var fileProcessingService = new OptimizedFileProcessingService(
-                    configService, pdfCacheService, processManager, officeTracker, 
+                    configService, pdfCacheService, processManager, null, 
                     sessionWordService, sessionExcelService);
                 
                 using var queueService = new SaveQuotesQueueService(configService, pdfCacheService, processManager, fileProcessingService);
@@ -389,10 +386,10 @@ namespace DocHandler
                         {
                             Log.Information("Testing Word to PDF conversion on STA thread...");
                             
-                            // Use the same OptimizedOfficeConversionService that the queue uses
-                            var officeService = new OptimizedOfficeConversionService();
-                            var result = officeService.ConvertWordToPdf(tempDocPath, tempPdfPath);
-                            return result.Result; // Get the result synchronously within STA context
+                            // Use the standard OfficeConversionService
+                            var officeService = new OfficeConversionService();
+                            var result = officeService.ConvertWordToPdf(tempDocPath, tempPdfPath).GetAwaiter().GetResult();
+                            return result; // Return the result directly
                         }
                         catch (COMException comEx) when (comEx.HResult == unchecked((int)0x80020006))
                         {

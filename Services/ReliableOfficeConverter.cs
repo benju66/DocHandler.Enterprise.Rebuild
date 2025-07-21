@@ -228,7 +228,7 @@ namespace DocHandler.Services
         {
             try
             {
-                _logger.Information("Creating new Word instance");
+                _logger.Debug("Creating new Word instance");
 
                 Type wordType = Type.GetTypeFromProgID("Word.Application");
                 if (wordType == null)

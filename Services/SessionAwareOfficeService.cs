@@ -158,7 +158,7 @@ namespace DocHandler.Services
                             throw new InvalidOperationException($"Thread must be STA for COM operations. Current state: {apartmentState}");
                         }
                         
-                        _logger.Information("Creating new Word application instance for session");
+                        _logger.Debug("Creating new Word application instance for session");
                         Type wordType = Type.GetTypeFromProgID("Word.Application");
                         if (wordType == null)
                         {
@@ -478,24 +478,6 @@ namespace DocHandler.Services
             }
         }
         
-        public void WarmUp()
-        {
-            if (_disposed)
-            {
-                _logger.Warning("WarmUp called on disposed service");
-                return;
-            }
-            
-            lock (_wordLock)
-            {
-                if (_wordApp == null)
-                {
-                    GetOrCreateWordApp();
-                    _logger.Information("Word pre-warmed for Save Quotes Mode");
-                }
-            }
-        }
-        
         /// <summary>
         /// Force cleanup if the instance has been idle for more than 5 seconds
         /// Called after queue processing completes
@@ -584,7 +566,7 @@ namespace DocHandler.Services
                     }
                     
                     ComHelper.SafeReleaseComObject(_wordApp, "WordApp", "SessionAwareDispose");
-                    _logger.Information("Word COM object released and set to null");
+                    _logger.Debug("Word COM object released and set to null");
                     _wordApp = null;
                     
                     // Reset tracking

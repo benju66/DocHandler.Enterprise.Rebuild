@@ -16,18 +16,12 @@ namespace DocHandler.Services
             services.AddSingleton<TelemetryService>();
             services.AddSingleton<PdfCacheService>();
             
-            // CRITICAL: Single instance tracker for the entire application
-            services.AddSingleton<OfficeInstanceTracker>();
-            
             // Data Services (Singleton - shared data access)
             services.AddSingleton<ScopeOfWorkService>();
             services.AddSingleton<CompanyNameService>();
             
             // PDF Operations (Transient - stateless operations)
             services.AddTransient<PdfOperationsService>();
-            
-            // Office Services Factory (Singleton - manages Office service creation)
-            services.AddSingleton<IOfficeServiceFactory, OfficeServiceFactory>();
             
             return services;
         }

@@ -22,7 +22,6 @@ namespace DocHandler.Services
         private readonly ConfigurationService? _configService;
         private readonly PdfCacheService? _pdfCacheService;
         private readonly ProcessManager? _processManager;
-        private readonly OfficeInstanceTracker? _officeTracker;
         
         // Add progress reporting delegate
         public delegate void ProgressCallback(string fileName, double percentage, string status);
@@ -35,11 +34,11 @@ namespace DocHandler.Services
             ".pdf", ".doc", ".docx", ".xls", ".xlsx"
         };
 
-        public OptimizedFileProcessingService(
+                public OptimizedFileProcessingService(
             ConfigurationService? configService = null, 
-            PdfCacheService? pdfCacheService = null, 
-            ProcessManager? processManager = null, 
-            OfficeInstanceTracker? officeTracker = null,
+            PdfCacheService? pdfCacheService = null,
+            ProcessManager? processManager = null,
+            object? officeTracker = null, // Keep parameter for compatibility, but unused
             SessionAwareOfficeService? sharedWordService = null,
             SessionAwareExcelService? sharedExcelService = null)
         {
@@ -50,7 +49,7 @@ namespace DocHandler.Services
             _configService = configService;
             _pdfCacheService = pdfCacheService;
             _processManager = processManager;
-            _officeTracker = officeTracker;
+            // officeTracker parameter kept for compatibility but no longer used
             
             _logger.Information("OptimizedFileProcessingService initialized with shared Office instances");
         }

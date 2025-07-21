@@ -16,8 +16,6 @@ namespace DocHandler.Services
         private bool _disposed;
         private DateTime _lastHealthCheck = DateTime.Now;
         private readonly TimeSpan _healthCheckInterval = TimeSpan.FromMinutes(5);
-        private bool _isWarmingUp = false;
-        private readonly object _warmUpLock = new object();
         
         // Add idle timer mechanism
         private DateTime _lastUsed = DateTime.Now;
@@ -183,40 +181,6 @@ namespace DocHandler.Services
                 }
         }
         
-        public void WarmUp()
-        {
-            if (_disposed)
-            {
-                _logger.Warning("WarmUp called on disposed service");
-                return;
-            }
-            
-            lock (_warmUpLock)
-            {
-                if (_isWarmingUp) return; // Prevent multiple warm-ups
-                _isWarmingUp = true;
-            }
-            
-            try
-            {
-                lock (_conversionLock)
-                {
-                    if (_excelApp == null)
-                    {
-                        InitializeExcel();
-                        _logger.Information("Excel pre-warmed for Save Quotes Mode");
-                    }
-                }
-            }
-            finally
-            {
-                lock (_warmUpLock)
-                {
-                    _isWarmingUp = false;
-                }
-            }
-        }
-        
         /// <summary>
         /// Force cleanup if the instance has been idle for more than 5 seconds
         /// Called after queue processing completes
@@ -329,7 +293,7 @@ namespace DocHandler.Services
                         }
                         
                         ComHelper.SafeReleaseComObject(_excelApp, "ExcelApp", "DisposeExcel");
-                        _logger.Information("Excel COM object released and set to null");
+                        _logger.Debug("Excel COM object released and set to null");
                         _excelApp = null;
                         
                         // Reset tracking
