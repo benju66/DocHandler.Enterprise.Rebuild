@@ -326,6 +326,70 @@ namespace DocHandler.Services
             }
         }
 
+        /// <summary>
+        /// Terminate any orphaned Office processes that might have been left behind
+        /// </summary>
+        public void TerminateOrphanedOfficeProcesses()
+        {
+            try
+            {
+                _logger.Information("Checking for orphaned Office processes...");
+                
+                var killedCount = 0;
+                var wordProcesses = Process.GetProcessesByName("WINWORD");
+                var excelProcesses = Process.GetProcessesByName("EXCEL");
+                
+                foreach (var process in wordProcesses.Concat(excelProcesses))
+                {
+                    try
+                    {
+                        // Check if it's likely an automated/orphaned process:
+                        // - No main window (automated instances don't have UI)
+                        // - Was started after our app (check process start time)
+                        if (process.MainWindowHandle == IntPtr.Zero)
+                        {
+                            try
+                            {
+                                var currentProcess = Process.GetCurrentProcess();
+                                if (process.StartTime > currentProcess.StartTime)
+                                {
+                                    _logger.Warning("Killing likely orphaned {ProcessName} process (PID: {PID}, StartTime: {StartTime})", 
+                                        process.ProcessName, process.Id, process.StartTime);
+                                    
+                                    process.Kill();
+                                    process.WaitForExit(5000); // Wait up to 5 seconds
+                                    killedCount++;
+                                }
+                                currentProcess.Dispose();
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.Debug(ex, "Could not check process start time for PID {PID}", process.Id);
+                            }
+                        }
+                        process.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Debug(ex, "Error checking process {PID}", process.Id);
+                    }
+                }
+                
+                if (killedCount > 0)
+                {
+                    _logger.Warning("Terminated {Count} orphaned Office processes", killedCount);
+                }
+                else
+                {
+                    _logger.Information("No orphaned Office processes found");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error terminating orphaned Office processes");
+            }
+        }
+        
         public void Dispose()
         {
             Dispose(true);

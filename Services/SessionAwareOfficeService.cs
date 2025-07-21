@@ -16,7 +16,7 @@ namespace DocHandler.Services
         private DateTime _lastUsed;
         private Timer _idleTimer;
         private readonly object _wordLock = new object();
-        private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(5);
+        private readonly TimeSpan _idleTimeout = TimeSpan.FromSeconds(30); // Reduced from 5 minutes
         private bool _disposed;
         private bool? _officeAvailable;
         private DateTime _lastHealthCheck = DateTime.Now;
@@ -492,6 +492,23 @@ namespace DocHandler.Services
                 {
                     GetOrCreateWordApp();
                     _logger.Information("Word pre-warmed for Save Quotes Mode");
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Force cleanup if the instance has been idle for more than 5 seconds
+        /// Called after queue processing completes
+        /// </summary>
+        public void ForceCleanupIfIdle()
+        {
+            lock (_wordLock)
+            {
+                if (_wordApp != null && DateTime.Now - _lastUsed > TimeSpan.FromSeconds(5))
+                {
+                    _logger.Information("Force cleanup of idle Word instance (last used {Seconds} seconds ago)", 
+                        (DateTime.Now - _lastUsed).TotalSeconds);
+                    DisposeWordApp();
                 }
             }
         }

@@ -22,7 +22,7 @@ namespace DocHandler.Services
         // Add idle timer mechanism
         private DateTime _lastUsed = DateTime.Now;
         private Timer? _idleTimer;
-        private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(5);
+        private readonly TimeSpan _idleTimeout = TimeSpan.FromSeconds(30); // Reduced from 5 minutes
         
         // Diagnostic tracking fields
         private DateTime _createdAt;
@@ -213,6 +213,23 @@ namespace DocHandler.Services
                 lock (_warmUpLock)
                 {
                     _isWarmingUp = false;
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Force cleanup if the instance has been idle for more than 5 seconds
+        /// Called after queue processing completes
+        /// </summary>
+        public void ForceCleanupIfIdle()
+        {
+            lock (_conversionLock)
+            {
+                if (_excelApp != null && DateTime.Now - _lastUsed > TimeSpan.FromSeconds(5))
+                {
+                    _logger.Information("Force cleanup of idle Excel instance (last used {Seconds} seconds ago)", 
+                        (DateTime.Now - _lastUsed).TotalSeconds);
+                    DisposeExcel();
                 }
             }
         }

@@ -605,6 +605,19 @@ namespace DocHandler.Services
             return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
         }
 
+        // Add this method to force cleanup when queue processing completes
+        public void OnQueueProcessingCompleted()
+        {
+            _logger.Information("Queue processing completed, forcing cleanup of idle Office instances");
+            
+            // Force cleanup of session-aware services if they're idle
+            _sharedWordService?.ForceCleanupIfIdle();
+            _sharedExcelService?.ForceCleanupIfIdle();
+            
+            // Log COM statistics to verify cleanup
+            ComHelper.LogComObjectStats();
+        }
+        
         public void Dispose()
         {
             Dispose(true);

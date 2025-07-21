@@ -10,6 +10,7 @@ using System.Windows;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using DocHandler.Models;
+using DocHandler.Services;
 using Serilog;
 using System.Collections.Generic; // Added missing import
 
@@ -51,6 +52,15 @@ namespace DocHandler.Services
         public event EventHandler<SaveQuoteCompletedEventArgs>? ItemCompleted;
         public event EventHandler? QueueEmpty;
         public event EventHandler<string>? StatusMessageChanged;
+        
+        /// <summary>
+        /// Stop the queue processing and cleanup resources
+        /// </summary>
+        public void StopProcessing()
+        {
+            _logger.Information("Stopping queue processing");
+            _cancellationTokenSource?.Cancel();
+        }
         
         public SaveQuotesQueueService(ConfigurationService configService, PdfCacheService pdfCacheService, ProcessManager processManager, OptimizedFileProcessingService sharedFileProcessingService)
         {
@@ -152,37 +162,60 @@ namespace DocHandler.Services
             _logger.Information("Processing queue with {MaxConcurrency} parallel tasks, queue has {Count} items", 
                 maxConcurrency, _queue.Count);
             
-            while (!_cancellationTokenSource.Token.IsCancellationRequested)
+            // Create a single converter for the entire batch
+            using (var batchConverter = new ReliableOfficeConverter())
             {
-                if (_queue.TryDequeue(out var item))
+                try
                 {
-                    _logger.Debug("Dequeued item: {FileName} for processing", item.File.FileName);
-                    var task = ProcessItemAsync(item, semaphore);
-                    tasks.Add(task);
-                    
-                    // Clean up completed tasks
-                    tasks.RemoveAll(t => t.IsCompleted);
-                    
-                    // Don't let too many tasks accumulate
-                    if (tasks.Count >= maxConcurrency * 2)
+                    while (!_cancellationTokenSource.Token.IsCancellationRequested)
                     {
-                        await Task.WhenAny(tasks);
+                        if (_queue.TryDequeue(out var item))
+                        {
+                            _logger.Debug("Dequeued item: {FileName} for processing", item.File.FileName);
+                            var task = ProcessItemWithConverterAsync(item, semaphore, batchConverter);
+                            tasks.Add(task);
+                            
+                            // Clean up completed tasks
+                            tasks.RemoveAll(t => t.IsCompleted);
+                            
+                            // Don't let too many tasks accumulate
+                            if (tasks.Count >= maxConcurrency * 2)
+                            {
+                                await Task.WhenAny(tasks);
+                            }
+                        }
+                        else if (tasks.Count == 0)
+                        {
+                            // Queue is empty and no tasks running - we're done!
+                            _logger.Information("Queue is empty and all tasks completed");
+                            break;
+                        }
+                        else
+                        {
+                            // Wait for any task to complete before checking queue again
+                            await Task.WhenAny(tasks);
+                            tasks.RemoveAll(t => t.IsCompleted);
+                        }
+                    }
+                    
+                    // Wait for all remaining tasks
+                    if (tasks.Count > 0)
+                    {
+                        _logger.Information("Waiting for {Count} remaining tasks to complete", tasks.Count);
+                        await Task.WhenAll(tasks);
                     }
                 }
-                else if (tasks.Count == 0)
+                finally
                 {
-                    // Queue is empty and no tasks running
-                    break;
-                }
-                else
-                {
-                    // Wait for any task to complete
-                    await Task.WhenAny(tasks);
+                    // CRITICAL: Always finish batch to cleanup Office instances
+                    _logger.Information("About to call FinishBatch on converter");
+                    batchConverter.FinishBatch();
+                    _logger.Information("FinishBatch called successfully - Office instances should be cleaned up");
                 }
             }
             
-            // Wait for all remaining tasks
-            await Task.WhenAll(tasks);
+            // Notify file processing service that queue is complete
+            _fileProcessingService?.OnQueueProcessingCompleted();
             
             // Fire queue empty event
             Application.Current.Dispatcher.Invoke(() =>
@@ -192,7 +225,7 @@ namespace DocHandler.Services
             });
         }
         
-        private async Task ProcessItemAsync(SaveQuoteItem item, SemaphoreSlim semaphore)
+        private async Task ProcessItemWithConverterAsync(SaveQuoteItem item, SemaphoreSlim semaphore, ReliableOfficeConverter converter)
         {
             await semaphore.WaitAsync();
             
@@ -218,7 +251,7 @@ namespace DocHandler.Services
                     item.File.FileName, Path.GetExtension(item.File.FilePath));
                 _logger.Information("QUEUE: Output path: {OutputPath}", outputPath);
 
-                // CRITICAL FIX: Execute the entire conversion on STA thread to prevent COM threading violations
+                // Execute conversion on STA thread
                 _logger.Information("QUEUE: Starting conversion on STA thread (Current Thread: {ThreadId})", 
                     Thread.CurrentThread.ManagedThreadId);
 
@@ -226,9 +259,34 @@ namespace DocHandler.Services
                 {
                     _logger.Information("QUEUE: Now executing on STA thread {ThreadId} (Apartment: {ApartmentState})", 
                         Thread.CurrentThread.ManagedThreadId, Thread.CurrentThread.GetApartmentState());
-                        
-                    // Use synchronous conversion method to avoid async/await issues on STA thread
-                    return _fileProcessingService.ConvertSingleFileSync(item.File.FilePath, outputPath);
+                    
+                    // Process based on file type
+                    var extension = Path.GetExtension(item.File.FilePath).ToLowerInvariant();
+                    
+                    if (extension == ".pdf")
+                    {
+                        // Just copy PDF files
+                        File.Copy(item.File.FilePath, outputPath, true);
+                        return new ConversionResult { Success = true, OutputPath = outputPath };
+                    }
+                    else if (extension == ".doc" || extension == ".docx")
+                    {
+                        // Use batch converter for Word files
+                        return converter.ConvertWordToPdf(item.File.FilePath, outputPath, singleUse: false);
+                    }
+                    else if (extension == ".xls" || extension == ".xlsx")
+                    {
+                        // Use batch converter for Excel files
+                        return converter.ConvertExcelToPdf(item.File.FilePath, outputPath, singleUse: false);
+                    }
+                    else
+                    {
+                        return new ConversionResult
+                        {
+                            Success = false,
+                            ErrorMessage = $"Unsupported file type: {extension}"
+                        };
+                    }
                 });
 
                 _logger.Information("QUEUE: Conversion completed - Success: {Success}, Error: {Error}", 
@@ -358,8 +416,13 @@ namespace DocHandler.Services
         // Implement IDisposable
         public void Dispose()
         {
-            Dispose(true);
-            GC.SuppressFinalize(this);
+            _logger.Information("Disposing SaveQuotesQueueService");
+            
+            // Cancel any ongoing processing
+            _cancellationTokenSource?.Cancel();
+            _cancellationTokenSource?.Dispose();
+            
+            _staThreadPool?.Dispose();
         }
 
         protected virtual void Dispose(bool disposing)

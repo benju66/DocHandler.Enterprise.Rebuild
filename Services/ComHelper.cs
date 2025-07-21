@@ -123,6 +123,15 @@ namespace DocHandler.Services
         }
 
         /// <summary>
+        /// Gets simplified COM object statistics for health monitoring
+        /// </summary>
+        /// <returns>Object with NetObjects count</returns>
+        public static ComObjectSummary GetComObjectStats()
+        {
+            return GetComObjectSummary();
+        }
+        
+        /// <summary>
         /// Logs current COM object statistics
         /// </summary>
         public static void LogComObjectStats()

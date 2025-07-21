@@ -45,6 +45,7 @@ namespace DocHandler.ViewModels
         private readonly ProcessManager _processManager;
         private readonly OfficeInstanceTracker _officeTracker;
         private SaveQuotesQueueService? _queueService;
+        private readonly OfficeHealthMonitor _healthMonitor;
         private readonly object _conversionLock = new object();
         private readonly ConcurrentDictionary<string, byte> _tempFilesToCleanup = new();
         
@@ -111,8 +112,7 @@ namespace DocHandler.ViewModels
                         StatusMessage = "Save Quotes Mode: Drop quote documents";
                         SessionSaveLocation = _configService.Config.DefaultSaveLocation;
                         
-                        // Use centralized pre-warming strategy
-                        PreWarmOfficeServicesForSaveQuotes();
+                        // Pre-warming removed - instances created on-demand for better memory management
                     }
                     else
                     {
@@ -281,6 +281,14 @@ namespace DocHandler.ViewModels
                     _logger.Warning(ex, "Failed to initialize OfficeInstanceTracker - continuing without it");
                     _officeTracker = null;
                 }
+                
+                // Initialize health monitor
+                _healthMonitor = new OfficeHealthMonitor((result) =>
+                {
+                    _logger.Warning("Health check failed - forcing Office cleanup");
+                    _sessionOfficeService?.ForceCleanupIfIdle();
+                    _sessionExcelService?.ForceCleanupIfIdle();
+                });
                 
                 // Initialize PDF cache service
                 _pdfCacheService = new PdfCacheService();
@@ -899,50 +907,6 @@ namespace DocHandler.ViewModels
             catch (Exception ex)
             {
                 _logger.Warning(ex, "Error checking Office availability");
-            }
-        }
-        
-        /// <summary>
-        /// Centralized pre-warming strategy for Office services when Save Quotes Mode is enabled
-        /// </summary>
-        private void PreWarmOfficeServicesForSaveQuotes()
-        {
-            if (_sessionOfficeService != null && _sessionExcelService != null)
-            {
-                // Check if we're on UI thread (which is STA)
-                if (Application.Current.Dispatcher.CheckAccess())
-                {
-                    try
-                    {
-                        _logger.Information("Pre-warming Office services on UI thread (STA)...");
-                        _logger.Information("Thread {ThreadId} apartment state: {ApartmentState}", 
-                            System.Threading.Thread.CurrentThread.ManagedThreadId, 
-                            System.Threading.Thread.CurrentThread.GetApartmentState());
-                        
-                        _sessionOfficeService.WarmUp();
-                        _sessionExcelService.WarmUp();
-                        
-                        _logger.Information("✓ Office services pre-warmed successfully");
-                        ComHelper.LogComObjectStats();
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Warning(ex, "Failed to pre-warm Office services");
-                    }
-                }
-                else
-                {
-                    // Schedule on UI thread
-                    _logger.Information("Scheduling Office warm-up on UI thread...");
-                    Application.Current.Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        PreWarmOfficeServicesForSaveQuotes();
-                    }));
-                }
-            }
-            else
-            {
-                _logger.Debug("Office services not available for pre-warming - they will be initialized when first needed");
             }
         }
         
@@ -2850,6 +2814,9 @@ namespace DocHandler.ViewModels
             {
                 _logger.Information("MainViewModel cleanup started");
                 
+                // 1. Stop all active operations first
+                _logger.Information("Stopping active operations...");
+                
                 // Close queue window if open
                 _queueWindow?.Close();
                 
@@ -2877,33 +2844,34 @@ namespace DocHandler.ViewModels
                 if (scopeSearchCancellation != null)
                 {
                     scopeSearchCancellation.Cancel();
-                    await Task.Delay(100);
                     scopeSearchCancellation.Dispose();
                 }
-            
-                // Dispose queue service first (it uses file processing service)
+                
+                // 2. Dispose high-level services that use Office
+                _logger.Information("Disposing high-level services...");
+                
                 if (_queueService != null)
                 {
                     try
                     {
-                        _logger.Information("Disposing QueueService...");
+                        _logger.Information("Disposing Queue Service...");
                         _queueService.Dispose();
                         _queueService = null;
-                        _logger.Information("QueueService disposed successfully");
+                        _logger.Information("Queue Service disposed successfully");
                     }
                     catch (Exception ex)
                     {
-                        _logger.Error(ex, "Error disposing QueueService");
+                        _logger.Error(ex, "Error disposing Queue Service");
                     }
                 }
                 
-                // Dispose file processing service
                 if (_fileProcessingService != null)
                 {
                     try
                     {
                         _logger.Information("Disposing FileProcessingService...");
                         _fileProcessingService.Dispose();
+                        // Cannot set readonly field to null
                         _logger.Information("FileProcessingService disposed successfully");
                     }
                     catch (Exception ex)
@@ -2912,7 +2880,6 @@ namespace DocHandler.ViewModels
                     }
                 }
                 
-                // Dispose company name service
                 if (_companyNameService != null)
                 {
                     try
@@ -2927,11 +2894,17 @@ namespace DocHandler.ViewModels
                     }
                 }
                 
-                // Dispose Office services last (after services that use them)
+                // 3. Force cleanup of Office services
+                _logger.Information("Cleaning up Office services...");
+                
                 if (_sessionOfficeService != null)
                 {
                     try
                     {
+                        _logger.Information("Force cleaning up SessionOfficeService...");
+                        _sessionOfficeService.ForceCleanupIfIdle();
+                        await Task.Delay(100); // Give time for cleanup
+                        
                         _logger.Information("Disposing SessionOfficeService...");
                         _sessionOfficeService.Dispose();
                         _sessionOfficeService = null;
@@ -2947,6 +2920,10 @@ namespace DocHandler.ViewModels
                 {
                     try
                     {
+                        _logger.Information("Force cleaning up SessionExcelService...");
+                        _sessionExcelService.ForceCleanupIfIdle();
+                        await Task.Delay(100); // Give time for cleanup
+                        
                         _logger.Information("Disposing SessionExcelService...");
                         _sessionExcelService.Dispose();
                         _sessionExcelService = null;
@@ -2972,20 +2949,38 @@ namespace DocHandler.ViewModels
                     }
                 }
                 
-                // Force COM cleanup before disposing other services
+                // 4. Force COM cleanup
+                _logger.Information("Forcing COM cleanup...");
                 ComHelper.ForceComCleanup("MainViewModelCleanup");
                 
-                // Log final COM stats
+                // 5. Log final COM stats
                 ComHelper.LogComObjectStats();
+                
+                // 6. Kill any orphaned Office processes
+                if (_processManager != null)
+                {
+                    try
+                    {
+                        _logger.Information("Checking for orphaned Office processes...");
+                        _processManager.TerminateOrphanedOfficeProcesses();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error terminating orphaned processes");
+                    }
+                }
+                
+                // 7. Dispose remaining services
+                _logger.Information("Disposing remaining services...");
                 
                 // Dispose performance monitor
                 if (_performanceMonitor != null)
                 {
                     try
                     {
-                                                 _logger.Information("Disposing PerformanceMonitor...");
-                         _performanceMonitor.Dispose();
-                         _logger.Information("PerformanceMonitor disposed successfully");
+                        _logger.Information("Disposing PerformanceMonitor...");
+                        _performanceMonitor.Dispose();
+                        _logger.Information("PerformanceMonitor disposed successfully");
                     }
                     catch (Exception ex)
                     {
@@ -2998,13 +2993,28 @@ namespace DocHandler.ViewModels
                 {
                     try
                     {
-                                                 _logger.Information("Disposing OfficeTracker...");
-                         _officeTracker.Dispose();
-                         _logger.Information("OfficeTracker disposed successfully");
+                        _logger.Information("Disposing OfficeInstanceTracker...");
+                        _officeTracker.Dispose();
+                        _logger.Information("OfficeInstanceTracker disposed successfully");
                     }
                     catch (Exception ex)
                     {
-                        _logger.Error(ex, "Error disposing OfficeTracker");
+                        _logger.Error(ex, "Error disposing OfficeInstanceTracker");
+                    }
+                }
+                
+                // Dispose health monitor
+                if (_healthMonitor != null)
+                {
+                    try
+                    {
+                        _logger.Information("Disposing OfficeHealthMonitor...");
+                        _healthMonitor.Dispose();
+                        _logger.Information("OfficeHealthMonitor disposed successfully");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error disposing OfficeHealthMonitor");
                     }
                 }
                 
@@ -3013,9 +3023,9 @@ namespace DocHandler.ViewModels
                 {
                     try
                     {
-                                                 _logger.Information("Disposing ProcessManager...");
-                         _processManager.Dispose();
-                         _logger.Information("ProcessManager disposed successfully");
+                        _logger.Information("Disposing ProcessManager...");
+                        _processManager.Dispose();
+                        _logger.Information("ProcessManager disposed successfully");
                     }
                     catch (Exception ex)
                     {
