@@ -61,16 +61,27 @@ namespace DocHandler.Services
                     // CRITICAL FIX: Use ComResourceScope for automatic COM cleanup
                     using (var comScope = new ComResourceScope())
                     {
+                        // Ensure screen updating is off during conversion
+                        var screenUpdatingWasEnabled = false;
+                        try
+                        {
+                            screenUpdatingWasEnabled = _wordApp.ScreenUpdating;
+                            _wordApp.ScreenUpdating = false;
+                        }
+                        catch { }
+
                         // This automatically tracks and releases the Documents collection
                         var documents = comScope.Track(_wordApp.Documents, "Documents", "ConvertWordToPdf");
                         
-                        // Open and convert document
+                        // Open and convert document with additional parameters to prevent UI
                         var doc = comScope.Track(
                             documents.Open(
                                 inputPath,
                                 ReadOnly: true,
                                 AddToRecentFiles: false,
-                                Visible: false
+                                Visible: false,
+                                OpenAndRepair: false,
+                                NoEncodingDialog: true
                             ),
                             "Document",
                             "ConvertWordToPdf"
@@ -81,6 +92,14 @@ namespace DocHandler.Services
                         
                         // Close document before scope disposal
                         doc.Close(SaveChanges: false);
+                        
+                        // Restore screen updating if it was changed
+                        try
+                        {
+                            if (screenUpdatingWasEnabled)
+                                _wordApp.ScreenUpdating = true;
+                        }
+                        catch { }
                     } // ComResourceScope automatically releases all tracked COM objects here
 
                     result.Success = true;
@@ -233,6 +252,31 @@ namespace DocHandler.Services
                 _wordApp = Activator.CreateInstance(wordType);
                 _wordApp.Visible = false;
                 _wordApp.DisplayAlerts = 0; // wdAlertsNone
+                
+                // Additional optimizations to prevent UI interference
+                try
+                {
+                    // Disable screen updating to prevent spinning cursor
+                    _wordApp.ScreenUpdating = false;
+                    
+                    // Apply optimizations to Word Options if available
+                    if (_wordApp.Options != null)
+                    {
+                        _wordApp.Options.CheckGrammarAsYouType = false;
+                        _wordApp.Options.CheckSpellingAsYouType = false;
+                        _wordApp.Options.BackgroundSave = false;
+                        _wordApp.Options.SaveInterval = 0; // Disable auto-save
+                        _wordApp.Options.AnimateScreenMovements = false;
+                        _wordApp.Options.ConfirmConversions = false;
+                        _wordApp.Options.UpdateFieldsAtPrint = false;
+                        _wordApp.Options.UpdateLinksAtPrint = false;
+                    }
+                }
+                catch (Exception optEx)
+                {
+                    _logger.Debug("Some Word optimization properties not available: {Message}", optEx.Message);
+                    // Continue anyway - these are just optimizations
+                }
 
                 // Track the process
                 _wordUseCount = 0;
