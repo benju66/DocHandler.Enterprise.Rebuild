@@ -214,8 +214,8 @@ namespace DocHandler.Services
                 }
             }
             
-            // Notify file processing service that queue is complete
-            _fileProcessingService?.OnQueueProcessingCompleted();
+            // REMOVED: OnQueueProcessingCompleted call since method no longer exists
+            // ReliableOfficeConverter instances are already disposed after each batch
             
             // Fire queue empty event
             Application.Current.Dispatcher.Invoke(() =>

@@ -306,14 +306,15 @@ namespace DocHandler.ViewModels
                     
                     if (currentThread.GetApartmentState() == ApartmentState.STA)
                     {
-                        // Safe to create COM objects on STA thread
-                        _sessionOfficeService = new SessionAwareOfficeService();
-                        _sessionExcelService = new SessionAwareExcelService();
+                        // CRITICAL MEMORY FIX: Don't create session-aware services at startup
+                        // They will be created on-demand by the file processing service
+                        _sessionOfficeService = null;
+                        _sessionExcelService = null;
                         
                         // Also create regular OfficeConversionService for fallback operations
                         _officeConversionService = new OfficeConversionService(_configService, _processManager);
                         
-                        _logger.Information("Shared SessionAware Office services initialized successfully on STA thread");
+                        _logger.Information("Office services initialized on-demand approach to prevent memory leaks");
                     }
                     else
                     {
@@ -328,9 +329,8 @@ namespace DocHandler.ViewModels
                         {
                             try
                             {
-                                _sessionOfficeService = new SessionAwareOfficeService();
-                                _sessionExcelService = new SessionAwareExcelService();
-                                _logger.Information("Office services initialized on UI thread via Dispatcher");
+                                // Still don't create session services - use on-demand approach
+                                _logger.Information("Office services will be created on-demand");
                             }
                             catch (Exception dispatcherEx)
                             {
@@ -343,16 +343,16 @@ namespace DocHandler.ViewModels
                 {
                     _sessionOfficeService = null;
                     _sessionExcelService = null;
-                    _logger.Warning(ex, "Failed to initialize SessionAware Office services, will initialize when needed");
+                    _logger.Warning(ex, "Failed to initialize Office services, will create on-demand");
                 }
                 
-                // Initialize file processing service with shared session services
+                // Initialize file processing service without shared session services
                 try
                 {
                     _fileProcessingService = new OptimizedFileProcessingService(
                         _configService, _pdfCacheService, _processManager, null, 
-                        _sessionOfficeService, _sessionExcelService);
-                    _logger.Information("File processing service initialized with shared Office instances");
+                        null, null); // No shared instances - create on demand
+                    _logger.Information("File processing service initialized with on-demand Office creation");
                 }
                 catch (Exception ex)
                 {
@@ -360,19 +360,19 @@ namespace DocHandler.ViewModels
                     _fileProcessingService = null;
                 }
                 
-                // Set Office services for company name detection if they were initialized
-                if (_sessionOfficeService != null && _sessionExcelService != null)
-                {
-                    try
-                    {
-                        _companyNameService.SetOfficeServices(_sessionOfficeService, _sessionExcelService);
-                        _logger.Information("Office services set for company name detection");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Warning(ex, "Failed to set Office services for company name detection");
-                    }
-                }
+                // Don't set Office services for company name detection - they'll be created on demand
+                // if (_sessionOfficeService != null && _sessionExcelService != null)
+                // {
+                //     try
+                //     {
+                //         _companyNameService.SetOfficeServices(_sessionOfficeService, _sessionExcelService);
+                //         _logger.Information("Office services set for company name detection");
+                //     }
+                //     catch (Exception ex)
+                //     {
+                //         _logger.Warning(ex, "Failed to set Office services for company name detection");
+                //     }
+                // }
                 
                 // Queue service will be initialized lazily when needed
                 
@@ -2890,229 +2890,170 @@ namespace DocHandler.ViewModels
         // Add disposal guard flag
         private volatile bool _isCleaningUp = false;
         
-        public async void Cleanup()
+        public void Cleanup()
         {
-            // Add entry logging and guard
-            _logger.Information("MainViewModel.Cleanup called");
-            
-            if (_isCleaningUp)
-            {
-                _logger.Warning("Cleanup already in progress, skipping");
-                return;
-            }
-            _isCleaningUp = true;
-            
             try
             {
-                _logger.Information("MainViewModel cleanup started");
+                _logger.Information("Starting MainViewModel cleanup");
                 
-                // 1. Stop all active operations first
-                _logger.Information("Stopping active operations...");
-                
-                // Close queue window if open
-                _queueWindow?.Close();
-                
-                // Cancel any active scans safely
-                var currentScan = Interlocked.Exchange(ref _currentScanCancellation, null);
-                if (currentScan != null)
-                {
-                    currentScan.Cancel();
-                    // Give some time for operations to complete
-                    await Task.Delay(500);
-                    currentScan.Dispose();
-                }
-                
-                // Dispose semaphore
-                _scanSemaphore?.Dispose();
-                
-                await CleanupTempFiles().ConfigureAwait(false);
-                
-                // Stop and dispose scope search timer
-                _scopeSearchTimer?.Stop();
-                _scopeSearchTimer = null;
-                
-                // Handle scope search cancellation safely
-                var scopeSearchCancellation = Interlocked.Exchange(ref _scopeSearchCancellation, null);
-                if (scopeSearchCancellation != null)
-                {
-                    scopeSearchCancellation.Cancel();
-                    scopeSearchCancellation.Dispose();
-                }
-                
-                // 2. Dispose high-level services that use Office
-                _logger.Information("Disposing high-level services...");
-                
+                // Stop queue processing first
                 if (_queueService != null)
                 {
                     try
                     {
-                        _logger.Information("Disposing Queue Service...");
-                        _queueService.Dispose();
-                        _queueService = null;
-                        _logger.Information("Queue Service disposed successfully");
+                        _queueService.StopProcessing();
+                        _logger.Information("Queue processing stopped");
                     }
                     catch (Exception ex)
                     {
-                        _logger.Error(ex, "Error disposing Queue Service");
+                        _logger.Warning(ex, "Error stopping queue processing");
                     }
                 }
                 
-                if (_fileProcessingService != null)
+                // Cancel any pending scans
+                try
                 {
-                    try
-                    {
-                        _logger.Information("Disposing FileProcessingService...");
-                        _fileProcessingService.Dispose();
-                        // Cannot set readonly field to null
-                        _logger.Information("FileProcessingService disposed successfully");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex, "Error disposing FileProcessingService");
-                    }
+                    _currentScanCancellation?.Cancel();
+                    _currentScanCancellation?.Dispose();
+                    _currentScanCancellation = null;
+                    _logger.Information("Cancelled pending company name scans");
                 }
-                
-                if (_companyNameService != null)
+                catch (Exception ex)
                 {
-                    try
-                    {
-                        _logger.Information("Disposing CompanyNameService...");
-                        _companyNameService.Dispose();
-                        _logger.Information("CompanyNameService disposed successfully");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex, "Error disposing CompanyNameService");
-                    }
+                    _logger.Warning(ex, "Error cancelling company name scans");
                 }
                 
-                // 3. Force cleanup of Office services
-                _logger.Information("Cleaning up Office services...");
-                
-                if (_sessionOfficeService != null)
+                // Dispose services in dependency order
+                try
                 {
-                    try
-                    {
-                        _logger.Information("Force cleaning up SessionOfficeService...");
-                        _sessionOfficeService.ForceCleanupIfIdle();
-                        await Task.Delay(100); // Give time for cleanup
-                        
-                        _logger.Information("Disposing SessionOfficeService...");
-                        _sessionOfficeService.Dispose();
-                        _sessionOfficeService = null;
-                        _logger.Information("SessionOfficeService disposed successfully");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex, "Error disposing SessionOfficeService");
-                    }
+                    // Company name service (depends on Office services)
+                    _companyNameService?.Dispose();
+                    _logger.Information("Company name service disposed");
                 }
-                
-                if (_sessionExcelService != null)
+                catch (Exception ex)
                 {
-                    try
-                    {
-                        _logger.Information("Force cleaning up SessionExcelService...");
-                        _sessionExcelService.ForceCleanupIfIdle();
-                        await Task.Delay(100); // Give time for cleanup
-                        
-                        _logger.Information("Disposing SessionExcelService...");
-                        _sessionExcelService.Dispose();
-                        _sessionExcelService = null;
-                        _logger.Information("SessionExcelService disposed successfully");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex, "Error disposing SessionExcelService");
-                    }
+                    _logger.Warning(ex, "Error disposing company name service");
                 }
                 
-                if (_officeConversionService != null)
+                try
                 {
-                    try
-                    {
-                        _logger.Information("Disposing OfficeConversionService...");
-                        _officeConversionService.Dispose();
-                        _logger.Information("OfficeConversionService disposed successfully");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex, "Error disposing OfficeConversionService");
-                    }
+                    // File processing service
+                    _fileProcessingService?.Dispose();
+                    _logger.Information("File processing service disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing file processing service");
                 }
                 
-                // 4. Force COM cleanup
-                _logger.Information("Forcing COM cleanup...");
+                try
+                {
+                    // Queue service
+                    _queueService?.Dispose();
+                    _logger.Information("Queue service disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing queue service");
+                }
+                
+                // MEMORY FIX: SessionAware services are now null, so no disposal needed
+                // if (_sessionOfficeService != null)
+                // {
+                //     try
+                //     {
+                //         _sessionOfficeService.Dispose();
+                //         _logger.Information("Session Office service disposed");
+                //     }
+                //     catch (Exception ex)
+                //     {
+                //         _logger.Warning(ex, "Error disposing session Office service");
+                //     }
+                // }
+                
+                // if (_sessionExcelService != null)
+                // {
+                //     try
+                //     {
+                //         _sessionExcelService.Dispose();
+                //         _logger.Information("Session Excel service disposed");
+                //     }
+                //     catch (Exception ex)
+                //     {
+                //         _logger.Warning(ex, "Error disposing session Excel service");
+                //     }
+                // }
+                
+                // Regular Office conversion service
+                try
+                {
+                    _officeConversionService?.Dispose();
+                    _logger.Information("Office conversion service disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing office conversion service");
+                }
+                
+                // Health monitor
+                try
+                {
+                    _healthMonitor?.Dispose();
+                    _logger.Information("Health monitor disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing health monitor");
+                }
+                
+                // Performance monitor
+                try
+                {
+                    _performanceMonitor?.Dispose();
+                    _logger.Information("Performance monitor disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing performance monitor");
+                }
+                
+                // Process manager
+                try
+                {
+                    _processManager?.Dispose();
+                    _logger.Information("Process manager disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing process manager");
+                }
+                
+                // PDF cache service
+                try
+                {
+                    _pdfCacheService?.Dispose();
+                    _logger.Information("PDF cache service disposed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing PDF cache service");
+                }
+                
+                // Force COM cleanup and garbage collection
                 ComHelper.ForceComCleanup("MainViewModelCleanup");
                 
-                // 5. Log final COM stats
-                ComHelper.LogComObjectStats();
+                // Wait for any remaining cleanup
+                Thread.Sleep(1000);
                 
-                // 6. Kill any orphaned Office processes
-                if (_processManager != null)
-                {
-                    try
-                    {
-                        _logger.Information("Checking for orphaned Office processes...");
-                        _processManager.TerminateOrphanedOfficeProcesses();
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex, "Error terminating orphaned processes");
-                    }
-                }
+                // Final COM statistics
+                var finalStats = ComHelper.GetComObjectSummary();
+                _logger.Information("Final cleanup complete - COM Objects: Created {Created}, Released {Released}, Net {Net}", 
+                    finalStats.TotalCreated, finalStats.TotalReleased, finalStats.NetObjects);
                 
-                // 7. Dispose remaining services
-                _logger.Information("Disposing remaining services...");
+                // Clean up any temporary files
+                CleanupTempFiles();
                 
-                // Dispose performance monitor
-                if (_performanceMonitor != null)
-                {
-                    try
-                    {
-                        _logger.Information("Disposing PerformanceMonitor...");
-                        _performanceMonitor.Dispose();
-                        _logger.Information("PerformanceMonitor disposed successfully");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex, "Error disposing PerformanceMonitor");
-                    }
-                }
-                
-                // Office process tracking now handled by ReliableOfficeConverter's OfficeProcessGuard
-                
-                // Dispose health monitor
-                if (_healthMonitor != null)
-                {
-                    try
-                    {
-                        _logger.Information("Disposing OfficeHealthMonitor...");
-                        _healthMonitor.Dispose();
-                        _logger.Information("OfficeHealthMonitor disposed successfully");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex, "Error disposing OfficeHealthMonitor");
-                    }
-                }
-                
-                // Dispose process manager last
-                if (_processManager != null)
-                {
-                    try
-                    {
-                        _logger.Information("Disposing ProcessManager...");
-                        _processManager.Dispose();
-                        _logger.Information("ProcessManager disposed successfully");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex, "Error disposing ProcessManager");
-                    }
-                }
-                
-                _logger.Information("MainViewModel cleanup completed");
+                _logger.Information("MainViewModel cleanup completed successfully");
             }
             catch (Exception ex)
             {
@@ -3357,5 +3298,36 @@ namespace DocHandler.ViewModels
         }
         
         #endregion
+
+        // Manual command property - workaround for source generator issue
+        private IRelayCommand? _testMemoryLeakFixesCommand;
+        public IRelayCommand TestMemoryLeakFixesCommand => 
+            _testMemoryLeakFixesCommand ??= new AsyncRelayCommand(TestMemoryLeakFixesAsync);
+        
+        private async Task TestMemoryLeakFixesAsync()
+        {
+            try
+            {
+                StatusMessage = "Running memory leak test...";
+                
+                var testResult = await Task.Run(async () => 
+                {
+                    return await QuickDiagnostic.TestMemoryLeakFixes();
+                });
+                
+                // Show results in a message box
+                MessageBox.Show(testResult, "Memory Leak Test Results", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                
+                StatusMessage = "Memory leak test completed";
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error during memory leak test");
+                MessageBox.Show($"Memory leak test failed: {ex.Message}", "Test Error", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                StatusMessage = "Memory leak test failed";
+            }
+        }
     }
 }

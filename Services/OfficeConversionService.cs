@@ -128,121 +128,134 @@ namespace DocHandler.Services
                     result.ErrorMessage = "Thread apartment state is not STA - Word operations will fail";
                     return result;
                 }
+                
+                dynamic? doc = null;
+                
+                try
                 {
-                    dynamic? doc = null;
+                    // Check for cancellation before starting
+                    cts.Token.ThrowIfCancellationRequested();
                     
-                    try
+                    // Ensure Word application is initialized using late binding
+                    if (_wordApp == null)
                     {
-                        // Check for cancellation before starting
-                        cts.Token.ThrowIfCancellationRequested();
-                        
-                        // Ensure Word application is initialized using late binding
-                        if (_wordApp == null)
+                        try
                         {
-                            try
+                            Type? wordType = Type.GetTypeFromProgID("Word.Application");
+                            if (wordType == null)
                             {
-                                Type? wordType = Type.GetTypeFromProgID("Word.Application");
-                                if (wordType == null)
-                                {
-                                    result.Success = false;
-                                    result.ErrorMessage = "Microsoft Word is not installed.";
-                                    return result;
-                                }
-                                
-                                _wordApp = Activator.CreateInstance(wordType);
-                                ComHelper.TrackComObjectCreation("WordApp", "OfficeConversionService");
-                                _wordApp.Visible = false;
-                                _wordApp.DisplayAlerts = 0; // wdAlertsNone
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.Error(ex, "Failed to create Word application");
                                 result.Success = false;
-                                result.ErrorMessage = "Microsoft Word is not installed or accessible.";
+                                result.ErrorMessage = "Microsoft Word is not installed.";
                                 return result;
                             }
-                        }
-                        
-                        // Check for cancellation before document operations
-                        cts.Token.ThrowIfCancellationRequested();
-                        
-                        // CRITICAL FIX: Use ComResourceScope for automatic COM object cleanup
-                        _logger.Debug("Opening Word document: {Path}", inputPath);
-                        
-                        using (var comScope = new ComResourceScope())
-                        {
-                            doc = comScope.OpenWordDocument(_wordApp, inputPath);
-                        } // Documents collection automatically released here
-                        
-                        // Check for cancellation before PDF conversion
-                        cts.Token.ThrowIfCancellationRequested();
-                        
-                        _logger.Debug("Converting to PDF: {Path}", outputPath);
-                        doc.SaveAs2(outputPath, FileFormat: 17);
-                        
-                        result.Success = true;
-                        result.OutputPath = outputPath;
-                        _logger.Information("Successfully converted Word to PDF");
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        _logger.Error("Word conversion timed out after {TimeoutSeconds} seconds", timeoutSeconds);
-                        result.Success = false;
-                        result.ErrorMessage = $"Word conversion timed out after {timeoutSeconds} seconds";
-                        
-                        // Force Word restart on timeout - dispose current instance
-                        if (_wordApp != null)
-                        {
-                            try
-                            {
-                                _wordApp.Quit();
-                                ComHelper.SafeReleaseComObject(_wordApp, "WordApp", "TimeoutRestart");
-                                _wordApp = null;
-                                _logger.Information("Word application restarted due to timeout");
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.Warning(ex, "Error disposing Word app after timeout");
-                            }
                             
-                            // Use ProcessManager to clean up any orphaned Word processes
-                            try
-                            {
-                                _processManager?.KillOrphanedWordProcesses();
-                                _logger.Information("Cleaned up orphaned Word processes after timeout");
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.Warning(ex, "Error cleaning up orphaned processes after timeout");
-                            }
+                            _wordApp = Activator.CreateInstance(wordType);
+                            ComHelper.TrackComObjectCreation("WordApp", "OfficeConversionService");
+                            _wordApp.Visible = false;
+                            _wordApp.DisplayAlerts = 0; // wdAlertsNone
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Error(ex, "Failed to create Word application");
+                            result.Success = false;
+                            result.ErrorMessage = "Microsoft Word is not installed or accessible.";
+                            return result;
                         }
                     }
-                    catch (Exception ex)
+                    
+                    // Check for cancellation before document operations
+                    cts.Token.ThrowIfCancellationRequested();
+                    
+                    // CRITICAL FIX: Use ComResourceScope for automatic COM object cleanup
+                    _logger.Debug("Opening Word document: {Path}", inputPath);
+                    
+                    using (var comScope = new ComResourceScope())
                     {
-                        _logger.Error(ex, "Failed to convert Word document to PDF");
-                        result.Success = false;
-                        result.ErrorMessage = $"Conversion failed: {ex.Message}";
-                    }
-                    finally
+                        var documents = comScope.Track(_wordApp.Documents, "Documents", "ConvertWordToPdf");
+                        doc = comScope.Track(
+                            documents.Open(
+                                inputPath,
+                                ReadOnly: true,
+                                AddToRecentFiles: false,
+                                Repair: false,
+                                ShowRepairs: false,
+                                OpenAndRepair: false,
+                                NoEncodingDialog: true,
+                                Revert: false
+                            ),
+                            "Document",
+                            "ConvertWordToPdf"
+                        );
+                    } // Documents collection automatically released here
+                    
+                    // Check for cancellation before PDF conversion
+                    cts.Token.ThrowIfCancellationRequested();
+                    
+                    _logger.Debug("Converting to PDF: {Path}", outputPath);
+                    doc.SaveAs2(outputPath, FileFormat: 17);
+                    
+                    result.Success = true;
+                    result.OutputPath = outputPath;
+                    _logger.Information("Successfully converted Word to PDF");
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.Error("Word conversion timed out after {TimeoutSeconds} seconds", timeoutSeconds);
+                    result.Success = false;
+                    result.ErrorMessage = $"Word conversion timed out after {timeoutSeconds} seconds";
+                    
+                    // Force Word restart on timeout - dispose current instance
+                    if (_wordApp != null)
                     {
-                        // Always cleanup document
-                        if (doc != null)
+                        try
                         {
-                            try
-                            {
-                                doc.Close(SaveChanges: false);
-                                ComHelper.SafeReleaseComObject(doc, "Document", "ConvertWordToPdf");
-                                doc = null;
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.Warning(ex, "Error closing Word document");
-                            }
+                            _wordApp.Quit();
+                            ComHelper.SafeReleaseComObject(_wordApp, "WordApp", "TimeoutRestart");
+                            _wordApp = null;
+                            _logger.Information("Word application restarted due to timeout");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Error disposing Word app after timeout");
                         }
                         
-                        // Force garbage collection after COM operations
-                        ComHelper.ForceComCleanup("ConvertWordToPdf");
+                        // Use ProcessManager to clean up any orphaned Word processes
+                        try
+                        {
+                            _processManager?.KillOrphanedWordProcesses();
+                            _logger.Information("Cleaned up orphaned Word processes after timeout");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Error cleaning up orphaned processes after timeout");
+                        }
                     }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Failed to convert Word document to PDF");
+                    result.Success = false;
+                    result.ErrorMessage = $"Conversion failed: {ex.Message}";
+                }
+                finally
+                {
+                    // Always cleanup document
+                    if (doc != null)
+                    {
+                        try
+                        {
+                            doc.Close(SaveChanges: false);
+                            ComHelper.SafeReleaseComObject(doc, "Document", "ConvertWordToPdf");
+                            doc = null;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Error closing Word document");
+                        }
+                    }
+                    
+                    // Force garbage collection after COM operations
+                    ComHelper.ForceComCleanup("ConvertWordToPdf");
                 }
             }
             
@@ -280,10 +293,10 @@ namespace DocHandler.Services
                                 return result;
                             }
                             
-                                                            _wordApp = Activator.CreateInstance(wordType);
-                                ComHelper.TrackComObjectCreation("WordApp", "ConvertWordToPdfSync");
-                                _wordApp.Visible = false;
-                                _wordApp.DisplayAlerts = 0; // wdAlertsNone
+                            _wordApp = Activator.CreateInstance(wordType);
+                            ComHelper.TrackComObjectCreation("WordApp", "ConvertWordToPdfSync");
+                            _wordApp.Visible = false;
+                            _wordApp.DisplayAlerts = 0; // wdAlertsNone
                         }
                         catch (Exception ex)
                         {
@@ -298,7 +311,21 @@ namespace DocHandler.Services
                     _logger.Information("Opening Word document: {Path}", inputPath);
                     using (var comScope = new ComResourceScope())
                     {
-                        doc = comScope.OpenWordDocument(_wordApp, inputPath);
+                        var documents = comScope.Track(_wordApp.Documents, "Documents", "ConvertWordToPdfSync");
+                        doc = comScope.Track(
+                            documents.Open(
+                                inputPath,
+                                ReadOnly: true,
+                                AddToRecentFiles: false,
+                                Repair: false,
+                                ShowRepairs: false,
+                                OpenAndRepair: false,
+                                NoEncodingDialog: true,
+                                Revert: false
+                            ),
+                            "Document",
+                            "ConvertWordToPdfSync"
+                        );
                     } // Documents collection automatically released here
                     
                     // Save as PDF (17 = wdFormatPDF)
@@ -400,7 +427,17 @@ namespace DocHandler.Services
                     // Open the workbook using ComResourceScope for automatic cleanup
                     using (var comScope = new ComResourceScope())
                     {
-                        workbook = comScope.OpenExcelWorkbook(_excelApp, inputPath, readOnly: true);
+                        var workbooks = comScope.Track(_excelApp.Workbooks, "Workbooks", "ConvertExcelToPdf");
+                        workbook = comScope.Track(
+                            workbooks.Open(
+                                inputPath,
+                                ReadOnly: true,
+                                UpdateLinks: false,
+                                Notify: false
+                            ),
+                            "Workbook",
+                            "ConvertExcelToPdf"
+                        );
                     } // Workbooks collection automatically released here
 
                     // Export as PDF (0 = xlTypePDF)

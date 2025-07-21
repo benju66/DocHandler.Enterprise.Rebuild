@@ -42,16 +42,16 @@ namespace DocHandler.Services
             SessionAwareOfficeService? sharedWordService = null,
             SessionAwareExcelService? sharedExcelService = null)
         {
-            // Use shared session services instead of creating new instances
-            _sharedWordService = sharedWordService;
-            _sharedExcelService = sharedExcelService;
+            // CRITICAL MEMORY FIX: Don't use shared session services - create converters on demand
+            _sharedWordService = null; // Always null to force on-demand creation
+            _sharedExcelService = null; // Always null to force on-demand creation
             _pdfOperationsService = new PdfOperationsService();
             _configService = configService;
             _pdfCacheService = pdfCacheService;
             _processManager = processManager;
             // officeTracker parameter kept for compatibility but no longer used
             
-            _logger.Information("OptimizedFileProcessingService initialized with shared Office instances");
+            _logger.Information("OptimizedFileProcessingService initialized with on-demand Office instance creation");
         }
 
         public bool IsFileSupported(string filePath)
@@ -253,7 +253,7 @@ namespace DocHandler.Services
             
             // Use higher concurrency since we fixed the bottleneck
             var maxConcurrency = Math.Min(Environment.ProcessorCount, wordFiles.Count);
-            _logger.Information("Processing {Count} Word files with {Concurrency} concurrent operations using optimized conversion", 
+            _logger.Information("Processing {Count} Word files with {Concurrency} concurrent operations using ReliableOfficeConverter", 
                 wordFiles.Count, maxConcurrency);
 
             var semaphore = new SemaphoreSlim(maxConcurrency);
@@ -269,9 +269,14 @@ namespace DocHandler.Services
                         Path.GetFileNameWithoutExtension(file) + ".pdf");
                     
                     var fileStopwatch = Stopwatch.StartNew();
-                    var conversionResult = _sharedWordService != null 
-                        ? await _sharedWordService.ConvertWordToPdf(file, outputPath)
-                        : new ConversionResult { Success = false, ErrorMessage = "Word service not available" };
+                    
+                    // CRITICAL MEMORY FIX: Use ReliableOfficeConverter for each task
+                    ConversionResult conversionResult;
+                    using (var converter = new ReliableOfficeConverter())
+                    {
+                        conversionResult = converter.ConvertWordToPdf(file, outputPath, singleUse: true);
+                    } // Converter is disposed after each file
+                    
                     fileStopwatch.Stop();
                     
                     var currentProgress = Interlocked.Increment(ref progress);
@@ -281,7 +286,7 @@ namespace DocHandler.Services
                         if (conversionResult.Success)
                         {
                             result.SuccessfulFiles.Add(outputPath);
-                            _logger.Information("Converted {File} ({Progress}/{Total}) in {ElapsedMs}ms", 
+                            _logger.Information("Converted {File} ({Progress}/{Total}) in {ElapsedMs}ms using ReliableOfficeConverter", 
                                 Path.GetFileName(file), currentProgress, wordFiles.Count, fileStopwatch.ElapsedMilliseconds);
                         }
                         else
@@ -319,34 +324,35 @@ namespace DocHandler.Services
         {
             var result = new ProcessingResult();
             
-            // Use the new SessionAwareExcelService for better performance
-            foreach (var file in excelFiles)
+            // Use ReliableOfficeConverter for Excel files as well
+            using (var converter = new ReliableOfficeConverter())
             {
-                try
+                foreach (var file in excelFiles)
                 {
-                    var outputPath = Path.Combine(outputDirectory, 
-                        Path.GetFileNameWithoutExtension(file) + ".pdf");
-                    
-                    var conversionResult = _sharedExcelService != null 
-                        ? await _sharedExcelService.ConvertSpreadsheetToPdf(file, outputPath)
-                        : new ConversionResult { Success = false, ErrorMessage = "Excel service not available" };
-                    
-                    if (conversionResult.Success)
+                    try
                     {
-                        result.SuccessfulFiles.Add(outputPath);
-                        _logger.Information("Converted Excel to PDF: {File}", Path.GetFileName(file));
+                        var outputPath = Path.Combine(outputDirectory, 
+                            Path.GetFileNameWithoutExtension(file) + ".pdf");
+                        
+                        var conversionResult = converter.ConvertExcelToPdf(file, outputPath, singleUse: false);
+                        
+                        if (conversionResult.Success)
+                        {
+                            result.SuccessfulFiles.Add(outputPath);
+                            _logger.Information("Converted Excel to PDF: {File}", Path.GetFileName(file));
+                        }
+                        else
+                        {
+                            result.FailedFiles.Add((file, conversionResult.ErrorMessage ?? "Unknown error"));
+                        }
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        result.FailedFiles.Add((file, conversionResult.ErrorMessage ?? "Unknown error"));
+                        result.FailedFiles.Add((file, ex.Message));
+                        _logger.Error(ex, "Failed to convert Excel file: {File}", file);
                     }
                 }
-                catch (Exception ex)
-                {
-                    result.FailedFiles.Add((file, ex.Message));
-                    _logger.Error(ex, "Failed to convert Excel file: {File}", file);
-                }
-            }
+            } // Converter disposed after all Excel files processed
             
             return result;
         }
@@ -435,29 +441,23 @@ namespace DocHandler.Services
                     File.Copy(inputPath, outputPath, true);
                     result = new ConversionResult { Success = true, OutputPath = outputPath };
                 }
-                else                 if (extension == ".doc" || extension == ".docx")
+                else if (extension == ".doc" || extension == ".docx")
                 {
-                    if (_sharedWordService != null)
+                    // CRITICAL MEMORY FIX: Use ReliableOfficeConverter instead of shared services
+                    using (var converter = new ReliableOfficeConverter())
                     {
-                        _logger.Information("CONVERT: Word document detected, calling shared Word service synchronously...");
-                        result = _sharedWordService.ConvertWordToPdf(inputPath, outputPath).GetAwaiter().GetResult();
-                        _logger.Information("CONVERT: Shared Word service returned - Success: {Success}, Error: {Error}", 
+                        _logger.Information("CONVERT: Word document detected, calling ReliableOfficeConverter synchronously...");
+                        result = converter.ConvertWordToPdf(inputPath, outputPath, singleUse: true);
+                        _logger.Information("CONVERT: ReliableOfficeConverter returned - Success: {Success}, Error: {Error}", 
                             result.Success, result.ErrorMessage ?? "None");
-                    }
-                    else
-                    {
-                        result = new ConversionResult { Success = false, ErrorMessage = "Word service not available" };
                     }
                 }
                 else if (extension == ".xls" || extension == ".xlsx")
                 {
-                    if (_sharedExcelService != null)
+                    // CRITICAL MEMORY FIX: Use ReliableOfficeConverter instead of shared services
+                    using (var converter = new ReliableOfficeConverter())
                     {
-                        result = _sharedExcelService.ConvertSpreadsheetToPdf(inputPath, outputPath).GetAwaiter().GetResult();
-                    }
-                    else
-                    {
-                        result = new ConversionResult { Success = false, ErrorMessage = "Excel service not available" };
+                        result = converter.ConvertExcelToPdf(inputPath, outputPath, singleUse: true);
                     }
                 }
                 else
@@ -535,27 +535,21 @@ namespace DocHandler.Services
                 }
                 else if (extension == ".doc" || extension == ".docx")
                 {
-                    if (_sharedWordService != null)
+                    // CRITICAL MEMORY FIX: Use ReliableOfficeConverter instead of shared services
+                    using (var converter = new ReliableOfficeConverter())
                     {
-                        _logger.Information("CONVERT: Word document detected, calling shared Word service...");
-                        result = await _sharedWordService.ConvertWordToPdf(inputPath, outputPath);
-                        _logger.Information("CONVERT: Shared Word service returned - Success: {Success}, Error: {Error}", 
+                        _logger.Information("CONVERT: Word document detected, calling ReliableOfficeConverter...");
+                        result = converter.ConvertWordToPdf(inputPath, outputPath, singleUse: true);
+                        _logger.Information("CONVERT: ReliableOfficeConverter returned - Success: {Success}, Error: {Error}", 
                             result.Success, result.ErrorMessage ?? "None");
-                    }
-                    else
-                    {
-                        result = new ConversionResult { Success = false, ErrorMessage = "Word service not available" };
                     }
                 }
                 else if (extension == ".xls" || extension == ".xlsx")
                 {
-                    if (_sharedExcelService != null)
+                    // CRITICAL MEMORY FIX: Use ReliableOfficeConverter instead of shared services
+                    using (var converter = new ReliableOfficeConverter())
                     {
-                        result = await _sharedExcelService.ConvertSpreadsheetToPdf(inputPath, outputPath);
-                    }
-                    else
-                    {
-                        result = new ConversionResult { Success = false, ErrorMessage = "Excel service not available" };
+                        result = converter.ConvertExcelToPdf(inputPath, outputPath, singleUse: true);
                     }
                 }
                 else
@@ -604,18 +598,8 @@ namespace DocHandler.Services
             return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
         }
 
-        // Add this method to force cleanup when queue processing completes
-        public void OnQueueProcessingCompleted()
-        {
-            _logger.Information("Queue processing completed, forcing cleanup of idle Office instances");
-            
-            // Force cleanup of session-aware services if they're idle
-            _sharedWordService?.ForceCleanupIfIdle();
-            _sharedExcelService?.ForceCleanupIfIdle();
-            
-            // Log COM statistics to verify cleanup
-            ComHelper.LogComObjectStats();
-        }
+        // REMOVED: OnQueueProcessingCompleted method no longer needed since we don't use shared services
+        // Each ReliableOfficeConverter instance is disposed after use, ensuring proper cleanup
         
         public void Dispose()
         {
