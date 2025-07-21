@@ -40,7 +40,6 @@ namespace DocHandler.Services
             lock (_lock)
             {
                 var result = new ConversionResult();
-                dynamic doc = null;
 
                 try
                 {
@@ -59,16 +58,30 @@ namespace DocHandler.Services
 
                     var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-                    // Open and convert document
-                    doc = _wordApp.Documents.Open(
-                        inputPath,
-                        ReadOnly: true,
-                        AddToRecentFiles: false,
-                        Visible: false
-                    );
+                    // CRITICAL FIX: Use ComResourceScope for automatic COM cleanup
+                    using (var comScope = new ComResourceScope())
+                    {
+                        // This automatically tracks and releases the Documents collection
+                        var documents = comScope.Track(_wordApp.Documents, "Documents", "ConvertWordToPdf");
+                        
+                        // Open and convert document
+                        var doc = comScope.Track(
+                            documents.Open(
+                                inputPath,
+                                ReadOnly: true,
+                                AddToRecentFiles: false,
+                                Visible: false
+                            ),
+                            "Document",
+                            "ConvertWordToPdf"
+                        );
 
-                    // Save as PDF (17 = wdFormatPDF)
-                    doc.SaveAs2(outputPath, 17);
+                        // Save as PDF (17 = wdFormatPDF)
+                        doc.SaveAs2(outputPath, 17);
+                        
+                        // Close document before scope disposal
+                        doc.Close(SaveChanges: false);
+                    } // ComResourceScope automatically releases all tracked COM objects here
 
                     result.Success = true;
                     result.OutputPath = outputPath;
@@ -98,22 +111,6 @@ namespace DocHandler.Services
 
                     return result;
                 }
-                finally
-                {
-                    // Always close document
-                    if (doc != null)
-                    {
-                        try
-                        {
-                            doc.Close(SaveChanges: false);
-                            Marshal.ReleaseComObject(doc);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.Warning(ex, "Error closing document");
-                        }
-                    }
-                }
             }
         }
 
@@ -128,7 +125,6 @@ namespace DocHandler.Services
             lock (_lock)
             {
                 var result = new ConversionResult();
-                dynamic workbook = null;
 
                 try
                 {
@@ -147,22 +143,36 @@ namespace DocHandler.Services
 
                     var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-                    // Open and convert workbook
-                    workbook = _excelApp.Workbooks.Open(
-                        inputPath,
-                        ReadOnly: true,
-                        UpdateLinks: false,
-                        Notify: false
-                    );
+                    // CRITICAL FIX: Use ComResourceScope for automatic COM cleanup
+                    using (var comScope = new ComResourceScope())
+                    {
+                        // This automatically tracks and releases the Workbooks collection
+                        var workbooks = comScope.Track(_excelApp.Workbooks, "Workbooks", "ConvertExcelToPdf");
+                        
+                        // Open workbook
+                        var workbook = comScope.Track(
+                            workbooks.Open(
+                                inputPath,
+                                ReadOnly: true,
+                                UpdateLinks: false,
+                                Notify: false
+                            ),
+                            "Workbook",
+                            "ConvertExcelToPdf"
+                        );
 
-                    // Export as PDF (0 = xlTypePDF)
-                    workbook.ExportAsFixedFormat(
-                        Type: 0,
-                        Filename: outputPath,
-                        Quality: 0, // Standard quality
-                        IncludeDocProperties: false,
-                        IgnorePrintAreas: false
-                    );
+                        // Export as PDF (0 = xlTypePDF)
+                        workbook.ExportAsFixedFormat(
+                            Type: 0,
+                            Filename: outputPath,
+                            Quality: 0, // Standard quality
+                            IncludeDocProperties: false,
+                            IgnorePrintAreas: false
+                        );
+                        
+                        // Close workbook before scope disposal
+                        workbook.Close(SaveChanges: false);
+                    } // ComResourceScope automatically releases all tracked COM objects here
 
                     result.Success = true;
                     result.OutputPath = outputPath;
@@ -191,22 +201,6 @@ namespace DocHandler.Services
                     CleanupExcel();
 
                     return result;
-                }
-                finally
-                {
-                    // Always close workbook
-                    if (workbook != null)
-                    {
-                        try
-                        {
-                            workbook.Close(SaveChanges: false);
-                            Marshal.ReleaseComObject(workbook);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.Warning(ex, "Error closing workbook");
-                        }
-                    }
                 }
             }
         }
@@ -340,12 +334,17 @@ namespace DocHandler.Services
                 {
                     _logger.Information("Cleaning up Word instance (used {Count} times)", _wordUseCount);
 
-                    // Close all documents
+                    // Close all documents with proper COM cleanup
                     try
                     {
-                        while (_wordApp.Documents.Count > 0)
+                        using (var comScope = new ComResourceScope())
                         {
-                            _wordApp.Documents[1].Close(SaveChanges: false);
+                            var documents = comScope.Track(_wordApp.Documents, "Documents", "CleanupWord");
+                            while (documents.Count > 0)
+                            {
+                                var doc = comScope.Track(documents[1], "Document", "CleanupWord");
+                                doc.Close(SaveChanges: false);
+                            }
                         }
                     }
                     catch { }
@@ -382,12 +381,17 @@ namespace DocHandler.Services
                 {
                     _logger.Information("Cleaning up Excel instance (used {Count} times)", _excelUseCount);
 
-                    // Close all workbooks
+                    // Close all workbooks with proper COM cleanup
                     try
                     {
-                        while (_excelApp.Workbooks.Count > 0)
+                        using (var comScope = new ComResourceScope())
                         {
-                            _excelApp.Workbooks[1].Close(SaveChanges: false);
+                            var workbooks = comScope.Track(_excelApp.Workbooks, "Workbooks", "CleanupExcel");
+                            while (workbooks.Count > 0)
+                            {
+                                var workbook = comScope.Track(workbooks[1], "Workbook", "CleanupExcel");
+                                workbook.Close(SaveChanges: false);
+                            }
                         }
                     }
                     catch { }

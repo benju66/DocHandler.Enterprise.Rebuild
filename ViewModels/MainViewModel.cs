@@ -205,6 +205,9 @@ namespace DocHandler.ViewModels
         // Performance tracking
         private int _processedFileCount = 0;
         private PerformanceMetricsWindow _metricsWindow;
+        
+        // Cache for scope parts to improve search performance
+        private readonly Dictionary<string, (string code, string description)> _scopePartsCache = new();
 
         // Animation state tracking
         private bool _isShowingSuccessAnimation;
@@ -957,14 +960,28 @@ namespace DocHandler.ViewModels
         
         private void LoadScopesOfWork()
         {
-            ScopesOfWork.Clear();
-            foreach (var scope in _scopeOfWorkService.Scopes)
+            try
             {
-                ScopesOfWork.Add(_scopeOfWorkService.GetFormattedScope(scope));
+                // Clear cache when reloading scopes
+                _scopePartsCache.Clear();
+                
+                var scopes = _scopeOfWorkService.Scopes
+                    .Select(s => _scopeOfWorkService.GetFormattedScope(s))
+                    .ToList();
+                
+                ScopesOfWork.Clear();
+                foreach (var scope in scopes)
+                {
+                    ScopesOfWork.Add(scope);
+                }
+                
+                // Initialize filtered list with all scopes
+                FilterScopes();
             }
-            
-            // Initial filter
-            FilterScopes();
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to load scopes of work");
+            }
         }
 
         private void LoadRecentScopes()
@@ -979,10 +996,79 @@ namespace DocHandler.ViewModels
         // Enhanced fuzzy search implementation with better synchronization
         private async void FilterScopes()
         {
+            // Capture search term immediately
+            var searchTerm = ScopeSearchText?.Trim() ?? "";
+            
+            // Fast path for empty search
+            if (string.IsNullOrWhiteSpace(searchTerm))
+            {
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    FilteredScopesOfWork.Clear();
+                    foreach (var scope in ScopesOfWork)
+                    {
+                        FilteredScopesOfWork.Add(scope);
+                    }
+                    
+                    // Preserve selection if it exists in the full list
+                    if (SelectedScope != null && ScopesOfWork.Contains(SelectedScope))
+                    {
+                        // Keep current selection
+                    }
+                    else
+                    {
+                        SelectedScope = null;
+                    }
+                });
+                return;
+            }
+            
+            // Fast path for very short searches (1-2 chars) - simple contains search
+            if (searchTerm.Length <= 2)
+            {
+                var simpleFiltered = ScopesOfWork.Where(s => 
+                    s.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase) >= 0)
+                    .ToList();
+                
+                await UpdateFilteredScopes(simpleFiltered, searchTerm);
+                return;
+            }
+            
+            // For longer searches, use full fuzzy search but with optimizations
+            await PerformFuzzySearch(searchTerm);
+        }
+        
+        private async Task UpdateFilteredScopes(List<string> filteredList, string searchTerm)
+        {
+            await Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                var currentSelection = SelectedScope;
+                
+                // Update collection efficiently
+                FilteredScopesOfWork.Clear();
+                foreach (var scope in filteredList)
+                {
+                    FilteredScopesOfWork.Add(scope);
+                }
+                
+                // Preserve selection if it's in the filtered results
+                if (currentSelection != null && FilteredScopesOfWork.Contains(currentSelection))
+                {
+                    SelectedScope = currentSelection;
+                }
+                else if (string.IsNullOrWhiteSpace(searchTerm))
+                {
+                    SelectedScope = null;
+                }
+            });
+        }
+        
+        private async Task PerformFuzzySearch(string searchTerm)
+        {
             // CRITICAL FIX: Capture all UI values on the UI thread FIRST
             var uiValues = await Application.Current.Dispatcher.InvokeAsync(() => new
             {
-                SearchTerm = ScopeSearchText?.Trim() ?? "",
+                SearchTerm = searchTerm,
                 CurrentSelection = SelectedScope,
                 ScopesOfWorkList = ScopesOfWork.ToList() // Create a safe copy
             });
@@ -990,30 +1076,22 @@ namespace DocHandler.ViewModels
             // Build filtered list without clearing to minimize UI disruption
             var filteredList = new List<string>();
             
-            if (string.IsNullOrWhiteSpace(uiValues.SearchTerm))
+            // Fuzzy search implementation
+            var searchWords = uiValues.SearchTerm.ToLowerInvariant().Split(new[] { ' ', '-' }, StringSplitOptions.RemoveEmptyEntries);
+            
+            var scoredScopes = new List<(string scope, double score)>();
+            
+            foreach (var scope in uiValues.ScopesOfWorkList)
             {
-                // No search term - show all scopes
-                filteredList.AddRange(uiValues.ScopesOfWorkList);
-            }
-            else
-            {
-                // Fuzzy search implementation
-                var searchWords = uiValues.SearchTerm.ToLowerInvariant().Split(new[] { ' ', '-' }, StringSplitOptions.RemoveEmptyEntries);
-                
-                var scoredScopes = new List<(string scope, double score)>();
-                
-                foreach (var scope in uiValues.ScopesOfWorkList)
+                double score = CalculateFuzzyScore(scope, uiValues.SearchTerm, searchWords);
+                if (score > 0)
                 {
-                    double score = CalculateFuzzyScore(scope, uiValues.SearchTerm, searchWords);
-                    if (score > 0)
-                    {
-                        scoredScopes.Add((scope, score));
-                    }
+                    scoredScopes.Add((scope, score));
                 }
-                
-                // Sort by score (highest first) and add to filtered list
-                filteredList.AddRange(scoredScopes.OrderByDescending(x => x.score).Select(x => x.scope));
             }
+            
+            // Sort by score (highest first) and add to filtered list
+            filteredList.AddRange(scoredScopes.OrderByDescending(x => x.score).Select(x => x.scope));
             
             // Update the filtered collection efficiently using ASYNC dispatcher
             await Application.Current.Dispatcher.InvokeAsync(() =>
@@ -1052,58 +1130,63 @@ namespace DocHandler.ViewModels
         
         private double CalculateFuzzyScore(string scope, string searchTerm, string[] searchWords)
         {
-            var scopeLower = scope.ToLowerInvariant();
             var searchTermLower = searchTerm.ToLowerInvariant();
             
-            // Split scope into code and description parts
-            var dashIndex = scope.IndexOf(" - ");
-            string code = dashIndex > 0 ? scope.Substring(0, dashIndex).ToLowerInvariant() : "";
-            string description = dashIndex > 0 ? scope.Substring(dashIndex + 3).ToLowerInvariant() : scopeLower;
+            // Use cached scope parts if available, otherwise compute and cache
+            if (!_scopePartsCache.TryGetValue(scope, out var parts))
+            {
+                var dashIndex = scope.IndexOf(" - ", StringComparison.Ordinal);
+                parts = (
+                    code: dashIndex > 0 ? scope.Substring(0, dashIndex) : "",
+                    description: dashIndex > 0 ? scope.Substring(dashIndex + 3) : scope
+                );
+                _scopePartsCache[scope] = parts;
+            }
             
             double score = 0;
             
             // 1. Exact match (highest score)
-            if (scopeLower == searchTermLower)
+            if (scope.Equals(searchTerm, StringComparison.OrdinalIgnoreCase))
             {
                 return 100;
             }
             
             // 2. Exact code match
-            if (code == searchTermLower)
+            if (!string.IsNullOrEmpty(parts.code) && parts.code.Equals(searchTerm, StringComparison.OrdinalIgnoreCase))
             {
                 return 90;
             }
             
             // 3. Code starts with search term
-            if (!string.IsNullOrEmpty(code) && code.StartsWith(searchTermLower))
+            if (!string.IsNullOrEmpty(parts.code) && parts.code.StartsWith(searchTerm, StringComparison.OrdinalIgnoreCase))
             {
-                score += 80 - (code.Length - searchTermLower.Length); // Closer matches score higher
+                score += 80 - (parts.code.Length - searchTermLower.Length); // Closer matches score higher
             }
             
             // 4. Code contains search term
-            else if (!string.IsNullOrEmpty(code) && code.Contains(searchTermLower))
+            else if (!string.IsNullOrEmpty(parts.code) && parts.code.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 score += 60;
             }
             
             // 5. Description exact match
-            if (description == searchTermLower)
+            if (parts.description.Equals(searchTerm, StringComparison.OrdinalIgnoreCase))
             {
                 score += 85;
             }
             
             // 6. Description starts with search term
-            else if (description.StartsWith(searchTermLower))
+            else if (parts.description.StartsWith(searchTerm, StringComparison.OrdinalIgnoreCase))
             {
                 score += 70;
             }
             
             // 7. Full scope contains exact search term
-            else if (scopeLower.Contains(searchTermLower))
+            else if (scope.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 score += 50;
                 // Bonus if it's at a word boundary
-                if (Regex.IsMatch(scopeLower, $@"\b{Regex.Escape(searchTermLower)}\b"))
+                if (Regex.IsMatch(scope, $@"\b{Regex.Escape(searchTerm)}\b", RegexOptions.IgnoreCase))
                 {
                     score += 10;
                 }
@@ -1117,7 +1200,7 @@ namespace DocHandler.ViewModels
                 
                 foreach (var word in searchWords)
                 {
-                    if (scopeLower.Contains(word))
+                    if (scope.IndexOf(word, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         wordsFoundCount++;
                     }
@@ -1144,32 +1227,35 @@ namespace DocHandler.ViewModels
                 var searchWord = searchWords[0];
                 
                 // Check each word in the scope
-                var scopeWords = scopeLower.Split(new[] { ' ', '-', ',', '.' }, StringSplitOptions.RemoveEmptyEntries);
+                var scopeWords = scope.Split(new[] { ' ', '-', ',', '.' }, StringSplitOptions.RemoveEmptyEntries);
                 foreach (var scopeWord in scopeWords)
                 {
-                    if (scopeWord == searchWord)
+                    if (scopeWord.Equals(searchWord, StringComparison.OrdinalIgnoreCase))
                     {
                         score += 35; // Exact word match
                     }
-                    else if (scopeWord.StartsWith(searchWord))
+                    else if (scopeWord.StartsWith(searchWord, StringComparison.OrdinalIgnoreCase))
                     {
                         score += 25; // Word starts with search
                     }
-                    else if (scopeWord.Contains(searchWord))
+                    else if (scopeWord.IndexOf(searchWord, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         score += 15; // Word contains search
                     }
                 }
             }
             
-            // 10. Fuzzy matching for typos (Levenshtein distance)
-            if (score == 0 && searchTermLower.Length >= 3) // Only for searches 3+ chars
+            // 10. Fuzzy matching for typos (Levenshtein distance) - only for medium length searches
+            if (score == 0 && searchTermLower.Length >= 3 && searchTermLower.Length <= 10) // Limit to reasonable lengths
             {
                 // Check description words for close matches
-                var descWords = description.Split(new[] { ' ', '-', ',', '.' }, StringSplitOptions.RemoveEmptyEntries);
+                var descWords = parts.description.Split(new[] { ' ', '-', ',', '.' }, StringSplitOptions.RemoveEmptyEntries);
                 foreach (var word in descWords)
                 {
-                    var distance = LevenshteinDistance(searchTermLower, word);
+                    // Skip if word lengths are too different (optimization)
+                    if (Math.Abs(word.Length - searchTermLower.Length) > 3) continue;
+                    
+                    var distance = LevenshteinDistance(searchTermLower, word.ToLowerInvariant());
                     var maxLen = Math.Max(searchTermLower.Length, word.Length);
                     var similarity = 1.0 - ((double)distance / maxLen);
                     
@@ -1721,6 +1807,15 @@ namespace DocHandler.ViewModels
         {
             SelectedScope = null;
             // Don't clear the search text - user might want to search for another
+            UpdateUI();
+        }
+
+        [RelayCommand]
+        private void ClearScopeSearch()
+        {
+            // Clear both search text and selected scope
+            ScopeSearchText = "";
+            SelectedScope = null;
             UpdateUI();
         }
 
@@ -2491,14 +2586,20 @@ namespace DocHandler.ViewModels
                     queueService.AddToQueue(file, selectedScope, companyName, outputDir);
                 }
                 
-                // Clear UI immediately on UI thread
+                // Clear pending files from the UI
                 await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
                     PendingFiles.Clear();
                     CompanyNameInput = "";
                     DetectedCompanyName = "";
-                    SelectedScope = null;
-                    StatusMessage = $"Added {fileCount} quote{(fileCount > 1 ? "s" : "")} to queue";
+                    StatusMessage = $"Added {fileCount} quote(s) to queue";
+                    
+                    // Clear scope if setting is enabled
+                    if (_configService.Config.ClearScopeAfterProcessing)
+                    {
+                        ScopeSearchText = "";
+                        SelectedScope = null;
+                    }
                 });
                 
                 // Start processing if not already running

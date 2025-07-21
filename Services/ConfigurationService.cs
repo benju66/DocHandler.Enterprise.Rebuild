@@ -110,7 +110,8 @@ namespace DocHandler.Services
                 ShowRecentScopes = false,  // Added - default to false (hidden by default)
                 AutoScanCompanyNames = true,  // Added - default to true (enabled)
                 ScanCompanyNamesForDocFiles = false,  // Added - default to false (disabled for .doc files)
-                DocFileSizeLimitMB = 10  // Added - default to 10MB limit for .doc files
+                DocFileSizeLimitMB = 10,  // Added - default to 10MB limit for .doc files
+                ClearScopeAfterProcessing = false  // Added - default to false (keep scope selected)
             };
         }
         
@@ -248,6 +249,7 @@ namespace DocHandler.Services
         public bool AutoScanCompanyNames { get; set; } = true;  // Added - default to true (enabled)
         public bool ScanCompanyNamesForDocFiles { get; set; } = false;  // Added - default to false (disabled for .doc files)
         public int DocFileSizeLimitMB { get; set; } = 10;  // Added - default to 10MB limit for .doc files
+        public bool ClearScopeAfterProcessing { get; set; } = false;  // Added - default to false (keep scope selected)
         
         // Queue Window State
         public double? QueueWindowLeft { get; set; }

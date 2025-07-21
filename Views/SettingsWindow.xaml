@@ -93,6 +93,11 @@
                                   Margin="20,5,0,0"
                                   IsEnabled="{Binding AutoScanCompanyNames}"/>
                         
+                        <!-- Clear Scope After Processing -->
+                        <CheckBox Content="Clear scope selection after processing quotes" 
+                                  IsChecked="{Binding ClearScopeAfterProcessing}" 
+                                  Margin="0,10,0,0"/>
+                        
                         <!-- Doc File Size Limit -->
                         <TextBlock Text="Maximum .doc file size for scanning" Margin="0,15,0,5"/>
                         <Grid>

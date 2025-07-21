@@ -87,6 +87,9 @@ namespace DocHandler.ViewModels
         [ObservableProperty]
         private int _conversionTimeoutSeconds = 30;
         
+        [ObservableProperty]
+        private bool _clearScopeAfterProcessing = false;
+        
         #endregion
         
         #region Display Settings
@@ -380,6 +383,7 @@ namespace DocHandler.ViewModels
             DocFileSizeLimitMB = config.DocFileSizeLimitMB;
             MaxParallelProcessing = config.MaxParallelProcessing;
             ConversionTimeoutSeconds = config.ConversionTimeoutSeconds;
+            ClearScopeAfterProcessing = config.ClearScopeAfterProcessing;
             
             // Display
             ShowRecentScopes = config.ShowRecentScopes;
@@ -420,6 +424,7 @@ namespace DocHandler.ViewModels
             config.DocFileSizeLimitMB = DocFileSizeLimitMB;
             config.MaxParallelProcessing = MaxParallelProcessing;
             config.ConversionTimeoutSeconds = ConversionTimeoutSeconds;
+            config.ClearScopeAfterProcessing = ClearScopeAfterProcessing;
             
             // Display
             config.ShowRecentScopes = ShowRecentScopes;
