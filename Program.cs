@@ -134,20 +134,10 @@ namespace DocHandler
                     Console.WriteLine("Initializing application...");
                     app.InitializeComponent();
                     
-                    // Create main window with DI
-                    Console.WriteLine("Creating main window...");
-                    var mainWindow = new MainWindow(serviceProvider);
-                    
-                    Console.WriteLine("Setting main window...");
-                    app.MainWindow = mainWindow;
-                    
-                    Console.WriteLine("Showing main window...");
-                    mainWindow.Show();
-                    
                     Log.Information("Application started successfully");
                     Console.WriteLine("Application started successfully - running message loop");
                     
-                    // Run the application
+                    // Run the application (OnStartup will create the MainWindow)
                     app.Run();
                     
                     // Cleanup

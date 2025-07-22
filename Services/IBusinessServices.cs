@@ -15,9 +15,16 @@ namespace DocHandler.Services
     /// </summary>
     public class CompanyDetectionRequest
     {
-        public string FilePath { get; }
-        public IProgress<int>? Progress { get; }
-        public CancellationToken CancellationToken { get; }
+        public string FilePath { get; set; } = string.Empty;
+        public string FileExtension { get; set; } = string.Empty;
+        public bool ScanDocFiles { get; set; } = true;
+        public int FileSizeLimitMB { get; set; } = 10;
+        public IProgress<int>? Progress { get; set; }
+        public CancellationToken CancellationToken { get; set; }
+
+        public CompanyDetectionRequest()
+        {
+        }
 
         public CompanyDetectionRequest(string filePath, IProgress<int>? progress = null, 
             CancellationToken cancellationToken = default)
@@ -103,6 +110,11 @@ namespace DocHandler.Services
     public interface ICompanyDetectionService
     {
         /// <summary>
+        /// Detect company name from a file (pipeline method)
+        /// </summary>
+        Task<string?> DetectCompanyAsync(CompanyDetectionRequest request);
+
+        /// <summary>
         /// Scan a file for company names
         /// </summary>
         Task<string?> ScanForCompanyNameAsync(CompanyDetectionRequest request);
@@ -129,6 +141,11 @@ namespace DocHandler.Services
     /// </summary>
     public interface IScopeManagementService
     {
+        /// <summary>
+        /// Validate if a scope exists and is valid
+        /// </summary>
+        Task<bool> ValidateScopeAsync(string scope);
+
         /// <summary>
         /// Perform fuzzy search on scopes
         /// </summary>

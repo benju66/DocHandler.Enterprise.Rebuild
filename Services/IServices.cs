@@ -47,6 +47,7 @@ namespace DocHandler.Services
         Task<ConversionResult> ConvertSingleFile(string inputPath, string outputPath);
         ConversionResult ConvertSingleFileSync(string inputPath, string outputPath);
         Task<ConversionResult> ConvertSingleFile(string inputPath, string outputPath, ProgressCallback? progressCallback = null);
+        Task<bool> ProcessFileAsync(string inputPath, string outputPath, ProgressCallback? progressCallback = null);
     }
 
     // Company Name Service Interface

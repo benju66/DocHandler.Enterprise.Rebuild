@@ -14,13 +14,13 @@ namespace DocHandler.Services
     public class CompanyDetectionService : ICompanyDetectionService
     {
         private readonly ILogger _logger;
-        private readonly CompanyNameService _companyNameService;
+        private readonly ICompanyNameService _companyNameService;
         private readonly IConfigurationService _configService;
         private readonly SemaphoreSlim _scanSemaphore;
         private volatile int _activeScanCount = 0;
 
         public CompanyDetectionService(
-            CompanyNameService companyNameService,
+            ICompanyNameService companyNameService,
             IConfigurationService configService)
         {
             _logger = Log.ForContext<CompanyDetectionService>();
@@ -29,6 +29,12 @@ namespace DocHandler.Services
             _scanSemaphore = new SemaphoreSlim(1, 1);
             
             _logger.Debug("CompanyDetectionService initialized");
+        }
+
+        public async Task<string?> DetectCompanyAsync(CompanyDetectionRequest request)
+        {
+            // Pipeline method - delegate to existing scan method
+            return await ScanForCompanyNameAsync(request);
         }
 
         public async Task<string?> ScanForCompanyNameAsync(CompanyDetectionRequest request)

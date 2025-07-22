@@ -608,8 +608,22 @@ namespace DocHandler.Services
         {
             Dispose(true);
             GC.SuppressFinalize(this);
-        }
+                }
 
+        public async Task<bool> ProcessFileAsync(string inputPath, string outputPath, ProgressCallback? progressCallback = null)
+        {
+            try
+            {
+                var result = await ConvertSingleFile(inputPath, outputPath, progressCallback);
+                return result.Success;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "ProcessFileAsync failed for {InputPath} -> {OutputPath}", inputPath, outputPath);
+                return false;
+            }
+        }
+        
         protected virtual void Dispose(bool disposing)
         {
             if (_disposed)

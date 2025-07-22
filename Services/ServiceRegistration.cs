@@ -2,6 +2,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Serilog;
 using DocHandler.ViewModels;
+using DocHandler.Services.Pipeline;
+using DocHandler.Services.Pipeline.SaveQuotes;
 
 namespace DocHandler.Services
 {
@@ -50,6 +52,17 @@ namespace DocHandler.Services
             services.AddSingleton<IAdvancedModeUIProvider, ModeUIProvider>();
             services.AddSingleton<IDynamicMenuBuilder, DynamicMenuBuilder>();
             services.AddSingleton<IAdvancedModeUIManager, ModeUIManager>();
+
+            // Processing Pipeline Framework (Phase 2 Milestone 3)
+            services.AddTransient<IPipelineBuilder, PipelineBuilder>();
+            services.AddTransient<IProcessingPipeline, ProcessingPipeline>();
+
+            // SaveQuotes Pipeline Stages (Phase 2 Milestone 3)
+            services.AddTransient<SaveQuotesValidator>();
+            services.AddTransient<SaveQuotesPreProcessor>();
+            services.AddTransient<SaveQuotesConverter>();
+            services.AddTransient<SaveQuotesPostProcessor>();
+            services.AddTransient<SaveQuotesOutputGenerator>();
             
             // ViewModels (Transient - new instance per resolution)
             services.AddTransient<ViewModels.MainViewModel>();

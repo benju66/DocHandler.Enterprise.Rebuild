@@ -15,12 +15,12 @@ namespace DocHandler.Services
     public class ScopeManagementService : IScopeManagementService
     {
         private readonly ILogger _logger;
-        private readonly ScopeOfWorkService _scopeService;
+        private readonly IScopeOfWorkService _scopeService;
         private readonly IConfigurationService _configService;
         private readonly Dictionary<string, (string code, string description)> _scopePartsCache;
 
         public ScopeManagementService(
-            ScopeOfWorkService scopeService,
+            IScopeOfWorkService scopeService,
             IConfigurationService configService)
         {
             _logger = Log.ForContext<ScopeManagementService>();
@@ -29,6 +29,23 @@ namespace DocHandler.Services
             _scopePartsCache = new Dictionary<string, (string code, string description)>();
             
             _logger.Debug("ScopeManagementService initialized");
+        }
+
+        public async Task<bool> ValidateScopeAsync(string scope)
+        {
+            if (string.IsNullOrWhiteSpace(scope))
+                return false;
+
+            try
+            {
+                var allScopes = _scopeService.Scopes;
+                return allScopes.Any(s => string.Equals(s.Code, scope, StringComparison.OrdinalIgnoreCase));
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to validate scope: {Scope}", scope);
+                return false;
+            }
         }
 
         public async Task<List<string>> SearchScopesAsync(ScopeSearchRequest request)

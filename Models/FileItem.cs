@@ -25,6 +25,13 @@ namespace DocHandler.Models
         
         [ObservableProperty]
         private bool _isProcessing;
+
+        // SaveQuotes mode properties
+        [ObservableProperty]
+        private string? _companyName;
+
+        [ObservableProperty]
+        private string? _scopeOfWork;
         
         public string DisplayFileSize => FormatFileSize(FileSize);
         

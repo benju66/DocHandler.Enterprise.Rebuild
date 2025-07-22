@@ -129,6 +129,8 @@ namespace DocHandler.Services
     {
         public bool IsValid { get; set; }
         public string? ErrorMessage { get; set; }
+        public IList<string> ErrorMessages { get; set; } = new List<string>();
+        public IList<string> Messages { get; set; } = new List<string>();
         public IList<string> Warnings { get; set; } = new List<string>();
         public IList<FileItem> ValidFiles { get; set; } = new List<FileItem>();
         public IList<FileItem> InvalidFiles { get; set; } = new List<FileItem>();

@@ -5,21 +5,27 @@ using System.Threading;
 using System.Threading.Tasks;
 using DocHandler.Models;
 using DocHandler.Helpers;
+using DocHandler.Services.Pipeline;
+using DocHandler.Services.Pipeline.SaveQuotes;
 using Serilog;
 
 namespace DocHandler.Services.Modes
 {
     /// <summary>
-    /// Save Quotes processing mode - extracts quote documents to organized folders
+    /// Save Quotes processing mode - extracts quote documents to organized folders using pipeline architecture
     /// </summary>
     public class SaveQuotesMode : ProcessingModeBase
     {
         public override string ModeName => "SaveQuotes";
         public override string DisplayName => "Save Quotes";
         public override string Description => "Organize and save quote documents with company names and scope of work";
-        public override Version Version => new Version(1, 0, 0);
+        public override Version Version => new Version(2, 0, 0); // Updated for pipeline architecture
 
-        // Required services
+        // Pipeline services
+        private readonly IPipelineBuilder _pipelineBuilder;
+        private IProcessingPipeline? _pipeline;
+
+        // Legacy services for backward compatibility
         private SaveQuotesQueueService? _queueService;
         private CompanyNameService? _companyNameService;
         private ScopeOfWorkService? _scopeOfWorkService;
@@ -28,14 +34,23 @@ namespace DocHandler.Services.Modes
         private PdfCacheService? _pdfCacheService;
         private ProcessManager? _processManager;
 
-        public SaveQuotesMode()
+        public SaveQuotesMode(IPipelineBuilder pipelineBuilder)
         {
-            // Constructor - services will be injected during initialization
+            _pipelineBuilder = pipelineBuilder ?? throw new ArgumentNullException(nameof(pipelineBuilder));
         }
 
         protected override async Task InitializeModeAsync()
         {
-            // Get required services from DI container
+            // Build the SaveQuotes processing pipeline
+            _pipeline = _pipelineBuilder
+                .UseValidator<SaveQuotesValidator>()
+                .UsePreProcessor<SaveQuotesPreProcessor>()
+                .UseConverter<SaveQuotesConverter>()
+                .UsePostProcessor<SaveQuotesPostProcessor>()
+                .UseOutputGenerator<SaveQuotesOutputGenerator>()
+                .Build();
+
+            // Get legacy services for backward compatibility (queue processing, etc.)
             _queueService = GetService<SaveQuotesQueueService>();
             _companyNameService = GetService<CompanyNameService>();
             _scopeOfWorkService = GetService<ScopeOfWorkService>();
@@ -71,88 +86,15 @@ namespace DocHandler.Services.Modes
 
             try
             {
-                // Validate required parameters
-                if (!request.Parameters.TryGetValue("scope", out var scopeObj) || scopeObj is not string scope || string.IsNullOrWhiteSpace(scope))
+                // Option 1: Use Pipeline for direct processing (new architecture)
+                if (request.Parameters.ContainsKey("usePipeline") && 
+                    request.Parameters["usePipeline"] is bool usePipeline && usePipeline)
                 {
-                    return new ModeProcessingResult
-                    {
-                        Success = false,
-                        ErrorMessage = "Scope of work parameter is required for SaveQuotes mode",
-                        ProcessedFiles = processedFiles,
-                        Duration = DateTime.UtcNow - startTime
-                    };
+                    return await ProcessWithPipelineAsync(request, cancellationToken);
                 }
 
-                if (!request.Parameters.TryGetValue("companyName", out var companyObj) || companyObj is not string companyName || string.IsNullOrWhiteSpace(companyName))
-                {
-                    return new ModeProcessingResult
-                    {
-                        Success = false,
-                        ErrorMessage = "Company name parameter is required for SaveQuotes mode",
-                        ProcessedFiles = processedFiles,
-                        Duration = DateTime.UtcNow - startTime
-                    };
-                }
-
-                // Sanitize company name for filename usage
-                var sanitizedCompanyName = SanitizeFileName(companyName);
-
-                // Get or create queue service
-                if (_queueService == null)
-            {
-                throw new InvalidOperationException("SaveQuotesQueueService is not available");
-            }
-            
-            var queueService = _queueService;
-
-                // Add files to queue
-                foreach (var file in request.Files)
-                {
-                    queueService.AddToQueue(file, scope, sanitizedCompanyName, request.OutputDirectory);
-                    
-                    processedFiles.Add(new ProcessedFile
-                    {
-                        OriginalFile = file,
-                        Success = true,
-                        Metadata = new Dictionary<string, object>
-                        {
-                            ["scope"] = scope,
-                            ["companyName"] = sanitizedCompanyName,
-                            ["status"] = "queued"
-                        }
-                    });
-                }
-
-                // Start processing if not already running
-                if (!queueService.IsProcessing)
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            await queueService.StartProcessingAsync();
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.Error(ex, "Failed to start queue processing in SaveQuotes mode");
-                        }
-                    }, cancellationToken);
-                }
-
-                _logger.Information("SaveQuotes mode processed {FileCount} files, added to queue", request.Files.Count);
-
-                return new ModeProcessingResult
-                {
-                    Success = true,
-                    ProcessedFiles = processedFiles,
-                    Duration = DateTime.UtcNow - startTime,
-                    Metadata = new Dictionary<string, object>
-                    {
-                        ["queuedFiles"] = request.Files.Count,
-                        ["scope"] = scope,
-                        ["companyName"] = sanitizedCompanyName
-                    }
-                };
+                // Option 2: Use Queue for background processing (legacy compatibility)
+                return await ProcessWithQueueAsync(request, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -166,6 +108,207 @@ namespace DocHandler.Services.Modes
                     ProcessedFiles = processedFiles,
                     Duration = DateTime.UtcNow - startTime
                 };
+            }
+        }
+
+        /// <summary>
+        /// Process files using the new pipeline architecture
+        /// </summary>
+        private async Task<ModeProcessingResult> ProcessWithPipelineAsync(ProcessingRequest request, CancellationToken cancellationToken)
+        {
+            var startTime = DateTime.UtcNow;
+
+            if (_pipeline == null)
+            {
+                throw new InvalidOperationException("Pipeline not initialized - call InitializeAsync first");
+            }
+
+            _logger.Information("Processing {FileCount} files using SaveQuotes pipeline", request.Files.Count);
+
+            // Set company name and scope on files if provided
+            if (request.Parameters.TryGetValue("companyName", out var companyObj) && companyObj is string companyName)
+            {
+                foreach (var file in request.Files)
+                {
+                    if (string.IsNullOrWhiteSpace(file.CompanyName))
+                        file.CompanyName = companyName;
+                }
+            }
+
+            if (request.Parameters.TryGetValue("scope", out var scopeObj) && scopeObj is string scope)
+            {
+                foreach (var file in request.Files)
+                {
+                    if (string.IsNullOrWhiteSpace(file.ScopeOfWork))
+                        file.ScopeOfWork = scope;
+                }
+            }
+
+            // Create processing context for the pipeline
+            var context = new ProcessingContext(
+                correlationId: Guid.NewGuid().ToString(),
+                inputFiles: request.Files.ToList(),
+                outputDirectory: request.OutputDirectory ?? GetDefaultOutputDirectory(),
+                mode: ProcessingMode.SaveQuotes,
+                cancellationToken: cancellationToken,
+                progress: null // Progress reporting handled by queue UI
+            );
+
+            // Execute the pipeline
+            var pipelineResult = await _pipeline.ExecuteAsync(context);
+
+            // Convert pipeline result to mode result
+            var processedFiles = pipelineResult.SuccessfulFiles.Select(path => new ProcessedFile
+            {
+                OriginalFile = request.Files.FirstOrDefault(f => pipelineResult.SuccessfulFiles.Contains(f.FilePath)) ?? new FileItem { FilePath = path },
+                Success = true,
+                OutputPath = path,
+                Metadata = new Dictionary<string, object>
+                {
+                    ["processingMethod"] = "pipeline",
+                    ["pipelineVersion"] = "2.0"
+                }
+            }).ToList();
+
+            // Add failed files
+            processedFiles.AddRange(pipelineResult.FailedFiles.Select(path => new ProcessedFile
+            {
+                OriginalFile = request.Files.FirstOrDefault(f => f.FilePath == path) ?? new FileItem { FilePath = path },
+                Success = false,
+                ErrorMessage = pipelineResult.ErrorMessages.FirstOrDefault() ?? "Unknown pipeline error"
+            }));
+
+            return new ModeProcessingResult
+            {
+                Success = pipelineResult.Success,
+                ProcessedFiles = processedFiles,
+                Duration = DateTime.UtcNow - startTime,
+                Metadata = pipelineResult.OutputData.ToDictionary(kvp => kvp.Key, kvp => kvp.Value)
+            };
+        }
+
+        /// <summary>
+        /// Process files using the legacy queue system (for backward compatibility)
+        /// </summary>
+        private async Task<ModeProcessingResult> ProcessWithQueueAsync(ProcessingRequest request, CancellationToken cancellationToken)
+        {
+            var startTime = DateTime.UtcNow;
+            var processedFiles = new List<ProcessedFile>();
+
+            // Validate required parameters for queue processing
+            if (!request.Parameters.TryGetValue("scope", out var scopeObj) || scopeObj is not string scope || string.IsNullOrWhiteSpace(scope))
+            {
+                return new ModeProcessingResult
+                {
+                    Success = false,
+                    ErrorMessage = "Scope of work parameter is required for SaveQuotes queue mode",
+                    ProcessedFiles = processedFiles,
+                    Duration = DateTime.UtcNow - startTime
+                };
+            }
+
+            if (!request.Parameters.TryGetValue("companyName", out var companyObj) || companyObj is not string companyName || string.IsNullOrWhiteSpace(companyName))
+            {
+                return new ModeProcessingResult
+                {
+                    Success = false,
+                    ErrorMessage = "Company name parameter is required for SaveQuotes queue mode",
+                    ProcessedFiles = processedFiles,
+                    Duration = DateTime.UtcNow - startTime
+                };
+            }
+
+            // Sanitize company name for filename usage
+            var sanitizedCompanyName = SanitizeFileName(companyName);
+
+            // Get or create queue service
+            if (_queueService == null)
+            {
+                throw new InvalidOperationException("SaveQuotesQueueService is not available");
+            }
+
+            var queueService = _queueService;
+
+            // Add files to queue
+            foreach (var file in request.Files)
+            {
+                queueService.AddToQueue(file, scope, sanitizedCompanyName, request.OutputDirectory);
+                
+                processedFiles.Add(new ProcessedFile
+                {
+                    OriginalFile = file,
+                    Success = true,
+                    Metadata = new Dictionary<string, object>
+                    {
+                        ["scope"] = scope,
+                        ["companyName"] = sanitizedCompanyName,
+                        ["status"] = "queued",
+                        ["processingMethod"] = "queue"
+                    }
+                });
+            }
+
+            // Start processing if not already running
+            if (!queueService.IsProcessing)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await queueService.StartProcessingAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Failed to start queue processing in SaveQuotes mode");
+                    }
+                }, cancellationToken);
+            }
+
+            _logger.Information("SaveQuotes mode processed {FileCount} files, added to queue", request.Files.Count);
+
+            return new ModeProcessingResult
+            {
+                Success = true,
+                ProcessedFiles = processedFiles,
+                Duration = DateTime.UtcNow - startTime,
+                Metadata = new Dictionary<string, object>
+                {
+                    ["queuedFiles"] = request.Files.Count,
+                    ["scope"] = scope,
+                    ["companyName"] = sanitizedCompanyName,
+                    ["processingMethod"] = "queue"
+                }
+            };
+        }
+
+        /// <summary>
+        /// Get the default output directory for SaveQuotes processing
+        /// </summary>
+        private string GetDefaultOutputDirectory()
+        {
+            try
+            {
+                var defaultLocation = _configService?.Config?.DefaultSaveLocation;
+                if (!string.IsNullOrWhiteSpace(defaultLocation) && System.IO.Directory.Exists(defaultLocation))
+                {
+                    return defaultLocation;
+                }
+
+                // Fallback to Documents folder
+                var documentsFolder = System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments);
+                var saveQuotesFolder = System.IO.Path.Combine(documentsFolder, "SaveQuotes");
+                
+                if (!System.IO.Directory.Exists(saveQuotesFolder))
+                {
+                    System.IO.Directory.CreateDirectory(saveQuotesFolder);
+                }
+
+                return saveQuotesFolder;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to get default output directory, using temp folder");
+                return System.IO.Path.GetTempPath();
             }
         }
 
