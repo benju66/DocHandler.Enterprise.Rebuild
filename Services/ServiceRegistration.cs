@@ -4,6 +4,7 @@ using Serilog;
 using DocHandler.ViewModels;
 using DocHandler.Services.Pipeline;
 using DocHandler.Services.Pipeline.SaveQuotes;
+using DocHandler.Services.Configuration;
 
 namespace DocHandler.Services
 {
@@ -13,8 +14,14 @@ namespace DocHandler.Services
         {
             // Core Infrastructure Services (Singleton - long-running resources)
             services.AddSingleton<IConfigurationService, ConfigurationService>();
+            services.AddSingleton<IHierarchicalConfigurationService, HierarchicalConfigurationService>();
+            services.AddSingleton<IConfigurationChangeNotificationService, ConfigurationChangeNotificationService>();
+            services.AddTransient<IConfigurationExportImportService, ConfigurationExportImportService>();
             services.AddSingleton<IProcessManager, ProcessManager>();
-            services.AddSingleton<PerformanceMonitor>();
+            services.AddSingleton<PerformanceMonitor>(provider => 
+                new PerformanceMonitor(
+                    provider.GetService<IHierarchicalConfigurationService>(),
+                    provider.GetService<IConfigurationChangeNotificationService>()));
             services.AddSingleton<TelemetryService>();
             services.AddSingleton<PdfCacheService>();
             

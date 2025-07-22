@@ -7,6 +7,7 @@ using System.Linq;
 using System.Text;
 using System.IO;
 using Serilog;
+using DocHandler.Services.Configuration;
 
 namespace DocHandler.Services
 {
@@ -43,12 +44,26 @@ namespace DocHandler.Services
         
         public event EventHandler<MemoryPressureEventArgs>? MemoryPressureDetected;
 
-        public PerformanceMonitor(int memoryLimitMB = 500)
+        private readonly IHierarchicalConfigurationService? _configService;
+        private readonly IConfigurationChangeNotificationService? _notificationService;
+
+        public PerformanceMonitor(
+            IHierarchicalConfigurationService? configService = null,
+            IConfigurationChangeNotificationService? notificationService = null)
         {
+            _configService = configService;
+            _notificationService = notificationService;
+            
             _currentProcess = Process.GetCurrentProcess();
             _initialMemoryUsage = _currentProcess.WorkingSet64;
             _peakMemoryUsage = _initialMemoryUsage;
+            
+            // Get memory limit from configuration or use default
+            var memoryLimitMB = _configService?.Config.Performance.MemoryLimitMB ?? 500;
             _memoryThresholdBytes = memoryLimitMB * 1024L * 1024L;
+            
+            // Subscribe to performance configuration changes
+            _notificationService?.SubscribeToPerformanceChanges(OnPerformanceConfigurationChanged);
             
             try
             {
@@ -468,6 +483,30 @@ namespace DocHandler.Services
                     };
                 }
                 return copy;
+            }
+        }
+
+        /// <summary>
+        /// Handles performance configuration changes
+        /// </summary>
+        private void OnPerformanceConfigurationChanged(PerformanceSettings newSettings)
+        {
+            try
+            {
+                _logger.Information("Performance configuration changed, updating settings");
+                
+                // Update memory threshold
+                var newMemoryLimitMB = newSettings.MemoryLimitMB;
+                _memoryThresholdBytes = newMemoryLimitMB * 1024L * 1024L;
+                
+                _logger.Information("Updated memory threshold to {MemoryLimitMB} MB", newMemoryLimitMB);
+                
+                // You could add more configuration updates here as needed
+                // For example: updating monitoring intervals, performance thresholds, etc.
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to apply performance configuration changes");
             }
         }
 
