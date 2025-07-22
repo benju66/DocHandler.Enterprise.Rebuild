@@ -104,7 +104,8 @@ namespace DocHandler.Services
             
             _queue.Enqueue(item);
             
-            Application.Current.Dispatcher.Invoke(() =>
+            // THREADING FIX: Use BeginInvoke to avoid blocking caller thread
+            Application.Current.Dispatcher.BeginInvoke(() =>
             {
                 lock (_itemsLock)
                 {
@@ -217,8 +218,8 @@ namespace DocHandler.Services
             // REMOVED: OnQueueProcessingCompleted call since method no longer exists
             // ReliableOfficeConverter instances are already disposed after each batch
             
-            // Fire queue empty event
-            Application.Current.Dispatcher.Invoke(() =>
+            // THREADING FIX: Use BeginInvoke for queue empty event to avoid blocking
+            Application.Current.Dispatcher.BeginInvoke(() =>
             {
                 IsProcessing = false;
                 QueueEmpty?.Invoke(this, EventArgs.Empty);
@@ -231,8 +232,8 @@ namespace DocHandler.Services
             
             try
             {
-                // Update status to processing
-                Application.Current.Dispatcher.Invoke(() =>
+                // THREADING FIX: Use BeginInvoke to avoid blocking the processing thread
+                Application.Current.Dispatcher.BeginInvoke(() =>
                 {
                     item.Status = SaveQuoteStatus.Processing;
                     UpdateCounts();
@@ -294,7 +295,8 @@ namespace DocHandler.Services
 
                 _logger.Information("=== QUEUE ITEM PROCESSING COMPLETED ===");
                 
-                Application.Current.Dispatcher.Invoke(() =>
+                // THREADING FIX: Use BeginInvoke to avoid blocking the processing thread
+                Application.Current.Dispatcher.BeginInvoke(() =>
                 {
                     if (result.Success)
                     {
@@ -331,7 +333,8 @@ namespace DocHandler.Services
             }
             catch (Exception ex)
             {
-                Application.Current.Dispatcher.Invoke(() =>
+                // THREADING FIX: Use BeginInvoke to avoid blocking the processing thread
+                Application.Current.Dispatcher.BeginInvoke(() =>
                 {
                     item.Status = SaveQuoteStatus.Failed;
                     item.ErrorMessage = ex.Message;
@@ -377,7 +380,8 @@ namespace DocHandler.Services
         {
             if (item.Status == SaveQuoteStatus.Queued)
             {
-                Application.Current.Dispatcher.Invoke(() =>
+                // THREADING FIX: Use BeginInvoke to avoid blocking caller thread
+                Application.Current.Dispatcher.BeginInvoke(() =>
                 {
                     item.Status = SaveQuoteStatus.Cancelled;
                     UpdateCounts();
@@ -389,7 +393,8 @@ namespace DocHandler.Services
         
         public void ClearCompleted()
         {
-            Application.Current.Dispatcher.Invoke(() =>
+            // THREADING FIX: Use BeginInvoke to avoid blocking caller thread
+            Application.Current.Dispatcher.BeginInvoke(() =>
             {
                 lock (_itemsLock)
                 {

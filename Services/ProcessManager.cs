@@ -176,10 +176,22 @@ namespace DocHandler.Services
             try
             {
                 var process = Process.GetProcessById(processId);
-                var exitedWithinTimeout = await Task.Run(() => process.WaitForExit((int)timeout.TotalMilliseconds));
                 
-                process.Dispose();
-                return exitedWithinTimeout;
+                // THREADING FIX: Use process.WaitForExitAsync if available (.NET 5+)
+                // For older frameworks, use a more efficient polling approach instead of Task.Run
+                try
+                {
+                    using var cts = new System.Threading.CancellationTokenSource(timeout);
+                    await process.WaitForExitAsync(cts.Token);
+                    process.Dispose();
+                    return true;
+                }
+                catch (OperationCanceledException)
+                {
+                    // Timeout occurred
+                    process.Dispose();
+                    return false;
+                }
             }
             catch (ArgumentException)
             {

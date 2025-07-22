@@ -211,15 +211,18 @@ namespace DocHandler.Services
 
                 _logger.Information("STA thread {ThreadName} confirmed STA and ready for COM operations", threadName);
 
-                // Use synchronous loop instead of async foreach
+                // THREADING FIX: Use proper async reading pattern to avoid blocking and timeouts
                 while (!_shutdownTokenSource.Token.IsCancellationRequested)
                 {
                     try
                     {
-                        // Wait for work items synchronously with timeout
-                        if (_workReader.WaitToReadAsync(_shutdownTokenSource.Token).AsTask().Wait(100))
+                        // Use synchronous WaitToRead to avoid complex async context on worker threads
+                        var waitTask = _workReader.WaitToReadAsync(_shutdownTokenSource.Token).AsTask();
+                        
+                        // Wait with shorter timeout to be more responsive to cancellation
+                        if (waitTask.Wait(50, _shutdownTokenSource.Token))
                         {
-                            if (_workReader.TryRead(out var workItem))
+                            if (waitTask.Result && _workReader.TryRead(out var workItem))
                             {
                                 // Double-check apartment state before each work item (paranoid but safe)
                                 if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
@@ -229,9 +232,19 @@ namespace DocHandler.Services
                                     continue;
                                 }
 
-                                workItem.Action();
+                                // Execute work item with error handling
+                                try
+                                {
+                                    workItem.Action();
+                                }
+                                catch (Exception workEx)
+                                {
+                                    _logger.Error(workEx, "Work item execution failed on thread {ThreadName}", threadName);
+                                    // Continue with next work item
+                                }
                             }
                         }
+                        // If WaitToRead times out, just loop again to check cancellation
                     }
                     catch (OperationCanceledException)
                     {
@@ -241,6 +254,8 @@ namespace DocHandler.Services
                     catch (Exception ex)
                     {
                         _logger.Error(ex, "Unhandled exception in STA thread {ThreadName}", threadName);
+                        // Sleep briefly to avoid tight error loop
+                        Thread.Sleep(100);
                     }
                 }
             }

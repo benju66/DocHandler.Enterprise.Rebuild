@@ -183,7 +183,9 @@ namespace DocHandler.Services
         
         private async Task CheckStateAsync()
         {
-            await Task.Run(() => CheckState());
+            // THREADING FIX: Remove unnecessary Task.Run wrapper - CheckState is fast and synchronous
+            CheckState();
+            await Task.CompletedTask;
         }
         
         private void CheckState()
@@ -203,7 +205,9 @@ namespace DocHandler.Services
         
         private async Task OnSuccessAsync(string operationName)
         {
-            await Task.Run(() => OnSuccess(operationName));
+            // THREADING FIX: Remove unnecessary Task.Run wrapper - OnSuccess is fast and synchronous
+            OnSuccess(operationName);
+            await Task.CompletedTask;
         }
         
         private void OnSuccess(string operationName)
@@ -231,7 +235,9 @@ namespace DocHandler.Services
         
         private async Task OnFailureAsync(Exception exception, string operationName)
         {
-            await Task.Run(() => OnFailure(exception, operationName));
+            // THREADING FIX: Remove unnecessary Task.Run wrapper - OnFailure is fast and synchronous
+            OnFailure(exception, operationName);
+            await Task.CompletedTask;
         }
         
         private void OnFailure(Exception exception, string operationName)

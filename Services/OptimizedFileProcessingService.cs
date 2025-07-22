@@ -66,31 +66,35 @@ namespace DocHandler.Services
             
             foreach (var file in files)
             {
-                var validationResult = DocHandler.Helpers.FileValidator.ValidateFile(file);
-                
-                if (validationResult.IsValid && IsFileSupported(file))
+                try
                 {
-                    validFiles.Add(file);
-                    _logger.Information("Valid file added: {FilePath}", file);
+                    // Use enhanced validation with custom exceptions
+                    DocHandler.Helpers.FileValidator.ValidateFileOrThrow(file);
                     
-                    // Log any warnings
-                    if (validationResult.Warnings.Any())
+                    if (IsFileSupported(file))
                     {
-                        foreach (var warning in validationResult.Warnings)
-                        {
-                            _logger.Warning("File validation warning for {FilePath}: {Warning}", file, warning);
-                        }
+                        validFiles.Add(file);
+                        _logger.Information("Valid file added: {FilePath}", file);
+                    }
+                    else
+                    {
+                        _logger.Warning("Unsupported file type: {FilePath}", file);
                     }
                 }
-                else
+                catch (SecurityViolationException secEx)
                 {
-                    var reason = !validationResult.IsValid ? validationResult.ErrorMessage : "Unsupported file type";
-                    _logger.Warning("Invalid or unsupported file: {FilePath} - {Reason}", file, reason);
-                    
-                    if (!validationResult.IsSecure)
-                    {
-                        _logger.Warning("Security concern with file: {FilePath} - {Reason}", file, reason);
-                    }
+                    _logger.Fatal(secEx, "Security violation detected in dropped file: {FilePath}", file);
+                    // Security violations are never added to valid files
+                }
+                catch (FileValidationException fileEx)
+                {
+                    _logger.Warning(fileEx, "File validation failed for dropped file: {FilePath}", file);
+                    // Validation failures are never added to valid files
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Unexpected error validating dropped file: {FilePath}", file);
+                    // Unknown errors are never added to valid files
                 }
             }
             

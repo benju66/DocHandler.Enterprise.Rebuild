@@ -6,6 +6,9 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 using DocHandler.ViewModels;
+using DocHandler.Services;
+using DocHandler.Services.Modes;
+using Microsoft.Extensions.DependencyInjection;
 using Serilog;
 
 namespace DocHandler
@@ -15,6 +18,7 @@ namespace DocHandler
         private ILogger _logger;
         private System.Windows.Threading.DispatcherTimer _performanceTimer;
         private System.Windows.Threading.DispatcherTimer _memoryTimer;
+        private IServiceProvider? _serviceProvider;
         protected override void OnStartup(StartupEventArgs e)
         {
             // Use the logger already initialized in Program.cs
@@ -75,6 +79,9 @@ namespace DocHandler
                 Log.Debug("Memory cleanup completed");
             };
             _memoryTimer.Start();
+            
+            // Initialize mode system
+            InitializeModeSystem();
             
             base.OnStartup(e);
         }
@@ -145,6 +152,37 @@ namespace DocHandler
         {
             _logger.Error(e.Exception, "Unobserved task exception");
             e.SetObserved();
+        }
+
+        private void InitializeModeSystem()
+        {
+            try
+            {
+                _logger.Information("Initializing mode system");
+                
+                // Create service collection
+                var services = new ServiceCollection();
+                
+                // Register core services
+                services.RegisterServices();
+                
+                // Register processing modes
+                services.RegisterProcessingModes();
+                
+                // Build service provider
+                _serviceProvider = services.BuildServiceProvider();
+                
+                // Mode registry will automatically pick up registered modes
+                var modeRegistry = _serviceProvider.GetRequiredService<IModeRegistry>();
+                // SaveQuotes mode is already registered through RegisterProcessingModes()
+                
+                _logger.Information("Mode system initialized successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to initialize mode system");
+                // Don't throw here to prevent app startup failure
+            }
         }
     }
 }

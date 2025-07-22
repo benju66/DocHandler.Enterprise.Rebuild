@@ -130,6 +130,10 @@ namespace DocHandler.Services
         event EventHandler QueueEmpty;
         event EventHandler<string> StatusMessageChanged;
     }
+
+    // Mode Management Interfaces are defined in their respective files:
+    // - IModeManager is defined in Services/ModeManager.cs
+    // - IModeRegistry is defined in Services/ModeRegistry.cs
 }
 
 // Supporting classes and events are defined in their respective service files 

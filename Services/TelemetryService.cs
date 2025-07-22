@@ -281,7 +281,7 @@ namespace DocHandler.Services
                 {
                     try
                     {
-                        var content = await File.ReadAllTextAsync(file);
+                        var content = await File.ReadAllTextAsync(file).ConfigureAwait(false);
                         var events = JsonSerializer.Deserialize<List<TelemetryEvent>>(content);
                         
                         if (events != null)

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using Serilog;
+using DocHandler.Services;
 
 namespace DocHandler.Helpers
 {
@@ -35,6 +36,22 @@ namespace DocHandler.Helpers
             { ".rtf", new byte[] { 0x7B, 0x5C, 0x72, 0x74, 0x66 } } // {\rtf
         };
 
+        // Enhanced security patterns
+        private static readonly string[] SuspiciousPatterns = new[]
+        {
+            "..", "~", "../", "..\\", "%2e%2e", "%2f", "%5c", 
+            "..%2f", "..%5c", "%2e%2e%2f", "%2e%2e%5c",
+            "javascript:", "vbscript:", "data:", "file:",
+            "<script", "</script", "eval(", "document.write"
+        };
+
+        private static readonly string[] DangerousExtensions = new[]
+        {
+            ".exe", ".bat", ".cmd", ".com", ".scr", ".pif", 
+            ".vbs", ".js", ".jar", ".app", ".deb", ".pkg", 
+            ".dmg", ".iso", ".msi", ".ps1", ".psm1"
+        };
+
         public class ValidationResult
         {
             public bool IsValid { get; set; }
@@ -42,10 +59,21 @@ namespace DocHandler.Helpers
             public List<string> Warnings { get; set; } = new List<string>();
             public FileInfo? FileInfo { get; set; }
             public bool IsSecure { get; set; } = true;
+            public SecurityRiskLevel RiskLevel { get; set; } = SecurityRiskLevel.None;
+            public List<string> SecurityConcerns { get; set; } = new List<string>();
+        }
+
+        public enum SecurityRiskLevel
+        {
+            None,
+            Low,
+            Medium,
+            High,
+            Critical
         }
 
         /// <summary>
-        /// Comprehensive file validation with security checks
+        /// Comprehensive file validation with enhanced security checks
         /// </summary>
         public static ValidationResult ValidateFile(string filePath)
         {
@@ -63,6 +91,22 @@ namespace DocHandler.Helpers
 
                 var fileInfo = new FileInfo(filePath);
                 result.FileInfo = fileInfo;
+
+                // Enhanced security checks first
+                var securityResult = PerformSecurityValidation(filePath, fileInfo);
+                result.IsSecure = securityResult.IsSecure;
+                result.RiskLevel = securityResult.RiskLevel;
+                result.SecurityConcerns.AddRange(securityResult.Concerns);
+
+                // Block high/critical security risks immediately
+                if (result.RiskLevel >= SecurityRiskLevel.High)
+                {
+                    result.IsValid = false;
+                    result.ErrorMessage = "File blocked due to security concerns";
+                    _logger.Warning("File blocked due to security concerns: {File}, Risk: {RiskLevel}, Concerns: {Concerns}", 
+                        filePath, result.RiskLevel, string.Join(", ", result.SecurityConcerns));
+                    return result;
+                }
 
                 // File size check
                 if (fileInfo.Length > MAX_FILE_SIZE)
@@ -91,15 +135,6 @@ namespace DocHandler.Helpers
                     return result;
                 }
 
-                // Path traversal protection
-                if (HasPathTraversalAttempt(filePath))
-                {
-                    result.IsValid = false;
-                    result.ErrorMessage = "File path contains invalid characters or path traversal attempts";
-                    result.IsSecure = false;
-                    return result;
-                }
-
                 // File access check
                 if (!CanAccessFile(filePath))
                 {
@@ -108,17 +143,39 @@ namespace DocHandler.Helpers
                     return result;
                 }
 
-                // File signature validation (basic)
+                // File signature validation (enhanced)
                 if (!ValidateFileSignature(filePath, extension))
                 {
+                    result.RiskLevel = SecurityRiskLevel.Medium;
+                    result.SecurityConcerns.Add("File signature mismatch - possible file type spoofing");
                     result.Warnings.Add("File signature doesn't match expected format - file may be corrupted or renamed");
+                }
+
+                // Enhanced content scanning for Office files
+                if (IsOfficeFile(extension))
+                {
+                    var contentResult = ScanOfficeFileContent(filePath);
+                    if (contentResult.HasMacros)
+                    {
+                        result.RiskLevel = GetMaxRiskLevel(result.RiskLevel, SecurityRiskLevel.Medium);
+                        result.SecurityConcerns.Add("File contains macros");
+                        result.Warnings.Add("File contains macros which may pose security risks");
+                    }
                 }
 
                 // Check for suspicious file characteristics
                 CheckSuspiciousCharacteristics(filePath, result);
 
                 result.IsValid = true;
-                _logger.Debug("File validation passed: {File}", Path.GetFileName(filePath));
+                _logger.Debug("File validation passed: {File}, Risk Level: {RiskLevel}", 
+                    Path.GetFileName(filePath), result.RiskLevel);
+                
+                // Log security concerns if any
+                if (result.SecurityConcerns.Any())
+                {
+                    _logger.Warning("File validation concerns for {File}: {Concerns}", 
+                        Path.GetFileName(filePath), string.Join(", ", result.SecurityConcerns));
+                }
             }
             catch (Exception ex)
             {
@@ -132,7 +189,202 @@ namespace DocHandler.Helpers
         }
 
         /// <summary>
-        /// Validates multiple files and returns results
+        /// Validates a file and throws appropriate custom exceptions on failure
+        /// </summary>
+        public static void ValidateFileOrThrow(string filePath)
+        {
+            var result = ValidateFile(filePath);
+            
+            if (!result.IsValid)
+            {
+                if (!result.IsSecure || result.RiskLevel >= SecurityRiskLevel.High)
+                {
+                    if (HasPathTraversalAttempt(filePath))
+                    {
+                        throw ExceptionFactory.PathTraversal(filePath);
+                    }
+                    throw new SecurityViolationException("File Security", filePath, 
+                        string.Join(", ", result.SecurityConcerns));
+                }
+                
+                if (!File.Exists(filePath))
+                {
+                    throw ExceptionFactory.FileNotFound(filePath);
+                }
+                
+                if (result.FileInfo?.Length > MAX_FILE_SIZE)
+                {
+                    throw ExceptionFactory.FileTooLarge(filePath, result.FileInfo.Length, MAX_FILE_SIZE);
+                }
+                
+                var extension = Path.GetExtension(filePath);
+                if (!AllowedExtensions.Contains(extension))
+                {
+                    throw ExceptionFactory.UnsupportedFileType(filePath, extension);
+                }
+                
+                // Generic file validation exception for other cases
+                var reason = DetermineValidationFailureReason(result);
+                throw new FileValidationException(filePath, reason, result.ErrorMessage);
+            }
+        }
+
+        /// <summary>
+        /// Enhanced security validation with detailed risk assessment
+        /// </summary>
+        private static (bool IsSecure, SecurityRiskLevel RiskLevel, List<string> Concerns) PerformSecurityValidation(string filePath, FileInfo fileInfo)
+        {
+            var concerns = new List<string>();
+            var riskLevel = SecurityRiskLevel.None;
+            
+            // Path traversal check
+            if (HasPathTraversalAttempt(filePath))
+            {
+                concerns.Add("Path traversal attempt detected");
+                riskLevel = SecurityRiskLevel.Critical;
+            }
+            
+            // Dangerous extension check
+            var extension = fileInfo.Extension.ToLowerInvariant();
+            if (DangerousExtensions.Contains(extension))
+            {
+                concerns.Add($"Dangerous file extension: {extension}");
+                riskLevel = SecurityRiskLevel.Critical;
+            }
+            
+            // Double extension check
+            var fileName = fileInfo.Name;
+            var dotCount = fileName.Count(c => c == '.');
+            if (dotCount > 1 && HasDangerousDoubleExtension(fileName))
+            {
+                concerns.Add("Suspicious double extension detected");
+                riskLevel = GetMaxRiskLevel(riskLevel, SecurityRiskLevel.High);
+            }
+            
+            // Suspicious filename patterns
+            var suspiciousPatterns = SuspiciousPatterns.Where(pattern => 
+                fileName.ToLowerInvariant().Contains(pattern.ToLowerInvariant())).ToList();
+            
+            if (suspiciousPatterns.Any())
+            {
+                concerns.Add($"Suspicious filename patterns: {string.Join(", ", suspiciousPatterns)}");
+                riskLevel = GetMaxRiskLevel(riskLevel, SecurityRiskLevel.Medium);
+            }
+            
+            // File size anomalies
+            if (fileInfo.Length > MAX_FILE_SIZE)
+            {
+                concerns.Add("File size exceeds security limits");
+                riskLevel = GetMaxRiskLevel(riskLevel, SecurityRiskLevel.Medium);
+            }
+            
+            // Very small files that claim to be complex formats
+            if (fileInfo.Length < 100 && (extension == ".docx" || extension == ".xlsx" || extension == ".pptx"))
+            {
+                concerns.Add("File too small for claimed format");
+                riskLevel = GetMaxRiskLevel(riskLevel, SecurityRiskLevel.Medium);
+            }
+            
+            var isSecure = riskLevel < SecurityRiskLevel.High;
+            return (isSecure, riskLevel, concerns);
+        }
+
+        /// <summary>
+        /// Scans Office files for potentially dangerous content
+        /// </summary>
+        private static (bool HasMacros, bool HasExternalLinks, List<string> Concerns) ScanOfficeFileContent(string filePath)
+        {
+            var concerns = new List<string>();
+            var hasMacros = false;
+            var hasExternalLinks = false;
+            
+            try
+            {
+                var extension = Path.GetExtension(filePath).ToLowerInvariant();
+                
+                // For macro-enabled formats, assume macros are present
+                if (extension.EndsWith("m")) // .docm, .xlsm, .pptm
+                {
+                    hasMacros = true;
+                    concerns.Add("Macro-enabled file format");
+                }
+                
+                // Basic content scanning for modern Office files (ZIP-based)
+                if (extension == ".docx" || extension == ".xlsx" || extension == ".pptx")
+                {
+                    using (var stream = File.OpenRead(filePath))
+                    {
+                        var buffer = new byte[1024];
+                        var bytesRead = stream.Read(buffer, 0, buffer.Length);
+                        var content = Encoding.UTF8.GetString(buffer, 0, bytesRead).ToLowerInvariant();
+                        
+                        // Look for macro-related content
+                        if (content.Contains("vba") || content.Contains("macro") || content.Contains("activex"))
+                        {
+                            hasMacros = true;
+                            concerns.Add("Potential macro content detected");
+                        }
+                        
+                        // Look for external links
+                        if (content.Contains("http://") || content.Contains("https://") || content.Contains("ftp://"))
+                        {
+                            hasExternalLinks = true;
+                            concerns.Add("External links detected");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug(ex, "Could not scan file content for {File}", filePath);
+                concerns.Add("Could not perform content security scan");
+            }
+            
+            return (hasMacros, hasExternalLinks, concerns);
+        }
+
+        private static bool IsOfficeFile(string extension)
+        {
+            var officeExtensions = new[] { ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt" };
+            return officeExtensions.Contains(extension);
+        }
+
+        private static bool HasDangerousDoubleExtension(string fileName)
+        {
+            // Check for patterns like document.pdf.exe
+            var parts = fileName.Split('.');
+            if (parts.Length >= 3)
+            {
+                var secondToLast = $".{parts[^2].ToLowerInvariant()}";
+                var last = $".{parts[^1].ToLowerInvariant()}";
+                
+                // Safe extension followed by dangerous extension
+                return AllowedExtensions.Contains(secondToLast) && DangerousExtensions.Contains(last);
+            }
+            return false;
+        }
+
+        private static ValidationFailureReason DetermineValidationFailureReason(ValidationResult result)
+        {
+            if (result.FileInfo == null) return ValidationFailureReason.Unknown;
+            
+            if (!File.Exists(result.FileInfo.FullName))
+                return ValidationFailureReason.FileNotFound;
+            
+            if (result.FileInfo.Length == 0)
+                return ValidationFailureReason.EmptyFile;
+            
+            if (result.FileInfo.Length > MAX_FILE_SIZE)
+                return ValidationFailureReason.FileTooLarge;
+            
+            if (!result.IsSecure)
+                return ValidationFailureReason.SecurityViolation;
+            
+            return ValidationFailureReason.Unknown;
+        }
+
+        /// <summary>
+        /// Validates multiple files and returns results with enhanced error information
         /// </summary>
         public static List<(string FilePath, ValidationResult Result)> ValidateFiles(IEnumerable<string> filePaths)
         {
@@ -142,35 +394,42 @@ namespace DocHandler.Helpers
             {
                 var result = ValidateFile(filePath);
                 results.Add((filePath, result));
+                
+                // Log security concerns for each file
+                if (result.SecurityConcerns.Any())
+                {
+                    _logger.Warning("Security concerns for {File}: {Concerns}", 
+                        Path.GetFileName(filePath), string.Join(", ", result.SecurityConcerns));
+                }
             }
 
             return results;
         }
 
         /// <summary>
-        /// Quick validation for dropped files
+        /// Quick validation for dropped files with enhanced security
         /// </summary>
         public static bool IsValidDroppedFile(string filePath)
         {
             var result = ValidateFile(filePath);
-            return result.IsValid;
+            return result.IsValid && result.IsSecure && result.RiskLevel < SecurityRiskLevel.High;
         }
 
         /// <summary>
-        /// Sanitizes filename to prevent security issues
+        /// Enhanced filename sanitization with security focus
         /// </summary>
         public static string SanitizeFileName(string fileName)
         {
             if (string.IsNullOrWhiteSpace(fileName))
                 return "Document";
 
-            // Remove invalid characters
-            var invalidChars = Path.GetInvalidFileNameChars();
+            // Remove invalid characters and dangerous patterns
+            var invalidChars = Path.GetInvalidFileNameChars().Concat(new[] { '<', '>', ':', '"', '|', '?', '*' }).ToArray();
             var sanitized = new StringBuilder();
             
             foreach (var c in fileName)
             {
-                if (!invalidChars.Contains(c) && c != '<' && c != '>' && c != ':' && c != '"' && c != '|' && c != '?' && c != '*')
+                if (!invalidChars.Contains(c) && !char.IsControl(c))
                 {
                     sanitized.Append(c);
                 }
@@ -181,6 +440,12 @@ namespace DocHandler.Helpers
             }
 
             var result = sanitized.ToString().Trim(' ', '.');
+            
+            // Remove dangerous patterns
+            foreach (var pattern in SuspiciousPatterns)
+            {
+                result = result.Replace(pattern, "_", StringComparison.OrdinalIgnoreCase);
+            }
             
             // Ensure we don't have empty filename
             if (string.IsNullOrWhiteSpace(result))
@@ -193,13 +458,21 @@ namespace DocHandler.Helpers
             return result;
         }
 
+        #region Private Helper Methods
+
+        /// <summary>
+        /// Helper method to get the maximum risk level between two values
+        /// </summary>
+        private static SecurityRiskLevel GetMaxRiskLevel(SecurityRiskLevel current, SecurityRiskLevel newLevel)
+        {
+            return (SecurityRiskLevel)Math.Max((int)current, (int)newLevel);
+        }
+
         private static bool HasPathTraversalAttempt(string filePath)
         {
-            // Check for common path traversal patterns
-            var suspiciousPatterns = new[] { "..", "~", "../", "..\\", "%2e%2e", "%2f", "%5c" };
-            
+            // Enhanced path traversal detection
             var normalizedPath = filePath.ToLowerInvariant();
-            return suspiciousPatterns.Any(pattern => normalizedPath.Contains(pattern));
+            return SuspiciousPatterns.Any(pattern => normalizedPath.Contains(pattern));
         }
 
         private static bool CanAccessFile(string filePath)
@@ -254,6 +527,8 @@ namespace DocHandler.Helpers
             if (fileName.Contains(".."))
             {
                 result.Warnings.Add("Filename contains suspicious patterns");
+                result.SecurityConcerns.Add("Suspicious filename patterns");
+                result.RiskLevel = GetMaxRiskLevel(result.RiskLevel, SecurityRiskLevel.Medium);
             }
 
             // Check for hidden files
@@ -266,6 +541,8 @@ namespace DocHandler.Helpers
             if (fileName.Length > 100)
             {
                 result.Warnings.Add("Filename is unusually long");
+                result.SecurityConcerns.Add("Unusually long filename");
+                result.RiskLevel = GetMaxRiskLevel(result.RiskLevel, SecurityRiskLevel.Low);
             }
 
             // Check for multiple extensions
@@ -273,6 +550,11 @@ namespace DocHandler.Helpers
             if (dotCount > 1)
             {
                 result.Warnings.Add("Multiple file extensions detected");
+                if (HasDangerousDoubleExtension(fileName))
+                {
+                    result.SecurityConcerns.Add("Dangerous double extension");
+                    result.RiskLevel = GetMaxRiskLevel(result.RiskLevel, SecurityRiskLevel.High);
+                }
             }
         }
 
@@ -290,5 +572,7 @@ namespace DocHandler.Helpers
             
             return $"{size:0.##} {sizes[order]}";
         }
+
+        #endregion
     }
 } 

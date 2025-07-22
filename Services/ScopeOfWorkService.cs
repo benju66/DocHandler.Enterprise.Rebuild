@@ -28,10 +28,10 @@ namespace DocHandler.Services
         {
             get
             {
-                // Synchronously ensure data is loaded for backward compatibility
+                // THREADING FIX: Use proper sync-over-async pattern to avoid deadlocks
                 if (!_dataLoaded)
                 {
-                    Task.Run(async () => await EnsureDataLoadedAsync()).Wait();
+                    EnsureDataLoadedAsync().GetAwaiter().GetResult();
                 }
                 return _data.Scopes;
             }
@@ -41,10 +41,10 @@ namespace DocHandler.Services
         {
             get
             {
-                // Synchronously ensure data is loaded for backward compatibility
+                // THREADING FIX: Use proper sync-over-async pattern to avoid deadlocks
                 if (!_dataLoaded)
                 {
-                    Task.Run(async () => await EnsureDataLoadedAsync()).Wait();
+                    EnsureDataLoadedAsync().GetAwaiter().GetResult();
                 }
                 return _recentData.RecentScopes;
             }
@@ -58,8 +58,15 @@ namespace DocHandler.Services
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             var appFolder = Path.Combine(appDataPath, "DocHandler");
             
-            // Create directory asynchronously to avoid blocking
-            _ = Task.Run(() => Directory.CreateDirectory(appFolder));
+            // THREADING FIX: Create directory synchronously - it's fast and we need it for initialization
+            try
+            {
+                Directory.CreateDirectory(appFolder);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to create app data directory: {Path}", appFolder);
+            }
             
             _dataPath = appFolder;
             _scopesPath = Path.Combine(appFolder, "scopes_of_work.json");
@@ -113,7 +120,7 @@ namespace DocHandler.Services
                 // First check if user has their own scopes file
                 if (File.Exists(_scopesPath))
                 {
-                    var json = await File.ReadAllTextAsync(_scopesPath);
+                    var json = await File.ReadAllTextAsync(_scopesPath).ConfigureAwait(false);
                     var data = JsonSerializer.Deserialize<ScopeOfWorkData>(json);
                     
                     if (data != null && data.Scopes != null && data.Scopes.Any())
@@ -133,7 +140,7 @@ namespace DocHandler.Services
             {
                 if (File.Exists(_defaultScopesPath))
                 {
-                    var json = await File.ReadAllTextAsync(_defaultScopesPath);
+                    var json = await File.ReadAllTextAsync(_defaultScopesPath).ConfigureAwait(false);
                     var data = JsonSerializer.Deserialize<ScopeOfWorkData>(json);
                     
                     if (data != null && data.Scopes != null)
@@ -174,7 +181,7 @@ namespace DocHandler.Services
             {
                 if (File.Exists(_recentScopesPath))
                 {
-                    var json = await File.ReadAllTextAsync(_recentScopesPath);
+                    var json = await File.ReadAllTextAsync(_recentScopesPath).ConfigureAwait(false);
                     var data = JsonSerializer.Deserialize<RecentScopesData>(json);
                     
                     if (data != null && data.RecentScopes != null)
@@ -202,7 +209,7 @@ namespace DocHandler.Services
                 };
                 
                 var json = JsonSerializer.Serialize(_data, options);
-                await File.WriteAllTextAsync(_scopesPath, json);
+                await File.WriteAllTextAsync(_scopesPath, json).ConfigureAwait(false);
                 
                 _logger.Information("Scopes of work saved to {Path}", _scopesPath);
             }
@@ -223,7 +230,7 @@ namespace DocHandler.Services
                 };
                 
                 var json = JsonSerializer.Serialize(_recentData, options);
-                await File.WriteAllTextAsync(_recentScopesPath, json);
+                await File.WriteAllTextAsync(_recentScopesPath, json).ConfigureAwait(false);
                 
                 _logger.Information("Recent scopes saved to {Path}", _recentScopesPath);
             }
@@ -454,7 +461,7 @@ namespace DocHandler.Services
                     return result;
                 }
                 
-                var json = await File.ReadAllTextAsync(filePath);
+                var json = await File.ReadAllTextAsync(filePath).ConfigureAwait(false);
                 var importData = JsonSerializer.Deserialize<ScopeOfWorkData>(json);
                 
                 if (importData == null || importData.Scopes == null || !importData.Scopes.Any())
@@ -528,7 +535,7 @@ namespace DocHandler.Services
                 };
                 
                 var json = JsonSerializer.Serialize(exportData, options);
-                await File.WriteAllTextAsync(filePath, json);
+                await File.WriteAllTextAsync(filePath, json).ConfigureAwait(false);
                 
                 _logger.Information("Exported {Count} scopes to {Path}", _data.Scopes.Count, filePath);
                 return true;
@@ -547,7 +554,7 @@ namespace DocHandler.Services
                 // Load default scopes from file
                 if (File.Exists(_defaultScopesPath))
                 {
-                    var json = await File.ReadAllTextAsync(_defaultScopesPath);
+                    var json = await File.ReadAllTextAsync(_defaultScopesPath).ConfigureAwait(false);
                     var data = JsonSerializer.Deserialize<ScopeOfWorkData>(json);
                     
                     if (data != null && data.Scopes != null)

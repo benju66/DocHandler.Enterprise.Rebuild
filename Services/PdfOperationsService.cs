@@ -20,55 +20,53 @@ namespace DocHandler.Services
 
             try
             {
-                return await Task.Run(() =>
+                // THREADING FIX: Remove Task.Run wrapper - PDF operations should run on calling thread
+                // Create output document
+                using (var outputDocument = new PdfDocument())
                 {
-                    // Create output document
-                    using (var outputDocument = new PdfDocument())
+                    outputDocument.Info.Title = "Merged PDF Document";
+                    outputDocument.Info.Author = "DocHandler";
+                    outputDocument.Info.Creator = "DocHandler PDF Processor";
+
+                    foreach (var inputPath in inputPaths)
                     {
-                        outputDocument.Info.Title = "Merged PDF Document";
-                        outputDocument.Info.Author = "DocHandler";
-                        outputDocument.Info.Creator = "DocHandler PDF Processor";
-
-                        foreach (var inputPath in inputPaths)
+                        try
                         {
-                            try
-                            {
-                                _logger.Debug("Processing PDF: {Path}", inputPath);
+                            _logger.Debug("Processing PDF: {Path}", inputPath);
 
-                                // Open the document to copy pages from
-                                using (var inputDocument = PdfReader.Open(inputPath, PdfDocumentOpenMode.Import))
+                            // Open the document to copy pages from
+                            using (var inputDocument = PdfReader.Open(inputPath, PdfDocumentOpenMode.Import))
+                            {
+                                // Iterate through all pages
+                                for (int idx = 0; idx < inputDocument.PageCount; idx++)
                                 {
-                                    // Iterate through all pages
-                                    for (int idx = 0; idx < inputDocument.PageCount; idx++)
-                                    {
-                                        // Get the page
-                                        var page = inputDocument.Pages[idx];
-                                        
-                                        // Add the page to the output document
-                                        outputDocument.AddPage(page);
-                                    }
-
-                                    _logger.Debug("Added {PageCount} pages from {FileName}", 
-                                        inputDocument.PageCount, 
-                                        Path.GetFileName(inputPath));
+                                    // Get the page
+                                    var page = inputDocument.Pages[idx];
+                                    
+                                    // Add the page to the output document
+                                    outputDocument.AddPage(page);
                                 }
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.Error(ex, "Failed to process PDF: {Path}", inputPath);
-                                throw new InvalidOperationException($"Failed to process {Path.GetFileName(inputPath)}: {ex.Message}", ex);
+
+                                _logger.Debug("Added {PageCount} pages from {FileName}", 
+                                    inputDocument.PageCount, 
+                                    Path.GetFileName(inputPath));
                             }
                         }
-
-                        // Save the document
-                        outputDocument.Save(outputPath);
-                        _logger.Information("Successfully merged {Count} PDFs into {Output}", 
-                            inputPaths.Count, 
-                            Path.GetFileName(outputPath));
-
-                        return true;
+                        catch (Exception ex)
+                        {
+                            _logger.Error(ex, "Failed to process PDF: {Path}", inputPath);
+                            throw new InvalidOperationException($"Failed to process {Path.GetFileName(inputPath)}: {ex.Message}", ex);
+                        }
                     }
-                });
+
+                    // Save the document
+                    outputDocument.Save(outputPath);
+                    _logger.Information("Successfully merged {Count} PDFs into {Output}", 
+                        inputPaths.Count, 
+                        Path.GetFileName(outputPath));
+
+                    return true;
+                }
             }
             catch (Exception ex)
             {
@@ -81,13 +79,11 @@ namespace DocHandler.Services
         {
             try
             {
-                return await Task.Run(() =>
+                // THREADING FIX: Remove Task.Run wrapper - PDF operations should run on calling thread
+                using (var document = PdfReader.Open(pdfPath, PdfDocumentOpenMode.InformationOnly))
                 {
-                    using (var document = PdfReader.Open(pdfPath, PdfDocumentOpenMode.InformationOnly))
-                    {
-                        return document.PageCount;
-                    }
-                });
+                    return document.PageCount;
+                }
             }
             catch (Exception ex)
             {
@@ -100,21 +96,19 @@ namespace DocHandler.Services
         {
             try
             {
-                return await Task.Run(() =>
+                // THREADING FIX: Remove Task.Run wrapper - PDF operations should run on calling thread
+                try
                 {
-                    try
+                    using (var document = PdfReader.Open(pdfPath, PdfDocumentOpenMode.InformationOnly))
                     {
-                        using (var document = PdfReader.Open(pdfPath, PdfDocumentOpenMode.InformationOnly))
-                        {
-                            // If we can open it and it has at least one page, it's valid
-                            return document.PageCount > 0;
-                        }
+                        // If we can open it and it has at least one page, it's valid
+                        return document.PageCount > 0;
                     }
-                    catch
-                    {
-                        return false;
-                    }
-                });
+                }
+                catch
+                {
+                    return false;
+                }
             }
             catch (Exception ex)
             {
@@ -138,39 +132,37 @@ namespace DocHandler.Services
 
             try
             {
-                return await Task.Run(() =>
+                // THREADING FIX: Remove Task.Run wrapper - PDF operations should run on calling thread
+                using (var inputDocument = PdfReader.Open(inputPath, PdfDocumentOpenMode.Import))
                 {
-                    using (var inputDocument = PdfReader.Open(inputPath, PdfDocumentOpenMode.Import))
+                    var totalPages = inputDocument.PageCount;
+                    var fileCount = (int)Math.Ceiling((double)totalPages / pagesPerFile);
+                    var baseFileName = Path.GetFileNameWithoutExtension(inputPath);
+
+                    for (int fileIndex = 0; fileIndex < fileCount; fileIndex++)
                     {
-                        var totalPages = inputDocument.PageCount;
-                        var fileCount = (int)Math.Ceiling((double)totalPages / pagesPerFile);
-                        var baseFileName = Path.GetFileNameWithoutExtension(inputPath);
-
-                        for (int fileIndex = 0; fileIndex < fileCount; fileIndex++)
+                        using (var outputDocument = new PdfDocument())
                         {
-                            using (var outputDocument = new PdfDocument())
+                            var startPage = fileIndex * pagesPerFile;
+                            var endPage = Math.Min(startPage + pagesPerFile, totalPages);
+
+                            for (int pageIndex = startPage; pageIndex < endPage; pageIndex++)
                             {
-                                var startPage = fileIndex * pagesPerFile;
-                                var endPage = Math.Min(startPage + pagesPerFile, totalPages);
-
-                                for (int pageIndex = startPage; pageIndex < endPage; pageIndex++)
-                                {
-                                    outputDocument.AddPage(inputDocument.Pages[pageIndex]);
-                                }
-
-                                var outputFileName = $"{baseFileName}_part{fileIndex + 1}.pdf";
-                                var outputPath = Path.Combine(outputDirectory, outputFileName);
-                                outputDocument.Save(outputPath);
-
-                                _logger.Debug("Created split file: {FileName} with {PageCount} pages", 
-                                    outputFileName, endPage - startPage);
+                                outputDocument.AddPage(inputDocument.Pages[pageIndex]);
                             }
-                        }
 
-                        _logger.Information("Successfully split PDF into {Count} files", fileCount);
-                        return true;
+                            var outputFileName = $"{baseFileName}_part{fileIndex + 1}.pdf";
+                            var outputPath = Path.Combine(outputDirectory, outputFileName);
+                            outputDocument.Save(outputPath);
+
+                            _logger.Debug("Created split file: {FileName} with {PageCount} pages", 
+                                outputFileName, endPage - startPage);
+                        }
                     }
-                });
+
+                    _logger.Information("Successfully split PDF into {Count} files", fileCount);
+                    return true;
+                }
             }
             catch (Exception ex)
             {
@@ -183,28 +175,26 @@ namespace DocHandler.Services
         {
             try
             {
-                return await Task.Run(() =>
+                // THREADING FIX: Remove Task.Run wrapper - PDF operations should run on calling thread
+                using (var document = PdfReader.Open(pdfPath, PdfDocumentOpenMode.InformationOnly))
                 {
-                    using (var document = PdfReader.Open(pdfPath, PdfDocumentOpenMode.InformationOnly))
+                    var fileInfo = new FileInfo(pdfPath);
+                    return new PdfInfo
                     {
-                        var fileInfo = new FileInfo(pdfPath);
-                        return new PdfInfo
-                        {
-                            FileName = Path.GetFileName(pdfPath),
-                            FilePath = pdfPath,
-                            PageCount = document.PageCount,
-                            FileSize = fileInfo.Length,
-                            Title = document.Info.Title ?? string.Empty,
-                            Author = document.Info.Author ?? string.Empty,
-                            Subject = document.Info.Subject ?? string.Empty,
-                            Keywords = document.Info.Keywords ?? string.Empty,
-                            Creator = document.Info.Creator ?? string.Empty,
-                            Producer = document.Info.Producer ?? string.Empty,
-                            CreationDate = document.Info.CreationDate,
-                            ModificationDate = document.Info.ModificationDate
-                        };
-                    }
-                });
+                        FileName = Path.GetFileName(pdfPath),
+                        FilePath = pdfPath,
+                        PageCount = document.PageCount,
+                        FileSize = fileInfo.Length,
+                        Title = document.Info.Title ?? string.Empty,
+                        Author = document.Info.Author ?? string.Empty,
+                        Subject = document.Info.Subject ?? string.Empty,
+                        Keywords = document.Info.Keywords ?? string.Empty,
+                        Creator = document.Info.Creator ?? string.Empty,
+                        Producer = document.Info.Producer ?? string.Empty,
+                        CreationDate = document.Info.CreationDate,
+                        ModificationDate = document.Info.ModificationDate
+                    };
+                }
             }
             catch (Exception ex)
             {

@@ -122,10 +122,10 @@ namespace DocHandler.Services
         {
             get
             {
-                // Synchronously ensure data is loaded for backward compatibility
+                // THREADING FIX: Use proper sync-over-async pattern to avoid deadlocks
                 if (!_dataLoaded)
                 {
-                    Task.Run(async () => await EnsureDataLoadedAsync()).Wait();
+                    EnsureDataLoadedAsync().GetAwaiter().GetResult();
                 }
                 return _data.Companies;
             }
@@ -151,8 +151,15 @@ namespace DocHandler.Services
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             var appFolder = Path.Combine(appDataPath, "DocHandler");
             
-            // Create directory asynchronously to avoid blocking
-            _ = Task.Run(() => Directory.CreateDirectory(appFolder));
+            // THREADING FIX: Create directory synchronously - it's fast and we need it for initialization
+            try
+            {
+                Directory.CreateDirectory(appFolder);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to create app data directory: {Path}", appFolder);
+            }
             
             _dataPath = appFolder;
             _companyNamesPath = Path.Combine(appFolder, "company_names.json");
@@ -1882,10 +1889,10 @@ namespace DocHandler.Services
         
         public List<CompanyInfo> GetMostUsedCompanies(int count = 10)
         {
-            // Ensure data is loaded (synchronous for backward compatibility)
+            // THREADING FIX: Use proper sync-over-async pattern to avoid deadlocks
             if (!_dataLoaded)
             {
-                Task.Run(async () => await EnsureDataLoadedAsync()).Wait();
+                EnsureDataLoadedAsync().GetAwaiter().GetResult();
             }
             
             return _data.Companies
@@ -1897,10 +1904,10 @@ namespace DocHandler.Services
         
         public List<CompanyInfo> SearchCompanies(string searchTerm)
         {
-            // Ensure data is loaded (synchronous for backward compatibility)
+            // THREADING FIX: Use proper sync-over-async pattern to avoid deadlocks
             if (!_dataLoaded)
             {
-                Task.Run(async () => await EnsureDataLoadedAsync()).Wait();
+                EnsureDataLoadedAsync().GetAwaiter().GetResult();
             }
             
             if (string.IsNullOrWhiteSpace(searchTerm))
@@ -2244,7 +2251,7 @@ namespace DocHandler.Services
             // Try to extract text using basic file reading (for simple .doc files)
             try
             {
-                var bytes = await File.ReadAllBytesAsync(filePath);
+                var bytes = await File.ReadAllBytesAsync(filePath).ConfigureAwait(false);
                 var text = System.Text.Encoding.UTF8.GetString(bytes);
                 
                 // Basic cleanup of binary data

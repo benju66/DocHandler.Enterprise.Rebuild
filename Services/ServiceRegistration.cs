@@ -23,6 +23,40 @@ namespace DocHandler.Services
             // PDF Operations (Transient - stateless operations)
             services.AddTransient<PdfOperationsService>();
             
+            // Mode Infrastructure (Singleton - mode management)
+            services.AddModeRegistry();
+            services.AddSingleton<IModeManager, ModeManager>();
+            
+            // Error Recovery Service (Singleton - error handling)
+            services.AddSingleton<ErrorRecoveryService>();
+            
+            // Office Health Monitor (Singleton - health checking)
+            services.AddSingleton<OfficeHealthMonitor>();
+            
+            return services;
+        }
+
+        /// <summary>
+        /// Register processing modes
+        /// </summary>
+        public static IServiceCollection RegisterProcessingModes(this IServiceCollection services)
+        {
+            // Register SaveQuotes mode
+            services.RegisterProcessingMode<Modes.SaveQuotesMode>();
+            
+            // Future modes will be registered here
+            
+            return services;
+        }
+
+        /// <summary>
+        /// Configure mode-specific services
+        /// </summary>
+        public static IServiceCollection ConfigureModeServices(this IServiceCollection services)
+        {
+            // Mode-specific service configurations can be added here
+            // For example, different validation rules, different processors, etc.
+            
             return services;
         }
     }

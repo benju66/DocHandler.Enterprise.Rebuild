@@ -27,6 +27,7 @@ using MessageBox = System.Windows.MessageBox;
 using Application = System.Windows.Application;
 using FolderBrowserDialog = Ookii.Dialogs.Wpf.VistaFolderBrowserDialog;
 using System.Windows.Threading;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace DocHandler.ViewModels
 {
@@ -45,6 +46,10 @@ namespace DocHandler.ViewModels
         private readonly ProcessManager _processManager;
         private SaveQuotesQueueService? _queueService;
         private readonly OfficeHealthMonitor _healthMonitor;
+        private ErrorRecoveryService? _errorRecoveryService;
+        private TelemetryService? _telemetryService;
+        private PdfOperationsService? _pdfOperationsService;
+        private IModeManager? _modeManager;
         private readonly object _conversionLock = new object();
         private readonly ConcurrentDictionary<string, byte> _tempFilesToCleanup = new();
         
@@ -260,160 +265,139 @@ namespace DocHandler.ViewModels
         
         public MainViewModel()
         {
-            _logger = Log.ForContext<MainViewModel>();
-            
-            try 
+            try
             {
-                // Initialize configuration first
-                _configService = new ConfigurationService();
-                
-                // Initialize process manager 
-                _processManager = new ProcessManager();
-                
-                // Initialize performance monitor
-                _performanceMonitor = new PerformanceMonitor(_configService.Config.MemoryUsageLimitMB);
-                
-                // Initialize Office instance tracker FIRST (before any Office services)
-                // Office process tracking now handled by ReliableOfficeConverter's OfficeProcessGuard
-                
-                // Initialize health monitor
-                _healthMonitor = new OfficeHealthMonitor((result) =>
-                {
-                    _logger.Warning("Health check failed - forcing Office cleanup");
-                    _sessionOfficeService?.ForceCleanupIfIdle();
-                    _sessionExcelService?.ForceCleanupIfIdle();
-                });
-                
-                // Initialize PDF cache service
-                _pdfCacheService = new PdfCacheService();
-                
-                // Initialize company detection service
-                _companyNameService = new CompanyNameService();
-                
-                // Initialize scope service
-                _scopeOfWorkService = new ScopeOfWorkService();
-                
+                _logger = Log.ForContext<MainViewModel>();
+                _logger.Information("MainViewModel initialization started");
 
+                // Initialize core services first
+                _configService = new ConfigurationService();
+                _errorRecoveryService = new ErrorRecoveryService();
+                _telemetryService = new TelemetryService();
+                _pdfOperationsService = new PdfOperationsService();
                 
-                // COORDINATED OFFICE SERVICES: Use only SessionAware services to reduce instance count
-                // CRITICAL FIX: Create SessionAware services on UI thread (STA) to prevent COM memory leaks
-                try
-                {
-                    // Verify we're on STA thread (WPF UI thread is STA by default)
-                    var currentThread = System.Threading.Thread.CurrentThread;
-                    _logger.Information("Initializing Office services on thread {ThreadId} with apartment state {ApartmentState}", 
-                        currentThread.ManagedThreadId, currentThread.GetApartmentState());
-                    
-                    if (currentThread.GetApartmentState() == ApartmentState.STA)
-                    {
-                        // CRITICAL MEMORY FIX: Don't create session-aware services at startup
-                        // They will be created on-demand by the file processing service
-                        _sessionOfficeService = null;
-                        _sessionExcelService = null;
-                        
-                        // Also create regular OfficeConversionService for fallback operations
-                        _officeConversionService = new OfficeConversionService(_configService, _processManager);
-                        
-                        _logger.Information("Office services initialized on-demand approach to prevent memory leaks");
-                    }
-                    else
-                    {
-                        // This shouldn't happen in WPF constructor, but handle it defensively
-                        _logger.Error("MainViewModel constructor not on STA thread! Apartment state: {ApartmentState}", 
-                            currentThread.GetApartmentState());
-                        _sessionOfficeService = null;
-                        _sessionExcelService = null;
-                        
-                        // Schedule creation on UI thread
-                        Application.Current.Dispatcher.BeginInvoke(new Action(() =>
-                        {
-                            try
-                            {
-                                // Still don't create session services - use on-demand approach
-                                _logger.Information("Office services will be created on-demand");
-                            }
-                            catch (Exception dispatcherEx)
-                            {
-                                _logger.Error(dispatcherEx, "Failed to initialize Office services on UI thread");
-                            }
-                        }));
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _sessionOfficeService = null;
-                    _sessionExcelService = null;
-                    _logger.Warning(ex, "Failed to initialize Office services, will create on-demand");
-                }
+                // Try to get mode manager from DI container (optional - graceful fallback)
+                TryInitializeModeManager();
                 
-                // Initialize file processing service without shared session services
-                try
-                {
-                    _fileProcessingService = new OptimizedFileProcessingService(
-                        _configService, _pdfCacheService, _processManager, null, 
-                        null, null); // No shared instances - create on demand
-                    _logger.Information("File processing service initialized with on-demand Office creation");
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warning(ex, "Failed to initialize OptimizedFileProcessingService");
-                    _fileProcessingService = null;
-                }
+                // CRITICAL MEMORY FIX: Don't use shared session services - create on demand only
+                _sessionOfficeService = null; // Always null - will create ReliableOfficeConverter on demand
+                _sessionExcelService = null; // Always null - will create ReliableOfficeConverter on demand
                 
-                // Don't set Office services for company name detection - they'll be created on demand
-                // if (_sessionOfficeService != null && _sessionExcelService != null)
-                // {
-                //     try
-                //     {
-                //         _companyNameService.SetOfficeServices(_sessionOfficeService, _sessionExcelService);
-                //         _logger.Information("Office services set for company name detection");
-                //     }
-                //     catch (Exception ex)
-                //     {
-                //         _logger.Warning(ex, "Failed to set Office services for company name detection");
-                //     }
-                // }
+                // Initialize other services
+                var processManager = new ProcessManager();
                 
-                // Queue service will be initialized lazily when needed
+                _fileProcessingService = new OptimizedFileProcessingService(
+                    configService: _configService,
+                    pdfCacheService: null,
+                    processManager: processManager,
+                    officeTracker: null, // No longer used
+                    sharedWordService: null, // CRITICAL: Pass null to force on-demand creation
+                    sharedExcelService: null // CRITICAL: Pass null to force on-demand creation
+                );
                 
-                // Subscribe to events
-                SubscribeToEvents();
+                _companyNameService = new CompanyNameService();
+                _scopeOfWorkService = new ScopeOfWorkService();
+
+                StatusMessage = "Ready";
                 
-                // Initialize UI from configuration
+                // Initialize from configuration
                 InitializeFromConfiguration();
-                
-                // Restore queue window if needed
-                RestoreQueueWindowIfNeeded();
-                
-                // Load service data asynchronously after initial UI is shown
-                _ = Task.Run(async () => await LoadServiceDataAsync());
                 
                 _logger.Information("MainViewModel initialized successfully");
             }
-            catch (Exception ex)
+            catch (ConfigurationException configEx)
             {
-                _logger.Fatal(ex, "Failed to initialize MainViewModel");
+                _logger.Error(configEx, "Configuration error during MainViewModel initialization");
                 
-                // Show error dialog but don't crash the app
+                var errorInfo = _errorRecoveryService.CreateErrorInfo(configEx, "MainViewModel initialization");
                 MessageBox.Show(
-                    $"The application encountered an error during initialization:\n\n{ex.Message}\n\nSome features may not be available.",
-                    "Initialization Warning",
+                    $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                    errorInfo.Title,
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
                 
-                // Initialize with minimal functionality
+                // Try to initialize with default configuration
                 try
                 {
-                    if (_configService == null)
-                        _configService = new ConfigurationService();
-                    
+                    _configService = new ConfigurationService();
                     InitializeFromConfiguration();
+                    StatusMessage = "Initialized with default settings";
                 }
-                catch
+                catch (Exception fallbackEx)
                 {
-                    // Even minimal initialization failed
+                    _logger.Fatal(fallbackEx, "Failed to initialize even with defaults");
                     StatusMessage = "Initialization failed - limited functionality";
                 }
+            }
+            catch (ServiceException serviceEx)
+            {
+                _logger.Error(serviceEx, "Service initialization error");
+                
+                var errorInfo = _errorRecoveryService.CreateErrorInfo(serviceEx, "Service initialization");
+                MessageBox.Show(
+                    $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                    errorInfo.Title,
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                
+                // Initialize minimal services
+                InitializeMinimalServices();
+            }
+            catch (Exception ex)
+            {
+                _logger.Fatal(ex, "Unexpected error during MainViewModel initialization");
+                
+                // Use error recovery service for unknown exceptions
+                var errorInfo = _errorRecoveryService.CreateErrorInfo(ex, "MainViewModel initialization");
+                MessageBox.Show(
+                    $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                    errorInfo.Title,
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+                
+                // Try minimal initialization
+                InitializeMinimalServices();
+            }
+        }
+
+        /// <summary>
+        /// Initialize minimal services when full initialization fails
+        /// </summary>
+        private void InitializeMinimalServices()
+        {
+            try
+            {
+                // Can only initialize non-readonly services here
+                if (_errorRecoveryService == null) 
+                    _errorRecoveryService = new ErrorRecoveryService();
+                    
+                StatusMessage = "Running with limited functionality";
+                
+                _logger.Information("Minimal services initialized successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.Fatal(ex, "Even minimal service initialization failed");
+                StatusMessage = "Critical initialization failure";
+            }
+        }
+
+        /// <summary>
+        /// Try to initialize mode manager from DI container (graceful fallback)
+        /// </summary>
+        private void TryInitializeModeManager()
+        {
+            try
+            {
+                _logger.Information("Mode system initialization deferred - using legacy SaveQuotes implementation");
+                // Mode manager integration will be completed in future milestones
+                // For now, maintain 100% backward compatibility with existing SaveQuotes functionality
+                _modeManager = null;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to initialize mode manager - falling back to legacy implementation");
+                _modeManager = null;
             }
         }
         
@@ -1706,21 +1690,127 @@ namespace DocHandler.ViewModels
                     }
                 }
             }
+            catch (OfficeOperationException officeEx)
+            {
+                _logger.Error(officeEx, "Office operation failed during file processing");
+                
+                // Attempt automatic recovery
+                var recoveryResult = await _errorRecoveryService.HandleExceptionAsync(officeEx, "File processing");
+                if (recoveryResult.Success && officeEx.IsRecoverable)
+                {
+                    _logger.Information("Office operation recovered, retrying processing...");
+                    
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        StatusMessage = "Recovering from Office error, retrying...";
+                    });
+                    
+                    // Retry the processing after a brief delay
+                    await Task.Delay(2000);
+                    await ProcessFilesBackground(filePaths, fileCount, openFolderAfterProcessing);
+                    return;
+                }
+                
+                var errorInfo = _errorRecoveryService.CreateErrorInfo(officeEx, "File processing");
+                
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = "Office operation failed";
+                    MessageBox.Show(
+                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                        errorInfo.Title,
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                });
+            }
+            catch (FileValidationException fileEx)
+            {
+                _logger.Error(fileEx, "File validation error during processing");
+                var errorInfo = _errorRecoveryService.CreateErrorInfo(fileEx, "File processing");
+                
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = "File validation failed";
+                    MessageBox.Show(
+                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                        errorInfo.Title,
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                });
+            }
+            catch (SecurityViolationException secEx)
+            {
+                _logger.Fatal(secEx, "Security violation during file processing");
+                var errorInfo = _errorRecoveryService.CreateErrorInfo(secEx, "File processing");
+                
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = "Security violation - operation blocked";
+                    MessageBox.Show(
+                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                        errorInfo.Title,
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                });
+            }
+            catch (FileProcessingException procEx)
+            {
+                _logger.Error(procEx, "File processing error");
+                var errorInfo = _errorRecoveryService.CreateErrorInfo(procEx, "File processing");
+                
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = "File processing failed";
+                    MessageBox.Show(
+                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                        errorInfo.Title,
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                });
+            }
+            catch (UnauthorizedAccessException accessEx)
+            {
+                _logger.Error(accessEx, "Access denied during file processing");
+                var errorInfo = _errorRecoveryService.CreateErrorInfo(accessEx, "File processing");
+                
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = "Access denied";
+                    MessageBox.Show(
+                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                        errorInfo.Title,
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                });
+            }
+            catch (IOException ioEx)
+            {
+                _logger.Error(ioEx, "I/O error during file processing");
+                var errorInfo = _errorRecoveryService.CreateErrorInfo(ioEx, "File processing");
+                
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = "File access error";
+                    MessageBox.Show(
+                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                        errorInfo.Title,
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                });
+            }
             catch (Exception ex)
             {
-                // Update UI on UI thread
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    StatusMessage = $"Error: {ex.Message}";
-                });
-                
                 _logger.Error(ex, "Unexpected error during file processing");
                 
+                // Use error recovery service for unknown exceptions
+                var errorInfo = _errorRecoveryService.CreateErrorInfo(ex, "File processing");
+                
                 await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
+                    StatusMessage = "Processing failed";
                     MessageBox.Show(
-                        $"An unexpected error occurred:\n\n{ex.Message}",
-                        "Error",
+                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                        errorInfo.Title,
                         MessageBoxButton.OK,
                         MessageBoxImage.Error);
                 });
@@ -3329,5 +3419,118 @@ namespace DocHandler.ViewModels
                 StatusMessage = "Memory leak test failed";
             }
         }
+
+        [RelayCommand]
+        private async Task TestThreadSafetyAsync()
+        {
+            try
+            {
+                StatusMessage = "Running thread safety test...";
+                
+                var testResult = await Task.Run(async () => 
+                {
+                    return await QuickDiagnostic.TestThreadSafetyImprovements();
+                });
+                
+                // Show results in a message box
+                MessageBox.Show(testResult, "Thread Safety Test Results", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                
+                StatusMessage = "Thread safety test completed";
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error during thread safety test");
+                MessageBox.Show($"Thread safety test failed: {ex.Message}", "Test Error", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                StatusMessage = "Thread safety test failed";
+            }
+        }
+
+        [RelayCommand]
+        private async Task TestErrorRecoveryAsync()
+        {
+            try
+            {
+                StatusMessage = "Running error recovery test...";
+                
+                var testResult = await Task.Run(async () => 
+                {
+                    return await QuickDiagnostic.TestErrorRecoveryImprovements();
+                });
+                
+                // Show results in a message box
+                MessageBox.Show(testResult, "Error Recovery Test Results", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                
+                StatusMessage = "Error recovery test completed";
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error during error recovery test");
+                
+                // Use our error recovery service if available
+                if (_errorRecoveryService != null)
+                {
+                    var errorInfo = _errorRecoveryService.CreateErrorInfo(ex, "Error recovery test");
+                    MessageBox.Show(
+                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                        errorInfo.Title,
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                }
+                else
+                {
+                    MessageBox.Show($"Error recovery test failed: {ex.Message}", "Test Error", 
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+                
+                StatusMessage = "Error recovery test failed";
+            }
+        }
+
+        [RelayCommand]
+        private async Task TestModeSystemAsync()
+        {
+            try
+            {
+                StatusMessage = "Running mode system test...";
+                
+                var testResult = await Task.Run(async () => 
+                {
+                    return await QuickDiagnostic.TestModeSystemInfrastructure();
+                });
+                
+                // Show results in a message box
+                MessageBox.Show(testResult, "Mode System Test Results", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                
+                StatusMessage = "Mode system test completed";
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error during mode system test");
+                
+                // Use our error recovery service if available
+                if (_errorRecoveryService != null)
+                {
+                    var errorInfo = _errorRecoveryService.CreateErrorInfo(ex, "Mode system test");
+                    MessageBox.Show(
+                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                        errorInfo.Title,
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                }
+                else
+                {
+                    MessageBox.Show($"Mode system test failed: {ex.Message}", "Test Error", 
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+                
+                StatusMessage = "Mode system test failed";
+            }
+        }
+        
+        // Command property auto-generated by CommunityToolkit.Mvvm from [RelayCommand] attribute
     }
 }

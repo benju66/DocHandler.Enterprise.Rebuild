@@ -71,7 +71,7 @@ namespace DocHandler.Services
             {
                 if (File.Exists(_configPath))
                 {
-                    var json = await File.ReadAllTextAsync(_configPath);
+                    var json = await File.ReadAllTextAsync(_configPath).ConfigureAwait(false);
                     var config = JsonSerializer.Deserialize<AppConfiguration>(json);
                     
                     if (config != null)
@@ -156,7 +156,7 @@ namespace DocHandler.Services
                 };
                 
                 var json = JsonSerializer.Serialize(_config, options);
-                await File.WriteAllTextAsync(_configPath, json);
+                await File.WriteAllTextAsync(_configPath, json).ConfigureAwait(false);
                 
                 _logger.Debug("Configuration saved to {Path}", _configPath);
             }

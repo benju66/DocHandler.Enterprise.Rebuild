@@ -119,6 +119,28 @@ namespace DocHandler.Services
 
                     return result;
                 }
+                catch (COMException comEx)
+                {
+                    _logger.Error(comEx, "Word conversion failed with COM error for {File}, HResult: {HResult:X8}", 
+                        inputPath, comEx.HResult);
+                    
+                    // Create custom Office exception with recovery guidance
+                    var officeEx = OfficeOperationException.FromCOMException("Word", "Convert to PDF", comEx);
+                    
+                    result.Success = false;
+                    result.ErrorMessage = officeEx.UserFriendlyMessage;
+
+                    // Always cleanup on error
+                    CleanupWord();
+
+                    // For single-use mode or non-recoverable errors, throw custom exception
+                    if (singleUse || !officeEx.IsRecoverable)
+                    {
+                        throw officeEx;
+                    }
+
+                    return result;
+                }
                 catch (Exception ex)
                 {
                     _logger.Error(ex, "Word conversion failed for {File}", inputPath);
@@ -127,6 +149,15 @@ namespace DocHandler.Services
 
                     // Always cleanup on error
                     CleanupWord();
+
+                    // For single-use mode, throw file processing exception
+                    if (singleUse)
+                    {
+                        throw new FileProcessingException(inputPath, "Word to PDF conversion", 
+                            "Document conversion failed", 
+                            "Try again with a different document or ensure Microsoft Word is working properly.", 
+                            ex);
+                    }
 
                     return result;
                 }
