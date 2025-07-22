@@ -9,7 +9,7 @@ using Serilog;
 
 namespace DocHandler.Services
 {
-    public class ScopeOfWorkService
+    public class ScopeOfWorkService : IScopeOfWorkService
     {
         private readonly ILogger _logger;
         private readonly string _dataPath;
@@ -28,10 +28,11 @@ namespace DocHandler.Services
         {
             get
             {
-                // THREADING FIX: Use proper sync-over-async pattern to avoid deadlocks
+                // Return empty list if data not loaded yet to avoid deadlocks
                 if (!_dataLoaded)
                 {
-                    EnsureDataLoadedAsync().GetAwaiter().GetResult();
+                    _logger.Warning("Scopes accessed before data loaded, returning empty list");
+                    return new List<ScopeOfWork>();
                 }
                 return _data.Scopes;
             }
@@ -41,10 +42,11 @@ namespace DocHandler.Services
         {
             get
             {
-                // THREADING FIX: Use proper sync-over-async pattern to avoid deadlocks
+                // Return empty list if data not loaded yet to avoid deadlocks
                 if (!_dataLoaded)
                 {
-                    EnsureDataLoadedAsync().GetAwaiter().GetResult();
+                    _logger.Warning("RecentScopes accessed before data loaded, returning empty list");
+                    return new List<string>();
                 }
                 return _recentData.RecentScopes;
             }

@@ -74,7 +74,7 @@ namespace DocHandler.Services
         public double ConfidenceScore { get; set; }
     }
 
-    public class CompanyNameService : IDisposable
+    public class CompanyNameService : ICompanyNameService
     {
         private readonly ILogger _logger;
         private readonly string _dataPath;
@@ -122,10 +122,11 @@ namespace DocHandler.Services
         {
             get
             {
-                // THREADING FIX: Use proper sync-over-async pattern to avoid deadlocks
+                // Return empty list if data not loaded yet to avoid deadlocks
                 if (!_dataLoaded)
                 {
-                    EnsureDataLoadedAsync().GetAwaiter().GetResult();
+                    _logger.Warning("Companies accessed before data loaded, returning empty list");
+                    return new List<CompanyInfo>();
                 }
                 return _data.Companies;
             }
@@ -1889,10 +1890,11 @@ namespace DocHandler.Services
         
         public List<CompanyInfo> GetMostUsedCompanies(int count = 10)
         {
-            // THREADING FIX: Use proper sync-over-async pattern to avoid deadlocks
+            // Return empty list if data not loaded yet to avoid deadlocks
             if (!_dataLoaded)
             {
-                EnsureDataLoadedAsync().GetAwaiter().GetResult();
+                _logger.Warning("GetMostUsedCompanies called before data loaded, returning empty list");
+                return new List<CompanyInfo>();
             }
             
             return _data.Companies
@@ -1904,10 +1906,11 @@ namespace DocHandler.Services
         
         public List<CompanyInfo> SearchCompanies(string searchTerm)
         {
-            // THREADING FIX: Use proper sync-over-async pattern to avoid deadlocks
+            // Return empty list if data not loaded yet to avoid deadlocks
             if (!_dataLoaded)
             {
-                EnsureDataLoadedAsync().GetAwaiter().GetResult();
+                _logger.Warning("SearchCompanies called before data loaded, returning empty list");
+                return new List<CompanyInfo>();
             }
             
             if (string.IsNullOrWhiteSpace(searchTerm))

@@ -83,6 +83,9 @@ namespace DocHandler
             // Initialize mode system
             InitializeModeSystem();
             
+            // Create and show main window with DI
+            CreateMainWindow();
+            
             base.OnStartup(e);
         }
         
@@ -182,6 +185,33 @@ namespace DocHandler
             {
                 _logger.Error(ex, "Failed to initialize mode system");
                 // Don't throw here to prevent app startup failure
+            }
+        }
+
+        private void CreateMainWindow()
+        {
+            try
+            {
+                _logger.Information("Creating MainWindow with dependency injection");
+                
+                if (_serviceProvider == null)
+                {
+                    _logger.Error("Service provider is null, cannot create MainWindow");
+                    throw new InvalidOperationException("Service provider not initialized");
+                }
+                
+                // Create MainWindow with DI service provider
+                MainWindow = new MainWindow(_serviceProvider);
+                MainWindow.Show();
+                
+                _logger.Information("MainWindow created successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.Fatal(ex, "Failed to create MainWindow");
+                MessageBox.Show($"Failed to start application: {ex.Message}", "Startup Error", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                Shutdown(1);
             }
         }
     }

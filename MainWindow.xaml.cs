@@ -15,6 +15,7 @@ using Serilog;
 using DragEventArgs = System.Windows.DragEventArgs;
 using System.Threading.Tasks;
 using System.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace DocHandler
 {
@@ -35,14 +36,14 @@ namespace DocHandler
                 {
                     _logger.Information("MainWindow constructor started");
                     
-                    // Initialize DataContext with the working MainViewModel (not MainViewModelAsync)
-                    _logger.Information("Creating MainViewModel...");
-                    Console.WriteLine("Creating MainViewModel...");
+                    // Initialize DataContext with MainViewModel from DI container
+                    _logger.Information("Resolving MainViewModel from DI container...");
+                    Console.WriteLine("Resolving MainViewModel from DI container...");
                     
-                    DataContext = new ViewModels.MainViewModel();
+                    DataContext = serviceProvider.GetRequiredService<ViewModels.MainViewModel>();
                     
-                    _logger.Information("MainViewModel created successfully");
-                    Console.WriteLine("MainViewModel created successfully");
+                    _logger.Information("MainViewModel resolved successfully from DI");
+                    Console.WriteLine("MainViewModel resolved successfully from DI");
                     
                     // Window closing event to cleanup
                     Closing += MainWindow_Closing;
@@ -122,6 +123,65 @@ namespace DocHandler
             
             // Clean up old Outlook temp files on startup
             OutlookAttachmentHelper.CleanupTempFiles();
+
+            // Initialize Advanced Mode UI Framework (Phase 2 Milestone 2 - Day 5)
+            InitializeAdvancedModeUI();
+        }
+
+        /// <summary>
+        /// Initialize Advanced Mode UI Framework (Phase 2 Milestone 2 - Day 5)
+        /// </summary>
+        private void InitializeAdvancedModeUI()
+        {
+            try
+            {
+                _logger.Information("Initializing Advanced Mode UI in MainWindow...");
+
+                // Set the target element for UI management
+                var viewModel = ViewModel;
+                if (viewModel?.AdvancedModeUIManager != null)
+                {
+                    viewModel.AdvancedModeUIManager.SetTargetElement(this);
+                    
+                    // Subscribe to mode changes to update the mode switcher
+                    viewModel.AdvancedModeUIManager.ModeChanged += OnAdvancedModeChanged;
+                    
+                    _logger.Information("Advanced Mode UI initialized successfully");
+                }
+                else
+                {
+                    _logger.Warning("Advanced Mode UI Manager not available");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to initialize Advanced Mode UI");
+            }
+        }
+
+        /// <summary>
+        /// Handle advanced mode changes in the UI
+        /// </summary>
+        private void OnAdvancedModeChanged(object? sender, DocHandler.Services.AdvancedModeChangedEventArgs e)
+        {
+            try
+            {
+                Dispatcher.InvokeAsync(() =>
+                {
+                    // Update the mode switcher icon
+                    ModeSwitcher?.UpdateModeIcon(e.CurrentMode);
+                    
+                    // Trigger mode change animation
+                    ModeSwitcher?.AnimateModeChange();
+                    
+                    _logger.Information("UI updated for mode change: {PreviousMode} -> {CurrentMode}", 
+                        e.PreviousMode, e.CurrentMode);
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error updating UI for mode change");
+            }
         }
         
         private void Border_Drop(object sender, DragEventArgs e)
@@ -623,8 +683,11 @@ namespace DocHandler
                 // Reset border color instantly
                 DropBorderSaveMode.BorderBrush = new SolidColorBrush(Color.FromRgb(0x19, 0x76, 0xD2));
                 
-                // Clear animation state
-                ViewModel.IsShowingSuccessAnimation = false;
+                // Clear animation state - check for null during shutdown
+                if (ViewModel != null)
+                {
+                    ViewModel.IsShowingSuccessAnimation = false;
+                }
             });
         }
 
@@ -643,7 +706,10 @@ namespace DocHandler
                 fadeOut.Completed += (s, args) =>
                 {
                     SuccessOverlay.Visibility = Visibility.Collapsed;
-                    ViewModel.IsShowingSuccessAnimation = false;
+                    if (ViewModel != null)
+                    {
+                        ViewModel.IsShowingSuccessAnimation = false;
+                    }
                 };
                 
                 SuccessStackPanel.BeginAnimation(OpacityProperty, fadeOut);
@@ -661,14 +727,18 @@ namespace DocHandler
             // Cancel any running animation
             CancelSuccessAnimation();
             
-            // Save window position
-            ViewModel.SaveWindowState(Left, Top, Width, Height, WindowState.ToString());
-            
-            // Save preferences
-            ViewModel.SavePreferences();
-            
-            // Cleanup
-            ViewModel.Cleanup();
+            // Safe shutdown with null checks
+            if (ViewModel != null)
+            {
+                // Save window position
+                ViewModel.SaveWindowState(Left, Top, Width, Height, WindowState.ToString());
+                
+                // Save preferences
+                ViewModel.SavePreferences();
+                
+                // Cleanup
+                ViewModel.Cleanup();
+            }
             
             // Clean up any remaining Outlook temp files
             OutlookAttachmentHelper.CleanupTempFiles();

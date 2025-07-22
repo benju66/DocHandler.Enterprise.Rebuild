@@ -16,7 +16,7 @@ using System.Collections.Generic; // Added missing import
 
 namespace DocHandler.Services
 {
-    public partial class SaveQuotesQueueService : ObservableObject, IDisposable
+    public partial class SaveQuotesQueueService : ObservableObject, ISaveQuotesQueueService
     {
         private readonly ILogger _logger;
         private readonly ConcurrentQueue<SaveQuoteItem> _queue;

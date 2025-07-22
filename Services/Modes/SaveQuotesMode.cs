@@ -36,7 +36,7 @@ namespace DocHandler.Services.Modes
         protected override async Task InitializeModeAsync()
         {
             // Get required services from DI container
-            _queueService = TryGetService<SaveQuotesQueueService>();
+            _queueService = GetService<SaveQuotesQueueService>();
             _companyNameService = GetService<CompanyNameService>();
             _scopeOfWorkService = GetService<ScopeOfWorkService>();
             _configService = GetService<ConfigurationService>();
@@ -45,6 +45,9 @@ namespace DocHandler.Services.Modes
             _processManager = GetService<ProcessManager>();
 
             // Validate required services
+            if (_queueService == null)
+                throw new InvalidOperationException("SaveQuotesQueueService is required for SaveQuotes mode");
+                
             if (_companyNameService == null)
                 throw new InvalidOperationException("CompanyNameService is required for SaveQuotes mode");
             
@@ -95,7 +98,12 @@ namespace DocHandler.Services.Modes
                 var sanitizedCompanyName = SanitizeFileName(companyName);
 
                 // Get or create queue service
-                var queueService = GetOrCreateQueueService();
+                if (_queueService == null)
+            {
+                throw new InvalidOperationException("SaveQuotesQueueService is not available");
+            }
+            
+            var queueService = _queueService;
 
                 // Add files to queue
                 foreach (var file in request.Files)
@@ -178,23 +186,7 @@ namespace DocHandler.Services.Modes
             return supportedExtensions.Contains(extension);
         }
 
-        /// <summary>
-        /// Get or create the SaveQuotes queue service
-        /// </summary>
-        private SaveQuotesQueueService GetOrCreateQueueService()
-        {
-            if (_queueService == null)
-            {
-                if (_configService == null || _pdfCacheService == null || _processManager == null || _fileProcessingService == null)
-                {
-                    throw new InvalidOperationException("Required services not available for queue service creation");
-                }
 
-                _queueService = new SaveQuotesQueueService(_configService, _pdfCacheService, _processManager, _fileProcessingService);
-                _logger.Information("Created SaveQuotesQueueService for SaveQuotes mode");
-            }
-            return _queueService;
-        }
 
         /// <summary>
         /// Sanitize a filename to remove invalid characters

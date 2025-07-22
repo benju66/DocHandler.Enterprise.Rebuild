@@ -34,11 +34,24 @@ namespace DocHandler.ViewModels
     public partial class MainViewModel : ObservableObject, IDisposable
     {
         private readonly ILogger _logger;
-        private readonly OptimizedFileProcessingService _fileProcessingService;
+        private readonly IOptimizedFileProcessingService _fileProcessingService;
         private readonly ConfigurationService _configService;
         private readonly OfficeConversionService _officeConversionService;
-        private readonly CompanyNameService _companyNameService;
-        private readonly ScopeOfWorkService _scopeOfWorkService;
+        private readonly ICompanyNameService _companyNameService;
+        private readonly IScopeOfWorkService _scopeOfWorkService;
+        
+        // Business Logic Services (Phase 2 Milestone 2)
+        private readonly IFileValidationService _fileValidationService;
+        private readonly ICompanyDetectionService _companyDetectionService;
+        private readonly IScopeManagementService _scopeManagementService;
+
+        // Advanced Mode UI Framework (Phase 2 Milestone 2 - Day 5)
+        private readonly IAdvancedModeUIProvider _advancedModeUIProvider;
+        private readonly IDynamicMenuBuilder _dynamicMenuBuilder;
+        private readonly IAdvancedModeUIManager _advancedModeUIManager;
+
+        // Public access for MainWindow integration
+        public IAdvancedModeUIManager AdvancedModeUIManager => _advancedModeUIManager;
         private SessionAwareOfficeService? _sessionOfficeService;
         private SessionAwareExcelService? _sessionExcelService;
         private readonly PerformanceMonitor _performanceMonitor;
@@ -128,6 +141,15 @@ namespace DocHandler.ViewModels
                 }
             }
         }
+
+        // Advanced Mode UI Framework Properties (Phase 2 Milestone 2 - Day 5)
+        public string AdvancedCurrentMode => _advancedModeUIManager?.CurrentMode ?? "default";
+        
+        [ObservableProperty]
+        private string _advancedCurrentModeDisplayName = "Standard Processing";
+        
+        [ObservableProperty]
+        private bool _isAdvancedModeUIEnabled = true;
 
         private string? _selectedScope;
         public string? SelectedScope
@@ -263,47 +285,84 @@ namespace DocHandler.ViewModels
             }
         }
         
-        public MainViewModel()
+        public MainViewModel(
+            IOptimizedFileProcessingService fileProcessingService,
+            IConfigurationService configService,
+            ICompanyNameService companyNameService,
+            IScopeOfWorkService scopeOfWorkService,
+            ErrorRecoveryService errorRecoveryService,
+            TelemetryService telemetryService,
+            PdfOperationsService pdfOperationsService,
+            PerformanceMonitor performanceMonitor,
+            PdfCacheService pdfCacheService,
+            IProcessManager processManager,
+            OfficeHealthMonitor healthMonitor,
+            IFileValidationService fileValidationService,
+            ICompanyDetectionService companyDetectionService,
+            IScopeManagementService scopeManagementService,
+            IAdvancedModeUIProvider advancedModeUIProvider,
+            IDynamicMenuBuilder dynamicMenuBuilder,
+            IAdvancedModeUIManager advancedModeUIManager,
+            IModeManager? modeManager = null)
         {
             try
             {
                 _logger = Log.ForContext<MainViewModel>();
-                _logger.Information("MainViewModel initialization started");
+                _logger.Information("MainViewModel initialization started with dependency injection");
 
-                // Initialize core services first
-                _configService = new ConfigurationService();
-                _errorRecoveryService = new ErrorRecoveryService();
-                _telemetryService = new TelemetryService();
-                _pdfOperationsService = new PdfOperationsService();
+                // Initialize services from DI
+                _fileProcessingService = fileProcessingService ?? throw new ArgumentNullException(nameof(fileProcessingService));
+                _configService = (ConfigurationService)configService ?? throw new ArgumentNullException(nameof(configService));
+                _companyNameService = companyNameService ?? throw new ArgumentNullException(nameof(companyNameService));
+                _scopeOfWorkService = scopeOfWorkService ?? throw new ArgumentNullException(nameof(scopeOfWorkService));
+                _errorRecoveryService = errorRecoveryService ?? throw new ArgumentNullException(nameof(errorRecoveryService));
+                _telemetryService = telemetryService ?? throw new ArgumentNullException(nameof(telemetryService));
+                _pdfOperationsService = pdfOperationsService ?? throw new ArgumentNullException(nameof(pdfOperationsService));
+                _performanceMonitor = performanceMonitor ?? throw new ArgumentNullException(nameof(performanceMonitor));
+                _pdfCacheService = pdfCacheService ?? throw new ArgumentNullException(nameof(pdfCacheService));
+                _processManager = (ProcessManager)processManager ?? throw new ArgumentNullException(nameof(processManager));
+                _healthMonitor = healthMonitor ?? throw new ArgumentNullException(nameof(healthMonitor));
+                _modeManager = modeManager;
                 
-                // Try to get mode manager from DI container (optional - graceful fallback)
-                TryInitializeModeManager();
+                // Initialize business logic services (Phase 2 Milestone 2)
+                _fileValidationService = fileValidationService ?? throw new ArgumentNullException(nameof(fileValidationService));
+                _companyDetectionService = companyDetectionService ?? throw new ArgumentNullException(nameof(companyDetectionService));
+                _scopeManagementService = scopeManagementService ?? throw new ArgumentNullException(nameof(scopeManagementService));
+
+                // Initialize advanced mode UI framework (Phase 2 Milestone 2 - Day 5)
+                _advancedModeUIProvider = advancedModeUIProvider ?? throw new ArgumentNullException(nameof(advancedModeUIProvider));
+                _dynamicMenuBuilder = dynamicMenuBuilder ?? throw new ArgumentNullException(nameof(dynamicMenuBuilder));
+                _advancedModeUIManager = advancedModeUIManager ?? throw new ArgumentNullException(nameof(advancedModeUIManager));
+                
+                // Office conversion service will be injected later when interfaces are created
+                _officeConversionService = new OfficeConversionService();
                 
                 // CRITICAL MEMORY FIX: Don't use shared session services - create on demand only
                 _sessionOfficeService = null; // Always null - will create ReliableOfficeConverter on demand
                 _sessionExcelService = null; // Always null - will create ReliableOfficeConverter on demand
-                
-                // Initialize other services
-                var processManager = new ProcessManager();
-                
-                _fileProcessingService = new OptimizedFileProcessingService(
-                    configService: _configService,
-                    pdfCacheService: null,
-                    processManager: processManager,
-                    officeTracker: null, // No longer used
-                    sharedWordService: null, // CRITICAL: Pass null to force on-demand creation
-                    sharedExcelService: null // CRITICAL: Pass null to force on-demand creation
-                );
-                
-                _companyNameService = new CompanyNameService();
-                _scopeOfWorkService = new ScopeOfWorkService();
 
                 StatusMessage = "Ready";
                 
                 // Initialize from configuration
                 InitializeFromConfiguration();
                 
-                _logger.Information("MainViewModel initialized successfully");
+                // Load service data asynchronously after UI is ready
+                _ = Task.Run(async () => 
+                {
+                    await LoadServiceDataAsync();
+                    await Application.Current.Dispatcher.InvokeAsync(() => 
+                    {
+                        // Reload UI collections after data is loaded
+                        LoadScopesOfWork();
+                        LoadRecentScopes();
+                        if (SaveQuotesMode)
+                        {
+                            FilterScopes();
+                        }
+                    });
+                });
+                
+                _logger.Information("MainViewModel initialized successfully with dependency injection");
             }
             catch (ConfigurationException configEx)
             {
@@ -449,10 +508,73 @@ namespace DocHandler.ViewModels
                         _logger.Error(ex, "Failed to update UI collections after data load");
                     }
                 });
+
+                // Initialize Advanced Mode UI Framework (Phase 2 Milestone 2 - Day 5)
+                await InitializeAdvancedModeUIAsync();
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Failed to load service data asynchronously");
+            }
+        }
+
+        /// <summary>
+        /// Initialize Advanced Mode UI Framework (Phase 2 Milestone 2 - Day 5)
+        /// </summary>
+        private async Task InitializeAdvancedModeUIAsync()
+        {
+            try
+            {
+                _logger.Information("Initializing Advanced Mode UI Framework...");
+
+                // Subscribe to mode change events
+                _advancedModeUIManager.ModeChanged += OnAdvancedModeChanged;
+
+                // Initialize with the current mode based on SaveQuotesMode
+                var initialMode = SaveQuotesMode ? "SaveQuotes" : "default";
+                await _advancedModeUIManager.InitializeAsync(initialMode);
+
+                _logger.Information("Advanced Mode UI Framework initialized successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to initialize Advanced Mode UI Framework");
+            }
+        }
+
+        /// <summary>
+        /// Handle advanced mode changes
+        /// </summary>
+        private void OnAdvancedModeChanged(object? sender, AdvancedModeChangedEventArgs e)
+        {
+            try
+            {
+                Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    // Update the display name
+                    AdvancedCurrentModeDisplayName = e.UICustomization?.DisplayName ?? e.CurrentMode;
+                    
+                    // Sync with existing SaveQuotesMode if needed
+                    var shouldBeSaveQuotesMode = e.CurrentMode == "SaveQuotes";
+                    if (SaveQuotesMode != shouldBeSaveQuotesMode)
+                    {
+                        _saveQuotesMode = shouldBeSaveQuotesMode; // Set backing field directly to avoid recursion
+                        OnPropertyChanged(nameof(SaveQuotesMode));
+                        
+                        // Update UI accordingly
+                        UpdateUI();
+                    }
+
+                    // Notify property changed for UI updates
+                    OnPropertyChanged(nameof(AdvancedCurrentMode));
+                    
+                    _logger.Information("Mode changed from {PreviousMode} to {CurrentMode}", 
+                        e.PreviousMode, e.CurrentMode);
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error handling advanced mode change");
             }
         }
 
@@ -804,7 +926,7 @@ namespace DocHandler.ViewModels
             _currentScanCancellation = new CancellationTokenSource();
             var cancellationToken = _currentScanCancellation.Token;
             
-            // Run entirely in background
+            // Run entirely in background using the new company detection service (Phase 2 Milestone 2)
             Task.Run(async () =>
             {
                 try
@@ -828,9 +950,9 @@ namespace DocHandler.ViewModels
                         });
                     });
                     
-                    // Perform detection with progress
-                    var detectedCompany = await _companyNameService.ScanDocumentForCompanyName(
-                        filePath, progress);
+                    // Use the new company detection service
+                    var request = new CompanyDetectionRequest(filePath, progress, cancellationToken);
+                    var detectedCompany = await _companyDetectionService.ScanForCompanyNameAsync(request);
                     
                     if (cancellationToken.IsCancellationRequested)
                         return;
@@ -842,7 +964,7 @@ namespace DocHandler.ViewModels
                         {
                             DetectedCompanyName = detectedCompany;
                             CompanyNameInput = detectedCompany;
-                            _logger.Information("Auto-detected company: {Company}", detectedCompany);
+                            _logger.Information("Auto-detected company using new service: {Company}", detectedCompany);
                         }
                         else
                         {
@@ -850,11 +972,17 @@ namespace DocHandler.ViewModels
                         }
                         
                         IsDetectingCompany = false;
+                        UpdateUI();
                     });
                 }
                 catch (OperationCanceledException)
                 {
                     _logger.Debug("Company name scan cancelled");
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        IsDetectingCompany = false;
+                        DetectedCompanyName = "";
+                    });
                 }
                 catch (Exception ex)
                 {
@@ -895,7 +1023,7 @@ namespace DocHandler.ViewModels
                 try
                 {
                     _logger.Information("Initializing SaveQuotesQueueService on first use");
-                    _queueService = new SaveQuotesQueueService(_configService, _pdfCacheService, _processManager, _fileProcessingService);
+                    _queueService = new SaveQuotesQueueService(_configService, _pdfCacheService, _processManager, (OptimizedFileProcessingService)_fileProcessingService);
                     
                     // Subscribe to queue events
                     _queueService.ProgressChanged += OnQueueProgressChanged;
@@ -968,24 +1096,76 @@ namespace DocHandler.ViewModels
             }
         }
 
-        private void LoadRecentScopes()
+        private async void LoadRecentScopes()
         {
-            RecentScopes.Clear();
-            foreach (var scope in _scopeOfWorkService.RecentScopes.Take(10))
+            try
             {
-                RecentScopes.Add(scope);
+                // Use the new scope management service (Phase 2 Milestone 2)
+                var recentScopes = await _scopeManagementService.GetRecentScopesAsync();
+                
+                RecentScopes.Clear();
+                foreach (var scope in recentScopes)
+                {
+                    RecentScopes.Add(scope);
+                }
+                
+                _logger.Debug("Loaded {Count} recent scopes using new service", recentScopes.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to load recent scopes using new service");
+                
+                // Fallback to using the service directly
+                RecentScopes.Clear();
+                foreach (var scope in _scopeOfWorkService.RecentScopes.Take(10))
+                {
+                    RecentScopes.Add(scope);
+                }
             }
         }
 
-        // Enhanced fuzzy search implementation with better synchronization
+        // Enhanced fuzzy search implementation using ScopeManagementService (Phase 2 Milestone 2)
         private async void FilterScopes()
         {
-            // Capture search term immediately
-            var searchTerm = ScopeSearchText?.Trim() ?? "";
-            
-            // Fast path for empty search
-            if (string.IsNullOrWhiteSpace(searchTerm))
+            try
             {
+                // Capture search term immediately
+                var searchTerm = ScopeSearchText?.Trim() ?? "";
+                
+                // Use the new scope management service for searching
+                var filteredScopes = await _scopeManagementService.FilterScopesAsync(searchTerm);
+                
+                // Update UI with filtered results
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    var currentSelection = SelectedScope;
+                    
+                    // Update collection efficiently
+                    FilteredScopesOfWork.Clear();
+                    foreach (var scope in filteredScopes)
+                    {
+                        FilteredScopesOfWork.Add(scope);
+                    }
+                    
+                    // Preserve selection if it's in the filtered results
+                    if (currentSelection != null && FilteredScopesOfWork.Contains(currentSelection))
+                    {
+                        SelectedScope = currentSelection;
+                    }
+                    else if (string.IsNullOrWhiteSpace(searchTerm))
+                    {
+                        SelectedScope = null;
+                    }
+                });
+                
+                _logger.Debug("Scope filtering completed using new service: {ResultCount} results for '{SearchTerm}'", 
+                    filteredScopes.Count, searchTerm);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Scope filtering failed using new service");
+                
+                // Fallback to showing all scopes on error
                 await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
                     FilteredScopesOfWork.Clear();
@@ -993,33 +1173,8 @@ namespace DocHandler.ViewModels
                     {
                         FilteredScopesOfWork.Add(scope);
                     }
-                    
-                    // Preserve selection if it exists in the full list
-                    if (SelectedScope != null && ScopesOfWork.Contains(SelectedScope))
-                    {
-                        // Keep current selection
-                    }
-                    else
-                    {
-                        SelectedScope = null;
-                    }
                 });
-                return;
             }
-            
-            // Fast path for very short searches (1-2 chars) - simple contains search
-            if (searchTerm.Length <= 2)
-            {
-                var simpleFiltered = ScopesOfWork.Where(s => 
-                    s.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase) >= 0)
-                    .ToList();
-                
-                await UpdateFilteredScopes(simpleFiltered, searchTerm);
-                return;
-            }
-            
-            // For longer searches, use full fuzzy search but with optimizations
-            await PerformFuzzySearch(searchTerm);
         }
         
         private async Task UpdateFilteredScopes(List<string> filteredList, string searchTerm)
@@ -1336,53 +1491,67 @@ namespace DocHandler.ViewModels
         
         public void AddFiles(string[] filePaths)
         {
-            var addedFiles = new List<FileItem>();
-            
-            foreach (var file in filePaths)
+            // Use the new FileValidationService for dropped file validation (Phase 2 Milestone 2)
+            _ = Task.Run(async () => await AddFilesAsync(filePaths));
+        }
+
+        /// <summary>
+        /// Asynchronously adds and validates files using the new validation service (Phase 2 Milestone 2)
+        /// </summary>
+        private async Task AddFilesAsync(string[] filePaths)
+        {
+            try
             {
-                // Quick validation only - existence and not already added
-                if (!File.Exists(file))
+                _logger.Information("Adding {FileCount} dropped files", filePaths.Length);
+
+                // Filter out files that are already added
+                var newFilePaths = filePaths.Where(path => 
+                    !PendingFiles.Any(f => f.FilePath == path)).ToArray();
+
+                if (!newFilePaths.Any())
                 {
-                    _logger.Warning("File does not exist: {FilePath}", file);
-                    continue;
+                    _logger.Information("All dropped files are already in the list");
+                    return;
                 }
-                
-                if (PendingFiles.Any(f => f.FilePath == file))
+
+                // Use the new file validation service to validate dropped files
+                var validatedFiles = await _fileValidationService.ValidateDroppedFilesAsync(newFilePaths);
+
+                // Update UI with the validated files
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
-                    _logger.Information("File already in list: {FilePath}", file);
-                    continue;
-                }
-                
-                try
-                {
-                    var fileInfo = new FileInfo(file);
-                    var fileItem = new FileItem
+                    foreach (var fileItem in validatedFiles)
                     {
-                        FilePath = file,
-                        FileName = Path.GetFileName(file),
-                        FileSize = fileInfo.Length,
-                        FileType = Path.GetExtension(file).ToUpperInvariant().TrimStart('.'),
-                        ValidationStatus = ValidationStatus.Pending
-                    };
-                    
-                    PendingFiles.Add(fileItem);
-                    addedFiles.Add(fileItem);
-                    
-                    _logger.Debug("File added instantly: {FileName}", fileItem.FileName);
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warning(ex, "Failed to add file: {FilePath}", file);
-                }
+                        PendingFiles.Add(fileItem);
+                        _logger.Debug("File added and validated: {FileName} (Status: {Status})", 
+                            fileItem.FileName, fileItem.ValidationStatus);
+                    }
+
+                    UpdateUI();
+
+                    // Start company name scan for the first valid file if in Save Quotes mode
+                    if (SaveQuotesMode && string.IsNullOrWhiteSpace(CompanyNameInput) && validatedFiles.Any())
+                    {
+                        var firstValidFile = validatedFiles.First();
+                        StartCompanyNameScan(firstValidFile.FilePath);
+                    }
+                });
+
+                _logger.Information("Added {ValidCount} valid files out of {TotalCount} dropped files", 
+                    validatedFiles.Count, filePaths.Length);
             }
-            
-            // Validate files in background
-            if (addedFiles.Any())
+            catch (Exception ex)
             {
-                _ = Task.Run(async () => await ValidateFilesAsync(addedFiles));
+                _logger.Error(ex, "Failed to add files");
+                
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    MessageBox.Show($"Failed to add files: {ex.Message}", 
+                        "File Addition Error", 
+                        MessageBoxButton.OK, 
+                        MessageBoxImage.Warning);
+                });
             }
-            
-            UpdateUI();
         }
 
         private async Task ValidateFilesAsync(List<FileItem> files)
@@ -1519,6 +1688,59 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private async Task ProcessFiles()
         {
+            try
+            {
+                // Handle Save Quotes mode
+                if (SaveQuotesMode)
+                {
+                    await ProcessSaveQuotes();
+                    return;
+                }
+
+                // Validate and prepare files
+                var validFiles = await PrepareFilesForProcessing();
+                if (!validFiles.Any())
+                {
+                    return; // Error handling done in PrepareFilesForProcessing
+                }
+
+                // Set processing state
+                IsProcessing = true;
+                StatusMessage = validFiles.Count > 1 ? "Merging and processing files..." : "Processing file...";
+
+                // Process files using the existing logic
+                var filePaths = validFiles.Select(f => f.FilePath).ToList();
+                await ProcessFilesBackground(filePaths, validFiles.Count, OpenFolderAfterProcessing);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Unexpected error in ProcessFiles command");
+                
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = "Processing failed";
+                    MessageBox.Show($"An unexpected error occurred: {ex.Message}", 
+                        "Error", 
+                        MessageBoxButton.OK, 
+                        MessageBoxImage.Error);
+                });
+            }
+            finally
+            {
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    IsProcessing = false;
+                    ProgressValue = 0;
+                    UpdateUI();
+                });
+            }
+        }
+
+        /// <summary>
+        /// Prepares files for processing by validating them and handling UI updates (Phase 2 Milestone 2)
+        /// </summary>
+        private async Task<List<FileItem>> PrepareFilesForProcessing()
+        {
             // Quick validation on UI thread
             var pendingValidation = PendingFiles.Where(f => 
                 f.ValidationStatus == ValidationStatus.Pending || 
@@ -1530,7 +1752,7 @@ namespace DocHandler.ViewModels
                     "Validation in Progress", 
                     MessageBoxButton.OK, 
                     MessageBoxImage.Information);
-                return;
+                return new List<FileItem>();
             }
             
             // Remove any invalid files on UI thread
@@ -1549,38 +1771,19 @@ namespace DocHandler.ViewModels
                 {
                     PendingFiles.Remove(invalid);
                 }
-                
-                if (!PendingFiles.Any()) return;
             }
             
-            // Handle Save Quotes mode
-            if (SaveQuotesMode)
+            // Get valid files
+            var validFiles = PendingFiles.Where(f => 
+                f.ValidationStatus == ValidationStatus.Valid).ToList();
+
+            if (!validFiles.Any())
             {
-                await ProcessSaveQuotes();
-                return;
+                StatusMessage = "No valid files to process";
+                return new List<FileItem>();
             }
 
-            // Capture UI state immediately on UI thread
-            var hasFiles = PendingFiles.Any();
-            var fileCount = PendingFiles.Count;
-            var filePaths = PendingFiles.Select(f => f.FilePath).ToList();
-            var openFolderAfterProcessing = this.OpenFolderAfterProcessing;
-
-            if (!hasFiles)
-            {
-                StatusMessage = "No files selected";
-                return;
-            }
-
-            // Set processing state on UI thread
-            IsProcessing = true;
-            StatusMessage = fileCount > 1 ? "Merging and processing files..." : "Processing file...";
-
-            // Move heavy processing to background thread
-            await Task.Run(async () =>
-            {
-                await ProcessFilesBackground(filePaths, fileCount, openFolderAfterProcessing);
-            });
+            return validFiles;
         }
 
         private async Task ProcessFilesBackground(List<string> filePaths, int fileCount, bool openFolderAfterProcessing)
@@ -2006,7 +2209,7 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private void EditCompanyNames()
         {
-            var window = new EditCompanyNamesWindow(_companyNameService)
+            var window = new EditCompanyNamesWindow((CompanyNameService)_companyNameService)
             {
                 Owner = Application.Current.MainWindow
             };
@@ -2042,7 +2245,7 @@ namespace DocHandler.ViewModels
         [RelayCommand]
         private void EditScopesOfWork()
         {
-            var window = new Views.EditScopesOfWorkWindow(_scopeOfWorkService)
+            var window = new Views.EditScopesOfWorkWindow((ScopeOfWorkService)_scopeOfWorkService)
             {
                 Owner = Application.Current.MainWindow
             };
@@ -2114,8 +2317,8 @@ namespace DocHandler.ViewModels
         {
             var settingsViewModel = new SettingsViewModel(
                 _configService, 
-                _companyNameService, 
-                _scopeOfWorkService);
+                (CompanyNameService)_companyNameService, 
+                (ScopeOfWorkService)_scopeOfWorkService);
                 
             var settingsWindow = new Views.SettingsWindow(settingsViewModel)
             {
@@ -2599,44 +2802,98 @@ namespace DocHandler.ViewModels
 
         private async Task ProcessSaveQuotes()
         {
-            // Quick validation and UI state capture on UI thread
-            if (!SaveQuotesMode || string.IsNullOrEmpty(SelectedScope))
+            try
             {
-                MessageBox.Show("Please select a scope of work first.", "Save Quotes", 
-                    MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
+                // Quick validation and UI state capture on UI thread
+                if (!SaveQuotesMode || string.IsNullOrEmpty(SelectedScope))
+                {
+                    MessageBox.Show("Please select a scope of work first.", "Save Quotes", 
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                // Get company name - use typed value first, then detected value  
+                var companyName = !string.IsNullOrWhiteSpace(CompanyNameInput) 
+                    ? CompanyNameInput.Trim() 
+                    : DetectedCompanyName?.Trim();
+                
+                if (string.IsNullOrWhiteSpace(companyName))
+                {
+                    MessageBox.Show("Please enter a company name or wait for automatic detection.", 
+                        "Company Name Required", 
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                // Validate and prepare files
+                var validFiles = await PrepareFilesForProcessing();
+                if (!validFiles.Any())
+                {
+                    StatusMessage = "No valid quote documents to process";
+                    return;
+                }
+
+                // Set processing state
+                IsProcessing = true;
+                StatusMessage = "Adding quotes to processing queue...";
+
+                // Create processing request for Save Quotes
+                var parameters = new Dictionary<string, object>
+                {
+                    ["Scope"] = SelectedScope,
+                    ["CompanyName"] = companyName
+                };
+
+                var outputDir = !string.IsNullOrEmpty(SessionSaveLocation) 
+                    ? SessionSaveLocation 
+                    : _configService.Config.DefaultSaveLocation;
+
+                var request = new ProcessingRequest
+                {
+                    Files = validFiles,
+                    OutputDirectory = outputDir,
+                    Parameters = parameters
+                };
+
+                // Execute Save Quotes processing using existing logic
+                // TODO: Refactor to use command handler service in next iteration
+                await ProcessSaveQuotesBackground(SelectedScope, companyName, validFiles, outputDir, validFiles.Count);
+                
+                // Clear processed files and update UI
+                PendingFiles.Clear();
+                CompanyNameInput = "";
+                DetectedCompanyName = "";
+                StatusMessage = "Quotes added to processing queue";
+                
+                // Clear scope if setting is enabled
+                if (_configService.Config.ClearScopeAfterProcessing)
+                {
+                    ScopeSearchText = "";
+                    SelectedScope = null;
+                }
+                
             }
-
-            // Get company name - use typed value first, then detected value  
-            var companyName = !string.IsNullOrWhiteSpace(CompanyNameInput) 
-                ? CompanyNameInput.Trim() 
-                : DetectedCompanyName?.Trim();
-            
-            if (string.IsNullOrWhiteSpace(companyName))
+            catch (Exception ex)
             {
-                MessageBox.Show("Please enter a company name or wait for automatic detection.", 
-                    "Company Name Required", 
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
+                _logger.Error(ex, "Unexpected error in ProcessSaveQuotes");
+                
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = "Save Quotes processing failed";
+                    MessageBox.Show($"An unexpected error occurred: {ex.Message}", 
+                        "Error", 
+                        MessageBoxButton.OK, 
+                        MessageBoxImage.Error);
+                });
             }
-
-            if (!PendingFiles.Any())
+            finally
             {
-                StatusMessage = "No quote documents to process";
-                return;
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    IsProcessing = false;
+                    UpdateUI();
+                });
             }
-
-            // Capture UI state immediately on UI thread
-            var selectedScope = this.SelectedScope;
-            var pendingFilesList = this.PendingFiles.ToList(); // Create a copy
-            var sessionSaveLocation = this.SessionSaveLocation;
-            var fileCount = pendingFilesList.Count;
-
-            // Move heavy processing to background thread
-            await Task.Run(async () =>
-            {
-                await ProcessSaveQuotesBackground(selectedScope, companyName, pendingFilesList, sessionSaveLocation, fileCount);
-            });
         }
 
         private async Task ProcessSaveQuotesBackground(string selectedScope, string companyName, List<FileItem> pendingFilesList, string sessionSaveLocation, int fileCount)
@@ -3388,6 +3645,52 @@ namespace DocHandler.ViewModels
         }
         
         #endregion
+
+        // Advanced Mode UI Framework Commands (Phase 2 Milestone 2 - Day 5)
+        [RelayCommand]
+        private async Task SwitchToStandardModeAsync()
+        {
+            try
+            {
+                await _advancedModeUIManager.SwitchToModeAsync("default");
+                StatusMessage = "Switched to Standard Processing mode";
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error switching to standard mode");
+                StatusMessage = "Error switching mode";
+            }
+        }
+
+        [RelayCommand]
+        private async Task SwitchToSaveQuotesModeAsync()
+        {
+            try
+            {
+                await _advancedModeUIManager.SwitchToModeAsync("SaveQuotes");
+                StatusMessage = "Switched to Save Quotes mode";
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error switching to save quotes mode");
+                StatusMessage = "Error switching mode";
+            }
+        }
+
+        [RelayCommand]
+        private async Task ToggleAdvancedModeUIAsync()
+        {
+            try
+            {
+                IsAdvancedModeUIEnabled = !IsAdvancedModeUIEnabled;
+                StatusMessage = IsAdvancedModeUIEnabled ? "Advanced Mode UI enabled" : "Advanced Mode UI disabled";
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error toggling advanced mode UI");
+                StatusMessage = "Error toggling mode UI";
+            }
+        }
 
         // Manual command property - workaround for source generator issue
         private IRelayCommand? _testMemoryLeakFixesCommand;

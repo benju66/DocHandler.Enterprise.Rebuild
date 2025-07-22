@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Serilog;
+using DocHandler.ViewModels;
 
 namespace DocHandler.Services
 {
@@ -9,7 +10,6 @@ namespace DocHandler.Services
         public static IServiceCollection RegisterServices(this IServiceCollection services)
         {
             // Core Infrastructure Services (Singleton - long-running resources)
-            // Register both concrete and interface types for services that implement interfaces
             services.AddSingleton<IConfigurationService, ConfigurationService>();
             services.AddSingleton<IProcessManager, ProcessManager>();
             services.AddSingleton<PerformanceMonitor>();
@@ -17,8 +17,16 @@ namespace DocHandler.Services
             services.AddSingleton<PdfCacheService>();
             
             // Data Services (Singleton - shared data access)
-            services.AddSingleton<ScopeOfWorkService>();
-            services.AddSingleton<CompanyNameService>();
+            services.AddSingleton<IScopeOfWorkService, ScopeOfWorkService>();
+            services.AddSingleton<ICompanyNameService, CompanyNameService>();
+            
+            // File Processing Services (Transient - stateful per operation)
+            services.AddTransient<IOptimizedFileProcessingService, OptimizedFileProcessingService>();
+            services.AddTransient<ISaveQuotesQueueService, SaveQuotesQueueService>();
+            
+            // Office Services (Transient - COM object management)
+            services.AddTransient<ISessionAwareOfficeService, SessionAwareOfficeService>();
+            services.AddTransient<ISessionAwareExcelService, SessionAwareExcelService>();
             
             // PDF Operations (Transient - stateless operations)
             services.AddTransient<PdfOperationsService>();
@@ -32,6 +40,19 @@ namespace DocHandler.Services
             
             // Office Health Monitor (Singleton - health checking)
             services.AddSingleton<OfficeHealthMonitor>();
+            
+            // Business Logic Services (Transient - stateful per operation)
+            services.AddTransient<IFileValidationService, FileValidationService>();
+            services.AddTransient<ICompanyDetectionService, CompanyDetectionService>();
+            services.AddTransient<IScopeManagementService, ScopeManagementService>();
+
+            // Mode UI Framework Services (Phase 2 Milestone 2 - Day 4)
+            services.AddSingleton<IAdvancedModeUIProvider, ModeUIProvider>();
+            services.AddSingleton<IDynamicMenuBuilder, DynamicMenuBuilder>();
+            services.AddSingleton<IAdvancedModeUIManager, ModeUIManager>();
+            
+            // ViewModels (Transient - new instance per resolution)
+            services.AddTransient<ViewModels.MainViewModel>();
             
             return services;
         }

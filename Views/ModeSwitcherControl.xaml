@@ -1,0 +1,125 @@
+<UserControl x:Class="DocHandler.Views.ModeSwitcherControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.modernwpf.com/2019"
+             x:Name="ModeSwitcherRoot">
+    
+    <UserControl.Resources>
+        <!-- Smooth transitions for mode switching -->
+        <Storyboard x:Key="ModeChangeAnimation">
+            <ColorAnimationUsingKeyFrames Storyboard.TargetName="ModeIndicator" 
+                                          Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)">
+                <EasingColorKeyFrame KeyTime="0:0:0.1" Value="#FFE3F2FD"/>
+                <EasingColorKeyFrame KeyTime="0:0:0.3" Value="Transparent"/>
+            </ColorAnimationUsingKeyFrames>
+        </Storyboard>
+        
+        <!-- Mode button style -->
+        <Style x:Key="ModeButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="Margin" Value="2"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Height" Value="24"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </UserControl.Resources>
+
+    <!-- Compact Mode Switcher -->
+    <Border x:Name="ModeIndicator" 
+            Background="Transparent" 
+            CornerRadius="3"
+            Padding="4,2">
+        
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+            
+            <!-- Mode Icon -->
+            <ui:SymbolIcon x:Name="ModeIcon" 
+                           Symbol="Setting" 
+                           Margin="0,0,4,0"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+            
+            <!-- Current Mode Display -->
+            <TextBlock x:Name="CurrentModeText"
+                       Text="{Binding AdvancedCurrentModeDisplayName, RelativeSource={RelativeSource AncestorType=Window}}"
+                       FontSize="11"
+                       VerticalAlignment="Center"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                       Margin="0,0,6,0"/>
+            
+            <!-- Mode Selector Button (Hidden by default) -->
+            <Button x:Name="ModeSelectorButton"
+                    Style="{StaticResource ModeButtonStyle}"
+                    ToolTip="Switch Processing Mode"
+                    Visibility="Collapsed"
+                    Click="ModeSelectorButton_Click">
+                <ui:SymbolIcon Symbol="Switch"/>
+            </Button>
+            
+            <!-- Mode Selection Popup -->
+            <Popup x:Name="ModeSelectionPopup"
+                   PlacementTarget="{Binding ElementName=ModeSelectorButton}"
+                   Placement="Top"
+                   AllowsTransparency="True"
+                   PopupAnimation="Fade"
+                   StaysOpen="False">
+                
+                <Border Background="{DynamicResource SystemControlAcrylicWindowBrush}"
+                        BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        Padding="4">
+                    
+                    <StackPanel Orientation="Vertical">
+                        
+                        <!-- Standard Mode Button -->
+                        <Button Content="📄 Standard Processing"
+                                Style="{StaticResource ModeButtonStyle}"
+                                Command="{Binding SwitchToStandardModeCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                Click="ModeButton_Click"
+                                ToolTip="Standard file processing with all features"/>
+                        
+                        <!-- Save Quotes Mode Button -->
+                        <Button Content="💰 Save Quotes"
+                                Style="{StaticResource ModeButtonStyle}"
+                                Command="{Binding SwitchToSaveQuotesModeCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                Click="ModeButton_Click"
+                                ToolTip="Specialized mode for processing and saving quotes"/>
+                        
+                        <Separator Margin="2"/>
+                        
+                        <!-- Advanced Mode Toggle -->
+                        <Button Content="⚙️ Toggle Advanced UI"
+                                Style="{StaticResource ModeButtonStyle}"
+                                Command="{Binding ToggleAdvancedModeUICommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                Click="ModeButton_Click"
+                                ToolTip="Enable/disable advanced mode UI features"/>
+                        
+                    </StackPanel>
+                </Border>
+            </Popup>
+            
+        </StackPanel>
+        
+        <!-- Click to reveal mode selector -->
+        <Border.InputBindings>
+            <MouseBinding Gesture="LeftClick" Command="{Binding RelativeSource={RelativeSource Self}, Path=DataContext.ShowModeSelectorCommand}"/>
+        </Border.InputBindings>
+        
+    </Border>
+    
+    <!-- Triggers for mode changes -->
+    <UserControl.Triggers>
+        <EventTrigger RoutedEvent="UserControl.Loaded">
+            <BeginStoryboard Storyboard="{StaticResource ModeChangeAnimation}"/>
+        </EventTrigger>
+    </UserControl.Triggers>
+    
+</UserControl> 

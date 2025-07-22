@@ -9,6 +9,7 @@
         xmlns:ui="http://schemas.modernwpf.com/2019"
         xmlns:vm="clr-namespace:DocHandler.ViewModels"
         xmlns:helpers="clr-namespace:DocHandler.Helpers"
+        xmlns:views="clr-namespace:DocHandler.Views"
         mc:Ignorable="d"
         ui:WindowHelper.UseModernWindowStyle="True"
         Title="DocHandler Enterprise" Height="700" Width="1000"
@@ -147,22 +148,30 @@
                 </ItemsPanelTemplate>
             </StatusBar.ItemsPanel>
             
-            <!-- Left: Mode Indicator -->
+            <!-- Left: Advanced Mode Switcher (Phase 2 Milestone 2 - Day 5) -->
             <StatusBarItem Grid.Column="0" Margin="5,0">
-                <TextBlock>
-                    <TextBlock.Style>
-                        <Style TargetType="TextBlock">
-                            <Setter Property="Text" Value="Normal Mode"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding SaveQuotesMode}" Value="True">
-                                    <Setter Property="Text" Value="Save Quotes Mode"/>
-                                    <Setter Property="FontWeight" Value="Bold"/>
-                                    <Setter Property="Foreground" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </TextBlock.Style>
-                </TextBlock>
+                <Grid>
+                    <!-- Advanced Mode UI (when enabled) -->
+                    <ContentControl Visibility="{Binding IsAdvancedModeUIEnabled, Converter={StaticResource BoolToVisibilityConverter}}">
+                        <views:ModeSwitcherControl x:Name="ModeSwitcher"/>
+                    </ContentControl>
+                    
+                    <!-- Fallback: Original Mode Indicator (when advanced UI disabled) -->
+                    <TextBlock Visibility="{Binding IsAdvancedModeUIEnabled, Converter={StaticResource InverseBoolToVisibilityConverter}}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Text" Value="Normal Mode"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding SaveQuotesMode}" Value="True">
+                                        <Setter Property="Text" Value="Save Quotes Mode"/>
+                                        <Setter Property="FontWeight" Value="Bold"/>
+                                        <Setter Property="Foreground" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
             </StatusBarItem>
             
             <!-- Middle: Queue Progress (Clickable) -->

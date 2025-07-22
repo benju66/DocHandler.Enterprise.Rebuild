@@ -12,7 +12,7 @@ using Serilog;
 
 namespace DocHandler.Services
 {
-    public class OptimizedFileProcessingService : IDisposable
+    public class OptimizedFileProcessingService : IOptimizedFileProcessingService
     {
         private readonly ILogger _logger = Log.ForContext<OptimizedFileProcessingService>();
         // COORDINATED SERVICES: Use shared session services instead of creating own instances
@@ -23,8 +23,7 @@ namespace DocHandler.Services
         private readonly PdfCacheService? _pdfCacheService;
         private readonly ProcessManager? _processManager;
         
-        // Add progress reporting delegate
-        public delegate void ProgressCallback(string fileName, double percentage, string status);
+        // Progress reporting delegate is now defined in IServices.cs
         
         // Add private disposal tracking
         private bool _disposed = false;

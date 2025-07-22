@@ -8,7 +8,7 @@ using System.Threading;
 
 namespace DocHandler.Services
 {
-    public class SessionAwareExcelService : IDisposable
+    public class SessionAwareExcelService : ISessionAwareExcelService
     {
         private readonly ILogger _logger;
         private readonly object _conversionLock = new object();

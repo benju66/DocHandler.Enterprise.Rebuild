@@ -5,6 +5,10 @@ using DocHandler.Models;
 
 namespace DocHandler.Services
 {
+    /// <summary>
+    /// Progress callback delegate for file processing operations
+    /// </summary>
+    public delegate void ProgressCallback(string fileName, double percentage, string status);
     // Configuration Service Interface
     public interface IConfigurationService
     {
@@ -29,30 +33,56 @@ namespace DocHandler.Services
         Task<string?> ConvertToPdfAsync(string inputPath, string outputPath);
     }
 
+    // Optimized File Processing Service Interface
+    public interface IOptimizedFileProcessingService : IDisposable
+    {
+        bool IsFileSupported(string filePath);
+        List<string> ValidateDroppedFiles(string[] files);
+        Task<ProcessingResult> ProcessFiles(List<string> filePaths, string outputDirectory, bool convertOfficeToPdf = true);
+        string GetFileTypeDescription(string filePath);
+        string FormatFileSize(long bytes);
+        string GetUniqueFileName(string directory, string fileName);
+        string CreateTempFolder();
+        string CreateOutputFolder(string basePath);
+        Task<ConversionResult> ConvertSingleFile(string inputPath, string outputPath);
+        ConversionResult ConvertSingleFileSync(string inputPath, string outputPath);
+        Task<ConversionResult> ConvertSingleFile(string inputPath, string outputPath, ProgressCallback? progressCallback = null);
+    }
+
     // Company Name Service Interface
     public interface ICompanyNameService : IDisposable
     {
-        Task<string?> DetectCompanyNameAsync(string filePath);
-        Task AddCompanyNameAsync(string companyName);
-        Task RemoveCompanyNameAsync(string companyName);
-        List<string> GetAllCompanyNames();
-        void SetOfficeServices(ISessionAwareOfficeService officeService, ISessionAwareExcelService excelService);
+        void SetOfficeServices(SessionAwareOfficeService officeService, SessionAwareExcelService excelService);
+        void UpdateDocFileSizeLimit(int limitMB);
+        Task LoadDataAsync();
+        Task SaveCompanyNames();
+        Task<bool> AddCompanyName(string name, List<string>? aliases = null);
+        Task<bool> RemoveCompanyName(string name);
+        Task<string?> ScanDocumentForCompanyName(string filePath, IProgress<int>? progress = null);
+        Task IncrementUsageCount(string companyName);
+        List<CompanyInfo> GetMostUsedCompanies(int count = 10);
+        List<CompanyInfo> SearchCompanies(string searchTerm);
+        string GetPerformanceSummary();
+        bool TryGetCachedPdf(string originalFilePath, out string? cachedPdfPath);
+        void CleanupPdfCache();
+        string? GetCachedPdfPath(string originalFilePath);
+        void RemoveCachedPdf(string originalFilePath);
     }
 
     // Session Aware Office Service Interface
     public interface ISessionAwareOfficeService : IDisposable
     {
-        Task<string?> ConvertToPdfAsync(string inputPath, string outputPath);
-        Task<string?> ExtractTextAsync(string filePath);
-        Task<bool> IsAvailableAsync();
+        Task<ConversionResult> ConvertWordToPdf(string inputPath, string outputPath);
+        void ForceCleanupIfIdle();
+        bool IsOfficeInstalled();
     }
 
     // Session Aware Excel Service Interface
     public interface ISessionAwareExcelService : IDisposable
     {
-        Task<string?> ConvertToPdfAsync(string inputPath, string outputPath);
-        Task<string?> ExtractTextAsync(string filePath);
-        Task<bool> IsAvailableAsync();
+        Task<ConversionResult> ConvertSpreadsheetToPdf(string inputPath, string outputPath);
+        void ForceCleanupIfIdle();
+        void DisposeIfIdle();
     }
 
     // PDF Operations Service Interface
@@ -77,10 +107,22 @@ namespace DocHandler.Services
     {
         List<ScopeOfWork> Scopes { get; }
         List<string> RecentScopes { get; }
-        Task AddScopeAsync(ScopeOfWork scope);
-        Task RemoveScopeAsync(int id);
-        Task UpdateScopeAsync(ScopeOfWork scope);
-        Task AddToRecentAsync(string scopeName);
+
+        Task LoadDataAsync();
+        Task SaveScopesOfWork();
+        Task SaveRecentScopes();
+        Task<bool> AddScope(string code, string description);
+        Task<bool> UpdateScope(string oldCode, string newCode, string newDescription);
+        Task<bool> RemoveScope(string code);
+        Task UpdateRecentScope(string scopeText);
+        Task ClearRecentScopes();
+        Task IncrementUsageCount(string scopeText);
+        string GetFormattedScope(ScopeOfWork scope);
+        List<ScopeOfWork> SearchScopes(string searchTerm);
+        List<ScopeOfWork> GetMostUsedScopes(int count = 10);
+        Task<ImportResult> ImportScopes(string filePath, bool replace = false);
+        Task<bool> ExportScopes(string filePath);
+        Task<bool> ResetToDefaults();
     }
 
     // Process Manager Interface - extends existing interface
@@ -116,19 +158,23 @@ namespace DocHandler.Services
     // Save Quotes Queue Service Interface
     public interface ISaveQuotesQueueService : IDisposable
     {
+        System.Collections.ObjectModel.ObservableCollection<SaveQuoteItem> AllItems { get; }
+        int TotalCount { get; set; }
+        int ProcessedCount { get; set; }
+        int FailedCount { get; set; }
+        bool IsProcessing { get; set; }
+
+        event EventHandler<SaveQuoteProgressEventArgs>? ProgressChanged;
+        event EventHandler<SaveQuoteCompletedEventArgs>? ItemCompleted;
+        event EventHandler? QueueEmpty;
+        event EventHandler<string>? StatusMessageChanged;
+
+        void StopProcessing();
         void AddToQueue(FileItem file, string scope, string companyName, string saveLocation);
         Task StartProcessingAsync();
-        Task StopProcessingAsync();
-        Task ClearQueueAsync();
-        bool IsProcessing { get; }
-        int TotalCount { get; }
-        int ProcessedCount { get; }
-        int FailedCount { get; }
-        
-        event EventHandler<SaveQuoteProgressEventArgs> ProgressChanged;
-        event EventHandler<SaveQuoteCompletedEventArgs> ItemCompleted;
-        event EventHandler QueueEmpty;
-        event EventHandler<string> StatusMessageChanged;
+        void UpdateMaxConcurrency(int newMax);
+        void CancelItem(SaveQuoteItem item);
+        void ClearCompleted();
     }
 
     // Mode Management Interfaces are defined in their respective files:
