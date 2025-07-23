@@ -5,7 +5,7 @@ using Serilog;
 
 namespace DocHandler.Services
 {
-    public class CircuitBreaker
+    public class CircuitBreaker : ICircuitBreaker
     {
         private static readonly ILogger _logger = Log.ForContext<CircuitBreaker>();
         
@@ -70,28 +70,42 @@ namespace DocHandler.Services
         /// <summary>
         /// Executes an operation through the circuit breaker
         /// </summary>
-        public async Task<T> ExecuteAsync<T>(Func<Task<T>> operation, string operationName = null)
+        public async Task<T> ExecuteAsync<T>(Func<Task<T>> operation)
         {
             await CheckStateAsync();
             
             if (_state == CircuitBreakerState.Open)
             {
-                var exception = new CircuitBreakerOpenException($"Circuit breaker is open. Operation '{operationName}' not executed.");
-                _logger.Warning("Circuit breaker prevented execution of operation: {OperationName}", operationName);
+                var retryAfter = _lastFailureTime.Add(_recoveryTimeout).Subtract(DateTime.UtcNow);
+                if (retryAfter < TimeSpan.Zero) retryAfter = TimeSpan.Zero;
+                var exception = new CircuitBreakerOpenException($"Circuit breaker is open.", retryAfter);
+                _logger.Warning("Circuit breaker prevented execution of operation");
                 throw exception;
             }
             
             try
             {
                 var result = await operation();
-                await OnSuccessAsync(operationName);
+                await OnSuccessAsync(null);
                 return result;
             }
             catch (Exception ex)
             {
-                await OnFailureAsync(ex, operationName);
+                await OnFailureAsync(ex, null);
                 throw;
             }
+        }
+        
+        /// <summary>
+        /// Execute an operation through the circuit breaker (void return)
+        /// </summary>
+        public async Task ExecuteAsync(Func<Task> operation)
+        {
+            await ExecuteAsync(async () =>
+            {
+                await operation();
+                return true; // Dummy return value
+            });
         }
         
         /// <summary>
@@ -103,7 +117,9 @@ namespace DocHandler.Services
             
             if (_state == CircuitBreakerState.Open)
             {
-                var exception = new CircuitBreakerOpenException($"Circuit breaker is open. Operation '{operationName}' not executed.");
+                var retryAfter = _lastFailureTime.Add(_recoveryTimeout).Subtract(DateTime.UtcNow);
+                if (retryAfter < TimeSpan.Zero) retryAfter = TimeSpan.Zero;
+                var exception = new CircuitBreakerOpenException($"Circuit breaker is open. Operation '{operationName}' not executed.", retryAfter);
                 _logger.Warning("Circuit breaker prevented execution of operation: {OperationName}", operationName);
                 throw exception;
             }
@@ -130,7 +146,9 @@ namespace DocHandler.Services
             
             if (_state == CircuitBreakerState.Open)
             {
-                var exception = new CircuitBreakerOpenException($"Circuit breaker is open. Operation '{operationName}' not executed.");
+                var retryAfter = _lastFailureTime.Add(_recoveryTimeout).Subtract(DateTime.UtcNow);
+                if (retryAfter < TimeSpan.Zero) retryAfter = TimeSpan.Zero;
+                var exception = new CircuitBreakerOpenException($"Circuit breaker is open. Operation '{operationName}' not executed.", retryAfter);
                 _logger.Warning("Circuit breaker prevented execution of operation: {OperationName}", operationName);
                 throw exception;
             }
@@ -196,7 +214,7 @@ namespace DocHandler.Services
                 {
                     if (DateTime.UtcNow >= _lastFailureTime.Add(_recoveryTimeout))
                     {
-                        ChangeState(CircuitBreakerState.HalfOpen);
+                        ChangeState(CircuitBreakerState.HalfOpen, "Recovery timeout expired");
                         _logger.Information("Circuit breaker transitioning to half-open state");
                     }
                 }
@@ -220,7 +238,7 @@ namespace DocHandler.Services
                 if (_state == CircuitBreakerState.HalfOpen)
                 {
                     _failureCount = 0;
-                    ChangeState(CircuitBreakerState.Closed);
+                    ChangeState(CircuitBreakerState.Closed, "Manual reset");
                     _logger.Information("Circuit breaker closed after successful operation: {OperationName}", operationName);
                 }
                 else if (_state == CircuitBreakerState.Closed)
@@ -252,25 +270,19 @@ namespace DocHandler.Services
                 
                 if (_failureCount >= _failureThreshold)
                 {
-                    ChangeState(CircuitBreakerState.Open);
+                    ChangeState(CircuitBreakerState.Open, $"Failure threshold exceeded ({_failureCount} failures)");
                     _logger.Error("Circuit breaker opened due to {FailureCount} failures. Operation: {OperationName}", 
                         _failureCount, operationName);
                 }
             }
         }
         
-        private void ChangeState(CircuitBreakerState newState)
+        private void ChangeState(CircuitBreakerState newState, string reason = "State change")
         {
             var previousState = _state;
             _state = newState;
             
-            StateChanged?.Invoke(this, new CircuitBreakerStateChangedEventArgs
-            {
-                PreviousState = previousState,
-                CurrentState = newState,
-                FailureCount = _failureCount,
-                LastFailureTime = _lastFailureTime
-            });
+            StateChanged?.Invoke(this, new CircuitBreakerStateChangedEventArgs(previousState, newState, reason));
             
             if (newState == CircuitBreakerState.Open)
             {
@@ -293,12 +305,7 @@ namespace DocHandler.Services
         }
     }
     
-    public enum CircuitBreakerState
-    {
-        Closed,   // Normal operation
-        Open,     // Failing fast
-        HalfOpen  // Testing if service is back
-    }
+
     
     public class CircuitBreakerStatus
     {
@@ -316,19 +323,9 @@ namespace DocHandler.Services
         public DateTime LastFailureTime { get; set; }
     }
     
-    public class CircuitBreakerStateChangedEventArgs : EventArgs
-    {
-        public CircuitBreakerState PreviousState { get; set; }
-        public CircuitBreakerState CurrentState { get; set; }
-        public int FailureCount { get; set; }
-        public DateTime LastFailureTime { get; set; }
-    }
+
     
-    public class CircuitBreakerOpenException : Exception
-    {
-        public CircuitBreakerOpenException(string message) : base(message) { }
-        public CircuitBreakerOpenException(string message, Exception innerException) : base(message, innerException) { }
-    }
+
     
     /// <summary>
     /// Specialized circuit breaker for Office COM operations
@@ -352,7 +349,7 @@ namespace DocHandler.Services
         {
             try
             {
-                return await ExecuteAsync(operation, $"Office_{operationName}");
+                return await ExecuteAsync(operation);
             }
             catch (System.Runtime.InteropServices.COMException comEx)
             {

@@ -33,6 +33,9 @@ namespace DocHandler.Services
         // Add private disposal tracking
         private bool _disposed = false;
         
+        // Add file counter for selective logging
+        private int _fileCounter = 0;
+        
         public ObservableCollection<SaveQuoteItem> AllItems => _allItems;
         
         [ObservableProperty]
@@ -247,19 +250,29 @@ namespace DocHandler.Services
                 outputPath = Path.Combine(item.SaveLocation, 
                     _fileProcessingService.GetUniqueFileName(item.SaveLocation, outputFileName));
                 
-                _logger.Information("=== STARTING QUEUE ITEM PROCESSING ===");
-                _logger.Information("QUEUE: Processing file: {FileName} ({Extension})", 
-                    item.File.FileName, Path.GetExtension(item.File.FilePath));
-                _logger.Information("QUEUE: Output path: {OutputPath}", outputPath);
-
-                // Execute conversion on STA thread
-                _logger.Information("QUEUE: Starting conversion on STA thread (Current Thread: {ThreadId})", 
-                    Thread.CurrentThread.ManagedThreadId);
+                var verboseLogging = _configService.Config.SaveQuotes?.EnableVerboseLogging ?? false;
+                
+                if (verboseLogging)
+                {
+                    _logger.Information("=== STARTING QUEUE ITEM PROCESSING ===");
+                    _logger.Information("QUEUE: Processing file: {FileName} ({Extension})", 
+                        item.File.FileName, Path.GetExtension(item.File.FilePath));
+                    _logger.Information("QUEUE: Output path: {OutputPath}", outputPath);
+                    _logger.Information("QUEUE: Starting conversion on STA thread (Current Thread: {ThreadId})", 
+                        Thread.CurrentThread.ManagedThreadId);
+                }
+                else
+                {
+                    _logger.Debug("Processing: {FileName}", item.File.FileName);
+                }
 
                 var result = await _staThreadPool.ExecuteAsync(() =>
                 {
-                    _logger.Information("QUEUE: Now executing on STA thread {ThreadId} (Apartment: {ApartmentState})", 
-                        Thread.CurrentThread.ManagedThreadId, Thread.CurrentThread.GetApartmentState());
+                    if (verboseLogging)
+                    {
+                        _logger.Information("QUEUE: Now executing on STA thread {ThreadId} (Apartment: {ApartmentState})", 
+                            Thread.CurrentThread.ManagedThreadId, Thread.CurrentThread.GetApartmentState());
+                    }
                     
                     // Process based on file type
                     var extension = Path.GetExtension(item.File.FilePath).ToLowerInvariant();
@@ -290,10 +303,12 @@ namespace DocHandler.Services
                     }
                 });
 
-                _logger.Information("QUEUE: Conversion completed - Success: {Success}, Error: {Error}", 
-                    result.Success, result.ErrorMessage ?? "None");
-
-                _logger.Information("=== QUEUE ITEM PROCESSING COMPLETED ===");
+                if (verboseLogging)
+                {
+                    _logger.Information("QUEUE: Conversion completed - Success: {Success}, Error: {Error}", 
+                        result.Success, result.ErrorMessage ?? "None");
+                    _logger.Information("=== QUEUE ITEM PROCESSING COMPLETED ===");
+                }
                 
                 // THREADING FIX: Use BeginInvoke to avoid blocking the processing thread
                 Application.Current.Dispatcher.BeginInvoke(() =>
@@ -328,8 +343,19 @@ namespace DocHandler.Services
                     UpdateCounts();
                 });
                 
-                _logger.Information("Processed queue item: {File} - {Status}", 
-                    item.File.FileName, item.Status);
+                // Selective logging to reduce log volume
+                var fileNumber = Interlocked.Increment(ref _fileCounter);
+                var logInterval = _configService.Config.SaveQuotes?.LogEveryNthFile ?? 10;
+                
+                if (fileNumber % logInterval == 0 || !result.Success)
+                {
+                    _logger.Information("Processed queue item #{FileNumber}: {File} - {Status}", 
+                        fileNumber, item.File.FileName, item.Status);
+                }
+                else
+                {
+                    _logger.Debug("Processed: {File} - {Status}", item.File.FileName, item.Status);
+                }
             }
             catch (Exception ex)
             {
@@ -516,12 +542,16 @@ namespace DocHandler.Services
         
         public DateTime QueuedAt { get; set; }
         public DateTime? CompletedAt { get; set; }
+        
+        [ObservableProperty]
+        private int _retryCount;
     }
     
     public enum SaveQuoteStatus
     {
         Queued,
         Processing,
+        Retrying,
         Completed,
         Failed,
         Cancelled

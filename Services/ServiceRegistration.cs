@@ -25,6 +25,14 @@ namespace DocHandler.Services
             services.AddSingleton<IConfigurationChangeNotificationService, ConfigurationChangeNotificationService>();
             services.AddTransient<IConfigurationExportImportService, ConfigurationExportImportService>();
             services.AddSingleton<IProcessManager, ProcessManager>();
+            
+            // Retry and Circuit Breaker Services
+            services.AddSingleton<IRetryPolicy>(provider =>
+            {
+                var config = provider.GetRequiredService<IConfigurationService>().Config;
+                return new ExponentialBackoffRetryPolicy(config.SaveQuotes);
+            });
+            services.AddSingleton<ICircuitBreaker, CircuitBreaker>();
             services.AddSingleton<PerformanceMonitor>(provider => 
                 new PerformanceMonitor(
                     provider.GetService<IHierarchicalConfigurationService>(),

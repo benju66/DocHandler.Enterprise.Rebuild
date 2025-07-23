@@ -48,17 +48,22 @@ namespace DocHandler.Services
                 return null;
             }
 
-            // Limit concurrent scans to prevent resource exhaustion
-            if (_activeScanCount >= 3)
+            // Try to acquire semaphore with timeout to prevent deadlocks
+            if (!await _scanSemaphore.WaitAsync(TimeSpan.FromSeconds(5)))
             {
-                _logger.Debug("Too many concurrent scans, skipping: {FilePath}", request.FilePath);
+                _logger.Warning("Timeout waiting for scan semaphore: {FilePath}", request.FilePath);
                 return null;
             }
-
-            await _scanSemaphore.WaitAsync();
             
             try
             {
+                // Check concurrent scan limit inside the lock to prevent race conditions
+                if (_activeScanCount >= 3)
+                {
+                    _logger.Debug("Too many concurrent scans, skipping: {FilePath}", request.FilePath);
+                    return null;
+                }
+                
                 Interlocked.Increment(ref _activeScanCount);
                 
                 _logger.Debug("Starting company name scan for: {FilePath}", request.FilePath);

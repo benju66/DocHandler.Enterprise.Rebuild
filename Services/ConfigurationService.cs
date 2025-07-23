@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Serilog;
 using System.Linq; // Added for .Take() and .Distinct()
+using DocHandler.Services.Configuration; // Added for SaveQuotesConfiguration
 
 namespace DocHandler.Services
 {
@@ -299,7 +300,10 @@ namespace DocHandler.Services
                 
                 // Telemetry settings
                 EnableTelemetry = true,
-                TelemetryLevel = "Normal"
+                TelemetryLevel = "Normal",
+                
+                // SaveQuotes Mode Configuration
+                SaveQuotes = new SaveQuotesConfiguration()
             };
         }
 
@@ -613,5 +617,8 @@ namespace DocHandler.Services
         public bool ShowAdvancedOptions { get; set; } = false;
         public bool EnableTelemetry { get; set; } = true;
         public string TelemetryLevel { get; set; } = "Normal";
+        
+        // SaveQuotes Mode Configuration
+        public SaveQuotesConfiguration SaveQuotes { get; set; } = new SaveQuotesConfiguration();
     }
 }

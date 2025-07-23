@@ -211,11 +211,18 @@ namespace DocHandler.Services
             {
                 var wordProcesses = GetWordProcesses();
                 var excelProcesses = GetExcelProcesses();
+                
+                // Add these variable declarations
+                var wordCount = wordProcesses.Length;
+                var excelCount = excelProcesses.Length;
 
                 _logger.Information("Process Status - Word: {WordCount} processes, Excel: {ExcelCount} processes", 
-                    wordProcesses.Length, excelProcesses.Length);
+                    wordCount, excelCount);
 
-                // Log details for each Word process
+                // Only log process details if there are issues or in verbose mode
+                var orphanedWordCount = 0;
+                var highMemoryWordCount = 0;
+                
                 foreach (var process in wordProcesses)
                 {
                     try
@@ -223,20 +230,37 @@ namespace DocHandler.Services
                         var isOrphaned = IsOrphanedProcess(process);
                         var memoryMB = process.WorkingSet64 / (1024 * 1024);
                         
-                        _logger.Debug("Word Process PID {ProcessId}: Memory {MemoryMB}MB, Orphaned: {IsOrphaned}, Responding: {Responding}", 
-                            process.Id, memoryMB, isOrphaned, process.Responding);
+                        if (isOrphaned) orphanedWordCount++;
+                        if (memoryMB > 500) highMemoryWordCount++; // Flag processes using > 500MB
+                        
+                        // Only log individual processes if they're problematic
+                        if (isOrphaned || memoryMB > 500 || !process.Responding)
+                        {
+                            _logger.Warning("Problematic Word Process PID {ProcessId}: Memory {MemoryMB}MB, Orphaned: {IsOrphaned}, Responding: {Responding}", 
+                                process.Id, memoryMB, isOrphaned, process.Responding);
+                        }
                     }
                     catch (Exception ex)
                     {
-                        _logger.Warning(ex, "Error logging Word process info for PID {ProcessId}", process.Id);
+                        _logger.Debug(ex, "Error checking Word process info for PID {ProcessId}", process.Id);
                     }
                     finally
                     {
                         process.Dispose();
                     }
                 }
+                
+                // Log summary instead of individual processes
+                if (wordCount > 0)
+                {
+                    _logger.Debug("Word processes: {Total} total, {Orphaned} orphaned, {HighMemory} high memory", 
+                        wordCount, orphanedWordCount, highMemoryWordCount);
+                }
 
-                // Log details for each Excel process
+                // Only log Excel process details if there are issues
+                var orphanedExcelCount = 0;
+                var highMemoryExcelCount = 0;
+                
                 foreach (var process in excelProcesses)
                 {
                     try
@@ -244,17 +268,31 @@ namespace DocHandler.Services
                         var isOrphaned = IsOrphanedProcess(process);
                         var memoryMB = process.WorkingSet64 / (1024 * 1024);
                         
-                        _logger.Debug("Excel Process PID {ProcessId}: Memory {MemoryMB}MB, Orphaned: {IsOrphaned}, Responding: {Responding}", 
-                            process.Id, memoryMB, isOrphaned, process.Responding);
+                        if (isOrphaned) orphanedExcelCount++;
+                        if (memoryMB > 500) highMemoryExcelCount++;
+                        
+                        // Only log individual processes if they're problematic
+                        if (isOrphaned || memoryMB > 500 || !process.Responding)
+                        {
+                            _logger.Warning("Problematic Excel Process PID {ProcessId}: Memory {MemoryMB}MB, Orphaned: {IsOrphaned}, Responding: {Responding}", 
+                                process.Id, memoryMB, isOrphaned, process.Responding);
+                        }
                     }
                     catch (Exception ex)
                     {
-                        _logger.Warning(ex, "Error logging Excel process info for PID {ProcessId}", process.Id);
+                        _logger.Debug(ex, "Error checking Excel process info for PID {ProcessId}", process.Id);
                     }
                     finally
                     {
                         process.Dispose();
                     }
+                }
+                
+                // Log summary for Excel processes
+                if (excelCount > 0)
+                {
+                    _logger.Debug("Excel processes: {Total} total, {Orphaned} orphaned, {HighMemory} high memory", 
+                        excelCount, orphanedExcelCount, highMemoryExcelCount);
                 }
             }
             catch (Exception ex)

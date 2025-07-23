@@ -108,8 +108,18 @@ namespace DocHandler.Services
                     _wordUseCount++;
                     stopwatch.Stop();
 
-                    _logger.Information("Converted {File} to PDF in {Ms}ms (Use #{Count})",
-                        Path.GetFileName(inputPath), stopwatch.ElapsedMilliseconds, _wordUseCount);
+                    // Only log if conversion was slow or verbose logging is enabled
+                    var slowThreshold = 1000; // milliseconds
+                    if (stopwatch.ElapsedMilliseconds > slowThreshold)
+                    {
+                        _logger.Warning("Slow conversion: {File} to PDF in {Ms}ms (Use #{Count})",
+                            Path.GetFileName(inputPath), stopwatch.ElapsedMilliseconds, _wordUseCount);
+                    }
+                    else
+                    {
+                        _logger.Debug("Converted {File} to PDF in {Ms}ms (Use #{Count})",
+                            Path.GetFileName(inputPath), stopwatch.ElapsedMilliseconds, _wordUseCount);
+                    }
 
                     if (singleUse)
                     {

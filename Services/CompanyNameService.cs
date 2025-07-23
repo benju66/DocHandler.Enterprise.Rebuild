@@ -88,7 +88,7 @@ namespace DocHandler.Services
         
         // Async loading support
         private readonly SemaphoreSlim _dataLoadSemaphore = new(1);
-        private bool _dataLoaded = false;
+        private volatile bool _dataLoaded = false;
         private Task? _loadingTask;
         
         // Performance metrics
@@ -159,13 +159,24 @@ namespace DocHandler.Services
         {
             get
             {
-                // Return empty list if data not loaded yet to avoid deadlocks
+                // Use volatile read for thread safety
                 if (!_dataLoaded)
                 {
-                    _logger.Warning("Companies accessed before data loaded, returning empty list");
-                    return new List<CompanyInfo>();
+                    // Try to load data synchronously if not already loaded
+                    // This is safe because EnsureDataLoadedAsync uses a semaphore
+                    var loadTask = EnsureDataLoadedAsync();
+                    if (loadTask.IsCompleted)
+                    {
+                        loadTask.GetAwaiter().GetResult();
+                    }
+                    else
+                    {
+                        // If loading is in progress, return empty list to avoid blocking
+                        _logger.Warning("Companies accessed while data is loading, returning empty list");
+                        return new List<CompanyInfo>();
+                    }
                 }
-                return _data.Companies;
+                return _data?.Companies ?? new List<CompanyInfo>();
             }
         }
         
@@ -1917,7 +1928,10 @@ namespace DocHandler.Services
         
         public async Task IncrementUsageCount(string companyName)
         {
-            var company = _data.Companies.FirstOrDefault(c => 
+            // Ensure data is loaded before accessing
+            await EnsureDataLoadedAsync();
+            
+            var company = _data?.Companies?.FirstOrDefault(c => 
                 c.Name.Equals(companyName, StringComparison.OrdinalIgnoreCase));
             
             if (company != null)
@@ -1930,18 +1944,28 @@ namespace DocHandler.Services
         
         public List<CompanyInfo> GetMostUsedCompanies(int count = 10)
         {
-            // Return empty list if data not loaded yet to avoid deadlocks
+            // Use volatile read for thread safety
             if (!_dataLoaded)
             {
-                _logger.Warning("GetMostUsedCompanies called before data loaded, returning empty list");
-                return new List<CompanyInfo>();
+                // Try to load data synchronously if not already loaded
+                var loadTask = EnsureDataLoadedAsync();
+                if (loadTask.IsCompleted)
+                {
+                    loadTask.GetAwaiter().GetResult();
+                }
+                else
+                {
+                    // If loading is in progress, return empty list to avoid blocking
+                    _logger.Warning("GetMostUsedCompanies called while data is loading, returning empty list");
+                    return new List<CompanyInfo>();
+                }
             }
             
-            return _data.Companies
+            return _data?.Companies?
                 .OrderByDescending(c => c.UsageCount)
                 .ThenByDescending(c => c.LastUsed)
                 .Take(count)
-                .ToList();
+                .ToList() ?? new List<CompanyInfo>();
         }
         
         public List<CompanyInfo> SearchCompanies(string searchTerm)

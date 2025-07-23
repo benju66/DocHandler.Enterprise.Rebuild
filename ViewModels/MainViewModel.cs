@@ -19,6 +19,7 @@ using System.Windows.Data;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using DocHandler.Services;
+using DocHandler.Services.Configuration;
 using DocHandler.Views;
 using DocHandler.Models;
 using DocHandler.ViewModels;
@@ -1708,6 +1709,19 @@ namespace DocHandler.ViewModels
             return sanitized;
         }
         
+        /// <summary>
+        /// Gets the effective company name for processing (user input or detected)
+        /// </summary>
+        private string GetEffectiveCompanyName()
+        {
+            // Use typed value first, then detected value
+            var companyName = !string.IsNullOrWhiteSpace(CompanyNameInput) 
+                ? CompanyNameInput.Trim() 
+                : DetectedCompanyName?.Trim();
+            
+            return companyName ?? string.Empty;
+        }
+        
         [RelayCommand]
         private async Task ProcessFiles()
         {
@@ -2614,222 +2628,284 @@ namespace DocHandler.ViewModels
         {
             try
             {
-                // Quick validation and UI state capture on UI thread
-                if (!SaveQuotesMode || string.IsNullOrEmpty(SelectedScope))
-                {
-                    MessageBox.Show("Please select a scope of work first.", "Save Quotes", 
-                        MessageBoxButton.OK, MessageBoxImage.Information);
-                    return;
-                }
-
-                // Get company name - use typed value first, then detected value  
-                var companyName = !string.IsNullOrWhiteSpace(CompanyNameInput) 
-                    ? CompanyNameInput.Trim() 
-                    : DetectedCompanyName?.Trim();
+                // Check configuration for processing mode
+                var saveQuotesConfig = _configService.Config.SaveQuotes;
                 
-                if (string.IsNullOrWhiteSpace(companyName))
+                if (saveQuotesConfig.DefaultProcessingMode == ProcessingMode.Pipeline ||
+                    saveQuotesConfig.DefaultProcessingMode == ProcessingMode.Hybrid)
                 {
-                    MessageBox.Show("Please enter a company name or wait for automatic detection.", 
-                        "Company Name Required", 
-                        MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
+                    // Use the secure pipeline architecture
+                    await ProcessSaveQuotesWithPipeline();
                 }
-
-                // Validate and prepare files inline (PrepareFilesForProcessing method was removed)  
-                var pendingValidation = PendingFiles.Where(f => 
-                    f.ValidationStatus == ValidationStatus.Pending || 
-                    f.ValidationStatus == ValidationStatus.Validating).ToList();
-                    
-                if (pendingValidation.Any())
+                else
                 {
-                    MessageBox.Show("Please wait for file validation to complete.", 
-                        "Validation in Progress", 
-                        MessageBoxButton.OK, 
-                        MessageBoxImage.Information);
-                    return;
+                    // Legacy queue processing (for backward compatibility only)
+                    await ProcessSaveQuotesLegacy();
                 }
-                
-                var invalidFiles = PendingFiles.Where(f => 
-                    f.ValidationStatus == ValidationStatus.Invalid).ToList();
-                    
-                if (invalidFiles.Any())
-                {
-                    var message = $"The following files are invalid and will be skipped:\n\n" +
-                        string.Join("\n", invalidFiles.Select(f => $"• {f.FileName}: {f.ValidationError}"));
-                        
-                    MessageBox.Show(message, "Invalid Files", 
-                        MessageBoxButton.OK, MessageBoxImage.Warning);
-                        
-                    foreach (var invalid in invalidFiles)
-                    {
-                        PendingFiles.Remove(invalid);
-                    }
-                }
-                
-                var validFiles = PendingFiles.Where(f => 
-                    f.ValidationStatus == ValidationStatus.Valid).ToList();
-
-                if (!validFiles.Any())
-                {
-                    await _uiStateService.UpdateStatusAsync("No valid quote documents to process");
-                    return;
-                }
-
-                                // Set processing state using UIStateService
-                await _uiStateService.SetProcessingAsync(true);
-                await _uiStateService.UpdateStatusAsync("Adding quotes to processing queue...");
-
-                // Create processing request for Save Quotes
-                var parameters = new Dictionary<string, object>
-                {
-                    ["Scope"] = SelectedScope,
-                    ["CompanyName"] = companyName
-                };
-
-                var outputDir = !string.IsNullOrEmpty(SessionSaveLocation) 
-                    ? SessionSaveLocation 
-                    : _configService.Config.DefaultSaveLocation;
-
-                var request = new ProcessingRequest
-                {
-                    Files = validFiles,
-                    OutputDirectory = outputDir,
-                    Parameters = parameters
-                };
-
-                // Execute Save Quotes processing using existing logic
-                // TODO: Refactor to use command handler service in next iteration
-                await ProcessSaveQuotesBackground(SelectedScope, companyName, validFiles, outputDir, validFiles.Count);
-                
-                // Clear processed files and update UI
-                PendingFiles.Clear();
-                CompanyNameInput = "";
-                DetectedCompanyName = "";
-                await _uiStateService.UpdateStatusAsync("Quotes added to processing queue");
-                
-                // Clear scope if setting is enabled
-                if (_configService.Config.ClearScopeAfterProcessing)
-                {
-                    ScopeSearchText = "";
-                    SelectedScope = null;
-                }
-                
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Unexpected error in ProcessSaveQuotes");
+                _logger.Error(ex, "Failed to process save quotes");
+                await _uiStateService.UpdateStatusAsync("Processing failed");
+                MessageBox.Show($"An error occurred: {ex.Message}", "Error", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        
+        /// <summary>
+        /// Process save quotes using the secure pipeline architecture
+        /// </summary>
+        private async Task ProcessSaveQuotesWithPipeline()
+        {
+            try
+            {
+                await _uiStateService.SetProcessingAsync(true);
                 
+                // Validate required fields
+                if (string.IsNullOrWhiteSpace(SelectedScope))
+                {
+                    await _uiStateService.UpdateStatusAsync("Please select a scope of work");
+                    MessageBox.Show("Please select a scope of work before processing.", 
+                        "Missing Information", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                
+                // Determine company name
+                var companyName = GetEffectiveCompanyName();
+                if (string.IsNullOrWhiteSpace(companyName))
+                {
+                    await _uiStateService.UpdateStatusAsync("Please enter a company name");
+                    MessageBox.Show("Please enter a company name before processing.", 
+                        "Missing Information", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                
+                // Get valid files
+                var validFiles = PendingFiles.Where(f => f.ValidationStatus == ValidationStatus.Valid).ToList();
+                if (!validFiles.Any())
+                {
+                    await _uiStateService.UpdateStatusAsync("No valid files to process");
+                    MessageBox.Show("No valid files to process. Please add files first.", 
+                        "No Files", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                
+                // Check mode manager availability
+                if (_modeManager == null)
+                {
+                    _logger.Error("Mode manager not available for pipeline processing");
+                    await _uiStateService.UpdateStatusAsync("Pipeline processing unavailable");
+                    
+                    // Fallback to queue if enabled
+                    if (_configService.Config.SaveQuotes.EnableQueueFallback)
+                    {
+                        _logger.Warning("Falling back to queue processing");
+                        await ProcessSaveQuotesLegacy();
+                        return;
+                    }
+                    
+                    MessageBox.Show("Pipeline processing is not available. Please restart the application.", 
+                        "Service Unavailable", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                
+                _logger.Information("Processing {FileCount} files using SaveQuotes pipeline", validFiles.Count);
+                
+                // Create processing request with pipeline flag
+                var request = new ProcessingRequest
+                {
+                    Files = validFiles,
+                    OutputDirectory = SessionSaveLocation ?? _configService.Config.DefaultSaveLocation,
+                    Parameters = new Dictionary<string, object>
+                    {
+                        ["scope"] = SelectedScope,
+                        ["companyName"] = companyName,
+                        ["usePipeline"] = true,  // CRITICAL: Enable pipeline processing
+                        ["enableSecurityValidation"] = _configService.Config.SaveQuotes.EnableSecurityValidation,
+                        ["maxRetryAttempts"] = _configService.Config.SaveQuotes.MaxRetryAttempts
+                    }
+                };
+                
+                // Process using mode system with pipeline
+                var result = await _modeManager.ProcessFilesAsync(
+                    request.Files, 
+                    request.OutputDirectory, 
+                    request.Parameters);
+                
+                // Handle results
                 await Application.Current.Dispatcher.InvokeAsync(async () =>
                 {
-                    await _uiStateService.UpdateStatusAsync("Save Quotes processing failed");
-                    MessageBox.Show($"An unexpected error occurred: {ex.Message}", 
-                        "Error", 
-                        MessageBoxButton.OK, 
-                        MessageBoxImage.Error);
+                    if (result.Success)
+                    {
+                        await _uiStateService.UpdateStatusAsync($"Successfully processed {result.ProcessedFiles.Count} files");
+                        
+                        // Clear UI
+                        PendingFiles.Clear();
+                        CompanyNameInput = "";
+                        DetectedCompanyName = "";
+                        
+                        // Clear scope if configured
+                        if (_configService.Config.ClearScopeAfterProcessing)
+                        {
+                            ScopeSearchText = "";
+                            SelectedScope = null;
+                        }
+                        
+                        // Open output folder if configured
+                        if (_configService.Config.OpenFolderAfterProcessing == true && !string.IsNullOrEmpty(request.OutputDirectory))
+                        {
+                            OpenOutputFolder(request.OutputDirectory);
+                        }
+                        
+                        _logger.Information("Pipeline processing completed successfully");
+                    }
+                    else
+                    {
+                        await _uiStateService.UpdateStatusAsync($"Processing failed: {result.ErrorMessage}");
+                        
+                        var failedCount = result.ProcessedFiles.Count(f => !f.Success);
+                        var message = $"Processing completed with errors:\n\n" +
+                                    $"Total files: {result.ProcessedFiles.Count}\n" +
+                                    $"Failed: {failedCount}\n\n" +
+                                    $"Error: {result.ErrorMessage}";
+                        
+                        MessageBox.Show(message, "Processing Errors", 
+                            MessageBoxButton.OK, MessageBoxImage.Warning);
+                        
+                        _logger.Error("Pipeline processing failed: {Error}", result.ErrorMessage);
+                    }
                 });
             }
             finally
             {
-                                await Application.Current.Dispatcher.InvokeAsync(async () =>
-                {
-                    await _uiStateService.SetProcessingAsync(false);
-                    UpdateUI();
-                });
+                await _uiStateService.SetProcessingAsync(false);
+                UpdateUI();
             }
         }
-
-        private async Task ProcessSaveQuotesBackground(string selectedScope, string companyName, List<FileItem> pendingFilesList, string sessionSaveLocation, int fileCount)
+        
+        /// <summary>
+        /// Legacy queue-based processing (for backward compatibility)
+        /// </summary>
+        private async Task ProcessSaveQuotesLegacy()
         {
             try
             {
-                // Get or create queue service
-                SaveQuotesQueueService queueService;
-                try
+                await _uiStateService.SetProcessingAsync(true);
+                
+                // Validate required fields
+                if (string.IsNullOrWhiteSpace(SelectedScope))
                 {
-                    queueService = GetOrCreateQueueService();
-                }
-                catch (Exception ex)
-                {
-                    await Application.Current.Dispatcher.InvokeAsync(async () =>
-                    {
-                        await _uiStateService.UpdateStatusAsync("Queue service initialization failed");
-                        MessageBox.Show(
-                            $"The queue service could not be initialized:\n\n{ex.Message}",
-                            "Service Unavailable",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Error);
-                    });
+                    await _uiStateService.UpdateStatusAsync("Please select a scope of work");
+                    MessageBox.Show("Please select a scope of work before processing.", 
+                        "Missing Information", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
                 
-                // Sanitize company name for use in filename
-                companyName = SanitizeFileName(companyName);
-
-                var outputDir = !string.IsNullOrEmpty(sessionSaveLocation) 
-                    ? sessionSaveLocation 
-                    : _configService.Config.DefaultSaveLocation;
-                
-                // Add to queue instead of processing directly
-                foreach (var file in pendingFilesList)
+                // Determine company name
+                var companyName = GetEffectiveCompanyName();
+                if (string.IsNullOrWhiteSpace(companyName))
                 {
-                    queueService.AddToQueue(file, selectedScope, companyName, outputDir);
+                    await _uiStateService.UpdateStatusAsync("Please enter a company name");
+                    MessageBox.Show("Please enter a company name before processing.", 
+                        "Missing Information", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
                 }
                 
-                // Clear pending files from the UI
+                // Get valid files
+                var validFiles = PendingFiles.Where(f => f.ValidationStatus == ValidationStatus.Valid).ToList();
+                if (!validFiles.Any())
+                {
+                    await _uiStateService.UpdateStatusAsync("No valid files to process");
+                    MessageBox.Show("No valid files to process. Please add files first.", 
+                        "No Files", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                
+                // Check mode manager availability
+                if (_modeManager == null)
+                {
+                    _logger.Error("Mode manager not available for queue processing");
+                    await _uiStateService.UpdateStatusAsync("Queue processing unavailable");
+                    
+                    // Fallback to direct processing if no other option
+                    _logger.Warning("Queue processing unavailable with no fallback");
+                    
+                    MessageBox.Show("Queue processing is not available. Please restart the application.", 
+                        "Service Unavailable", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                
+                _logger.Information("Processing {FileCount} files using SaveQuotes queue", validFiles.Count);
+                
+                // Create processing request with queue flag
+                var request = new ProcessingRequest
+                {
+                    Files = validFiles,
+                    OutputDirectory = SessionSaveLocation ?? _configService.Config.DefaultSaveLocation,
+                    Parameters = new Dictionary<string, object>
+                    {
+                        ["scope"] = SelectedScope,
+                        ["companyName"] = companyName,
+                        ["useQueue"] = true,  // CRITICAL: Enable queue processing
+                        ["enableSecurityValidation"] = _configService.Config.SaveQuotes.EnableSecurityValidation,
+                        ["maxRetryAttempts"] = _configService.Config.SaveQuotes.MaxRetryAttempts
+                    }
+                };
+                
+                // Process using mode system with queue
+                var result = await _modeManager.ProcessFilesAsync(
+                    request.Files, 
+                    request.OutputDirectory, 
+                    request.Parameters);
+                
+                // Handle results
                 await Application.Current.Dispatcher.InvokeAsync(async () =>
                 {
-                    PendingFiles.Clear();
-                    CompanyNameInput = "";
-                    DetectedCompanyName = "";
-                    await _uiStateService.UpdateStatusAsync($"Added {fileCount} quote(s) to queue");
-                    
-                    // Clear scope if setting is enabled
-                    if (_configService.Config.ClearScopeAfterProcessing)
+                    if (result.Success)
                     {
-                        ScopeSearchText = "";
-                        SelectedScope = null;
+                        await _uiStateService.UpdateStatusAsync($"Successfully processed {result.ProcessedFiles.Count} files");
+                        
+                        // Clear UI
+                        PendingFiles.Clear();
+                        CompanyNameInput = "";
+                        DetectedCompanyName = "";
+                        
+                        // Clear scope if configured
+                        if (_configService.Config.ClearScopeAfterProcessing)
+                        {
+                            ScopeSearchText = "";
+                            SelectedScope = null;
+                        }
+                        
+                        // Open output folder if configured
+                        if (_configService.Config.OpenFolderAfterProcessing == true && !string.IsNullOrEmpty(request.OutputDirectory))
+                        {
+                            OpenOutputFolder(request.OutputDirectory);
+                        }
+                        
+                        _logger.Information("Queue processing completed successfully");
+                    }
+                    else
+                    {
+                        await _uiStateService.UpdateStatusAsync($"Processing failed: {result.ErrorMessage}");
+                        
+                        var failedCount = result.ProcessedFiles.Count(f => !f.Success);
+                        var message = $"Processing completed with errors:\n\n" +
+                                    $"Total files: {result.ProcessedFiles.Count}\n" +
+                                    $"Failed: {failedCount}\n\n" +
+                                    $"Error: {result.ErrorMessage}";
+                        
+                        MessageBox.Show(message, "Processing Errors", 
+                            MessageBoxButton.OK, MessageBoxImage.Warning);
+                        
+                        _logger.Error("Queue processing failed: {Error}", result.ErrorMessage);
                     }
                 });
-                
-                // Start processing if not already running
-                if (!queueService.IsProcessing)
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            await queueService.StartProcessingAsync();
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.Error(ex, "Failed to start queue processing");
-                            
-                                                    await Application.Current.Dispatcher.InvokeAsync(async () =>
-                        {
-                            await _uiStateService.UpdateStatusAsync("Queue processing failed");
-                            MessageBox.Show(
-                                    $"Failed to start queue processing:\n\n{ex.Message}",
-                                    "Queue Error",
-                                    MessageBoxButton.OK,
-                                    MessageBoxImage.Error);
-                            });
-                        }
-                    });
-                }
             }
-            catch (Exception ex)
+            finally
             {
-                _logger.Error(ex, "Unexpected error during save quotes processing");
-                
-                await Application.Current.Dispatcher.InvokeAsync(async () =>
-                {
-                    await _uiStateService.UpdateStatusAsync($"Error: {ex.Message}");
-                    MessageBox.Show(
-                        $"An unexpected error occurred:\n\n{ex.Message}",
-                        "Error",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Error);
-                });
+                await _uiStateService.SetProcessingAsync(false);
+                UpdateUI();
             }
         }
 

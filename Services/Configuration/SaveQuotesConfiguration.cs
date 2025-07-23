@@ -1,115 +1,146 @@
-using System.ComponentModel.DataAnnotations;
+using System;
+using System.ComponentModel;
 
 namespace DocHandler.Services.Configuration
 {
     /// <summary>
-    /// Strongly-typed configuration for SaveQuotes mode
+    /// Configuration settings specific to SaveQuotes processing mode
     /// </summary>
     public class SaveQuotesConfiguration
     {
         /// <summary>
-        /// Whether to automatically scan for company names in files
+        /// The default processing mode for SaveQuotes
         /// </summary>
-        public bool AutoScanCompanyNames { get; set; } = true;
+        [DefaultValue(ProcessingMode.Pipeline)]
+        public ProcessingMode DefaultProcessingMode { get; set; } = ProcessingMode.Pipeline;
 
         /// <summary>
-        /// File size limit in MB for .doc files when scanning for company names
+        /// Enable security validation for all input files
         /// </summary>
-        [Range(1, 100, ErrorMessage = "File size limit must be between 1 and 100 MB")]
-        public int DocFileSizeLimitMB { get; set; } = 10;
+        [DefaultValue(true)]
+        public bool EnableSecurityValidation { get; set; } = true;
 
         /// <summary>
-        /// Whether to scan .doc files for company names (can be slow)
+        /// Maximum number of retry attempts for failed conversions
         /// </summary>
-        public bool ScanDocFiles { get; set; } = false;
+        [DefaultValue(3)]
+        public int MaxRetryAttempts { get; set; } = 3;
 
         /// <summary>
-        /// Whether to clear the scope selection after processing
+        /// Initial delay in milliseconds between retry attempts
         /// </summary>
-        public bool ClearScopeAfterProcessing { get; set; } = false;
+        [DefaultValue(1000)]
+        public int RetryDelayMs { get; set; } = 1000;
 
         /// <summary>
-        /// Whether to show recent scopes in the UI
+        /// Maximum delay in milliseconds between retry attempts
         /// </summary>
-        public bool ShowRecentScopes { get; set; } = false;
+        [DefaultValue(30000)]
+        public int MaxRetryDelayMs { get; set; } = 30000;
 
         /// <summary>
-        /// Default scope of work to pre-select
+        /// Exponential backoff factor for retry delays
         /// </summary>
-        public string DefaultScope { get; set; } = "03-1000";
+        [DefaultValue(2.0)]
+        public double ExponentialBackoffFactor { get; set; } = 2.0;
 
         /// <summary>
-        /// Whether to enable company name detection for this mode
+        /// Enable batch processing for multiple files
         /// </summary>
-        public bool EnableCompanyDetection { get; set; } = true;
+        [DefaultValue(true)]
+        public bool EnableBatchProcessing { get; set; } = true;
 
         /// <summary>
-        /// Maximum number of files to process concurrently in this mode
+        /// Number of files to process in each batch
         /// </summary>
-        [Range(1, 10, ErrorMessage = "Max concurrency must be between 1 and 10")]
-        public int MaxConcurrency { get; set; } = 3;
+        [DefaultValue(10)]
+        public int BatchSize { get; set; } = 10;
 
         /// <summary>
-        /// Timeout for individual file processing in seconds
+        /// Maximum concurrent file processing operations
         /// </summary>
-        [Range(30, 600, ErrorMessage = "Timeout must be between 30 and 600 seconds")]
-        public int ProcessingTimeoutSeconds { get; set; } = 300;
+        [DefaultValue(4)]
+        public int MaxConcurrency { get; set; } = 4;
 
         /// <summary>
-        /// Whether to organize files by company name in subfolders
+        /// Enable verbose logging for debugging
         /// </summary>
-        public bool OrganizeByCompany { get; set; } = true;
+        [DefaultValue(false)]
+        public bool EnableVerboseLogging { get; set; } = false;
+        
+        /// <summary>
+        /// Log every Nth file to reduce log volume (1 = log every file, 10 = log every 10th file)
+        /// </summary>
+        [DefaultValue(10)]
+        public int LogEveryNthFile { get; set; } = 10;
 
         /// <summary>
-        /// Whether to organize files by scope of work in subfolders
+        /// Threshold in milliseconds for logging slow operations
         /// </summary>
-        public bool OrganizeByScope { get; set; } = true;
+        [DefaultValue(1000)]
+        public int SlowOperationThresholdMs { get; set; } = 1000;
 
         /// <summary>
-        /// Custom naming pattern for processed files
-        /// Available placeholders: {CompanyName}, {Scope}, {OriginalName}, {Date}, {Time}
+        /// Maximum cache size in MB for PDF conversions
         /// </summary>
-        public string FileNamingPattern { get; set; } = "{CompanyName}_{Scope}_{OriginalName}";
+        [DefaultValue(500)]
+        public long MaxCacheSizeMB { get; set; } = 500;
 
         /// <summary>
-        /// Whether to generate processing reports
+        /// Cache sliding expiration in minutes
         /// </summary>
-        public bool GenerateReports { get; set; } = true;
+        [DefaultValue(30)]
+        public int CacheSlidingExpirationMinutes { get; set; } = 30;
+
+        /// <summary>
+        /// Enable circuit breaker for conversion operations
+        /// </summary>
+        [DefaultValue(true)]
+        public bool EnableCircuitBreaker { get; set; } = true;
+
+        /// <summary>
+        /// Circuit breaker failure threshold
+        /// </summary>
+        [DefaultValue(5)]
+        public int CircuitBreakerFailureThreshold { get; set; } = 5;
+
+        /// <summary>
+        /// Circuit breaker sampling duration
+        /// </summary>
+        [DefaultValue("00:01:00")]
+        public TimeSpan CircuitBreakerSamplingDuration { get; set; } = TimeSpan.FromMinutes(1);
+
+        /// <summary>
+        /// Circuit breaker break duration
+        /// </summary>
+        [DefaultValue("00:00:30")]
+        public TimeSpan CircuitBreakerBreakDuration { get; set; } = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// Enable fallback to queue processing if pipeline fails
+        /// </summary>
+        [DefaultValue(false)]
+        public bool EnableQueueFallback { get; set; } = false;
     }
 
     /// <summary>
-    /// UI customization settings for SaveQuotes mode
+    /// Processing mode for SaveQuotes
     /// </summary>
-    public class SaveQuotesUIConfiguration
+    public enum ProcessingMode
     {
         /// <summary>
-        /// Whether to show company detection panel
+        /// Use the secure pipeline architecture with validation
         /// </summary>
-        public bool ShowCompanyDetection { get; set; } = true;
+        Pipeline,
 
         /// <summary>
-        /// Whether to show scope selector
+        /// Use legacy queue-based processing
         /// </summary>
-        public bool ShowScopeSelector { get; set; } = true;
+        Queue,
 
         /// <summary>
-        /// Whether to use compact mode (smaller UI elements)
+        /// Use pipeline with queue for background processing
         /// </summary>
-        public bool CompactMode { get; set; } = false;
-
-        /// <summary>
-        /// Whether to show progress details
-        /// </summary>
-        public bool ShowProgressDetails { get; set; } = true;
-
-        /// <summary>
-        /// Whether to show recent locations panel
-        /// </summary>
-        public bool ShowRecentLocations { get; set; } = true;
-
-        /// <summary>
-        /// Whether to show queue management buttons
-        /// </summary>
-        public bool ShowQueueManagement { get; set; } = true;
+        Hybrid
     }
 } 
