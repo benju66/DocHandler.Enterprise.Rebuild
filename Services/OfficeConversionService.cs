@@ -11,7 +11,7 @@ using Task = System.Threading.Tasks.Task;
 
 namespace DocHandler.Services
 {
-    public class OfficeConversionService : IDisposable
+    public class OfficeConversionService : IOfficeConversionService
     {
         private readonly ILogger _logger;
         private dynamic? _wordApp;
@@ -90,18 +90,18 @@ namespace DocHandler.Services
             return false;
         }
         
-        public async Task<ConversionResult> ConvertWordToPdf(string inputPath, string outputPath)
+        public async Task<OfficeConversionResult> ConvertWordToPdf(string inputPath, string outputPath)
         {
             if (!IsOfficeAvailable())
             {
-                return new ConversionResult
+                return new OfficeConversionResult
                 {
                     Success = false,
                     ErrorMessage = "Microsoft Office is not installed or accessible. Please install Microsoft Office to convert Word documents to PDF."
                 };
             }
 
-            var result = new ConversionResult();
+            var result = new OfficeConversionResult();
             
             // Add file size validation
             var fileInfo = new FileInfo(inputPath);
@@ -262,9 +262,9 @@ namespace DocHandler.Services
             return result;
         }
         
-        private ConversionResult ConvertWordToPdfSync(string inputPath, string outputPath)
+        private OfficeConversionResult ConvertWordToPdfSync(string inputPath, string outputPath)
         {
-            var result = new ConversionResult();
+            var result = new OfficeConversionResult();
             dynamic? doc = null;
             
             // Validate apartment state for synchronous operations
@@ -368,11 +368,11 @@ namespace DocHandler.Services
             return result;
         }
         
-        public async System.Threading.Tasks.Task<ConversionResult> ConvertExcelToPdf(string inputPath, string outputPath)
+        public async System.Threading.Tasks.Task<OfficeConversionResult> ConvertExcelToPdf(string inputPath, string outputPath)
         {
             if (!IsOfficeAvailable())
             {
-                return new ConversionResult
+                return new OfficeConversionResult
                 {
                     Success = false,
                     ErrorMessage = "Microsoft Office is not installed or accessible. Please install Microsoft Office to convert Excel documents to PDF."
@@ -382,7 +382,7 @@ namespace DocHandler.Services
             _logger.Information("Converting Excel to PDF: {ExcelPath} -> {PdfPath}", inputPath, outputPath);
 
             // CRITICAL FIX: Remove Task.Run - already on STA thread from caller
-            var result = new ConversionResult();
+            var result = new OfficeConversionResult();
             dynamic? workbook = null;
 
             lock (_excelLock)
@@ -490,6 +490,12 @@ namespace DocHandler.Services
             return IsOfficeAvailable();
         }
         
+        public void Cleanup()
+        {
+            // Implement cleanup logic for Office resources
+            Dispose();
+        }
+
         public void Dispose()
         {
             Dispose(true);
@@ -610,7 +616,7 @@ namespace DocHandler.Services
         }
     }
     
-    public class ConversionResult
+    public class OfficeConversionResult
     {
         public bool Success { get; set; }
         public string? OutputPath { get; set; }

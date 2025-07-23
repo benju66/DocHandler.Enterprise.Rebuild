@@ -5,21 +5,42 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Serilog;
+using System.Linq; // Added for .Take() and .Distinct()
 
 namespace DocHandler.Services
 {
-    public class ConfigurationService : IConfigurationService
+    public class ConfigurationService : IConfigurationService, IDisposable
     {
         private readonly ILogger _logger;
         private readonly string _configPath;
         private AppConfiguration _config;
         
+        // Thread-safe configuration access
+        private readonly ReaderWriterLockSlim _configLock = new(LockRecursionPolicy.SupportsRecursion);
+        private readonly SemaphoreSlim _saveSemaphore = new(1, 1);
+        private readonly SemaphoreSlim _loadSemaphore = new(1, 1);
+        
         // Debouncing for configuration saves
         private Timer? _saveTimer;
-        private readonly SemaphoreSlim _saveSemaphore = new(1);
-        private bool _saveScheduled = false;
+        private volatile bool _saveScheduled = false;
+        private volatile bool _disposed = false;
+        private readonly object _timerLock = new object();
         
-        public AppConfiguration Config => _config;
+        public AppConfiguration Config 
+        { 
+            get
+            {
+                _configLock.EnterReadLock();
+                try
+                {
+                    return _config;
+                }
+                finally
+                {
+                    _configLock.ExitReadLock();
+                }
+            }
+        }
         
         public ConfigurationService()
         {
@@ -29,24 +50,35 @@ namespace DocHandler.Services
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             var appFolder = Path.Combine(appDataPath, "DocHandler");
             
-            // Create directory asynchronously to avoid blocking
-            _ = Task.Run(() => Directory.CreateDirectory(appFolder));
-            
-            _configPath = Path.Combine(appFolder, "config.json");
-            _config = LoadConfiguration();
+            try
+            {
+                Directory.CreateDirectory(appFolder);
+                _configPath = Path.Combine(appFolder, "config.json");
+                _config = LoadConfigurationInternal();
+                
+                _logger.Information("Configuration service initialized with path: {Path}", _configPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to initialize configuration service");
+                _config = CreateDefaultConfiguration();
+            }
         }
         
-        private AppConfiguration LoadConfiguration()
+        private AppConfiguration LoadConfigurationInternal()
         {
             try
             {
                 if (File.Exists(_configPath))
                 {
                     var json = File.ReadAllText(_configPath);
-                    var config = JsonSerializer.Deserialize<AppConfiguration>(json);
+                    var config = JsonSerializer.Deserialize<AppConfiguration>(json, GetJsonOptions());
                     
                     if (config != null)
                     {
+                        // Validate and sanitize loaded configuration
+                        ValidateAndSanitizeConfiguration(config);
+                        
                         _logger.Information("Configuration loaded from {Path}", _configPath);
                         return config;
                     }
@@ -54,7 +86,10 @@ namespace DocHandler.Services
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Failed to load configuration");
+                _logger.Error(ex, "Failed to load configuration from {Path}", _configPath);
+                
+                // Try to backup corrupted config
+                TryBackupCorruptedConfig();
             }
             
             // Return default configuration
@@ -62,33 +97,179 @@ namespace DocHandler.Services
             return CreateDefaultConfiguration();
         }
         
-        /// <summary>
-        /// Loads configuration asynchronously
-        /// </summary>
-        public async Task<AppConfiguration> LoadConfigurationAsync()
+        private void TryBackupCorruptedConfig()
         {
             try
             {
                 if (File.Exists(_configPath))
                 {
-                    var json = await File.ReadAllTextAsync(_configPath).ConfigureAwait(false);
-                    var config = JsonSerializer.Deserialize<AppConfiguration>(json);
-                    
-                    if (config != null)
-                    {
-                        _logger.Information("Configuration loaded asynchronously from {Path}", _configPath);
-                        return config;
-                    }
+                    var backupPath = $"{_configPath}.backup.{DateTime.UtcNow:yyyyMMdd_HHmmss}";
+                    File.Copy(_configPath, backupPath);
+                    _logger.Information("Backed up corrupted config to {BackupPath}", backupPath);
                 }
             }
             catch (Exception ex)
             {
+                _logger.Warning(ex, "Failed to backup corrupted configuration");
+            }
+        }
+        
+        /// <summary>
+        /// Loads configuration asynchronously with proper error handling
+        /// </summary>
+        public async Task<AppConfiguration> LoadConfigurationAsync()
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(ConfigurationService));
+            
+            await _loadSemaphore.WaitAsync();
+            try
+            {
+                return await Task.Run(() =>
+                {
+                    if (File.Exists(_configPath))
+                    {
+                        var json = File.ReadAllText(_configPath);
+                        var config = JsonSerializer.Deserialize<AppConfiguration>(json, GetJsonOptions());
+                        
+                        if (config != null)
+                        {
+                            ValidateAndSanitizeConfiguration(config);
+                            _logger.Information("Configuration loaded asynchronously from {Path}", _configPath);
+                            
+                            // Update current configuration thread-safely
+                            _configLock.EnterWriteLock();
+                            try
+                            {
+                                _config = config;
+                            }
+                            finally
+                            {
+                                _configLock.ExitWriteLock();
+                            }
+                            
+                            return config;
+                        }
+                    }
+                    
+                    _logger.Information("No valid configuration found, using current or default");
+                    return Config; // Return current config if load fails
+                });
+            }
+            catch (Exception ex)
+            {
                 _logger.Error(ex, "Failed to load configuration asynchronously");
+                return Config; // Return current config on error
+            }
+            finally
+            {
+                _loadSemaphore.Release();
+            }
+        }
+        
+        /// <summary>
+        /// Updates configuration with thread safety
+        /// </summary>
+        public void UpdateConfiguration(Action<AppConfiguration> updateAction)
+        {
+            if (_disposed) return;
+            
+            _configLock.EnterWriteLock();
+            try
+            {
+                updateAction(_config);
+                ValidateAndSanitizeConfiguration(_config);
+                
+                // Schedule save after update
+                ScheduleSaveConfiguration();
+            }
+            finally
+            {
+                _configLock.ExitWriteLock();
+            }
+        }
+        
+        /// <summary>
+        /// Updates configuration asynchronously with thread safety
+        /// </summary>
+        public async Task UpdateConfigurationAsync(Func<AppConfiguration, Task> updateAction)
+        {
+            if (_disposed) return;
+            
+            // Create a copy for async operations to avoid holding locks too long
+            AppConfiguration configCopy;
+            _configLock.EnterReadLock();
+            try
+            {
+                configCopy = JsonSerializer.Deserialize<AppConfiguration>(
+                    JsonSerializer.Serialize(_config, GetJsonOptions()), 
+                    GetJsonOptions()) ?? CreateDefaultConfiguration();
+            }
+            finally
+            {
+                _configLock.ExitReadLock();
             }
             
-            // Return default configuration
-            _logger.Information("Using default configuration");
-            return CreateDefaultConfiguration();
+            // Perform async update on copy
+            await updateAction(configCopy);
+            ValidateAndSanitizeConfiguration(configCopy);
+            
+            // Apply updated copy back to main config
+            _configLock.EnterWriteLock();
+            try
+            {
+                _config = configCopy;
+                ScheduleSaveConfiguration();
+            }
+            finally
+            {
+                _configLock.ExitWriteLock();
+            }
+        }
+        
+        private void ValidateAndSanitizeConfiguration(AppConfiguration config)
+        {
+            // Ensure required properties have valid values
+            config.RecentLocations ??= new List<string>();
+            config.DefaultSaveLocation ??= Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+            
+            // Limit recent locations to prevent unbounded growth
+            if (config.RecentLocations.Count > config.MaxRecentLocations)
+            {
+                config.RecentLocations = config.RecentLocations
+                    .Take(config.MaxRecentLocations)
+                    .ToList();
+            }
+            
+            // Validate paths exist or are accessible
+            if (!Directory.Exists(config.DefaultSaveLocation))
+            {
+                _logger.Warning("Default save location does not exist, using Desktop: {Path}", config.DefaultSaveLocation);
+                config.DefaultSaveLocation = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+            }
+            
+            // Remove non-existent recent locations
+            config.RecentLocations = config.RecentLocations
+                .Where(Directory.Exists)
+                .Distinct()
+                .ToList();
+            
+            // Validate numeric limits
+            if (config.MaxRecentLocations <= 0)
+                config.MaxRecentLocations = 10;
+            
+            if (config.MaxParallelProcessing <= 0)
+                config.MaxParallelProcessing = Math.Min(Environment.ProcessorCount, 4);
+        }
+        
+        private JsonSerializerOptions GetJsonOptions()
+        {
+            return new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNameCaseInsensitive = true,
+                AllowTrailingCommas = true,
+                ReadCommentHandling = JsonCommentHandling.Skip
+            };
         }
         
         private AppConfiguration CreateDefaultConfiguration()
@@ -98,136 +279,272 @@ namespace DocHandler.Services
                 DefaultSaveLocation = Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
                 RecentLocations = new List<string>(),
                 MaxRecentLocations = 10,
-                Theme = "Light",
-                RememberWindowPosition = true,
-                WindowLeft = 100,
-                WindowTop = 100,
-                WindowWidth = 800,
-                WindowHeight = 600,
-                WindowState = "Normal",
+                SaveQuotesMode = false,
                 OpenFolderAfterProcessing = true,
-                SaveQuotesMode = true,  // Added - default to true
-                ShowRecentScopes = false,  // Added - default to false (hidden by default)
-                AutoScanCompanyNames = true,  // Added - default to true (enabled)
-                ScanCompanyNamesForDocFiles = false,  // Added - default to false (disabled for .doc files)
-                DocFileSizeLimitMB = 10,  // Added - default to 10MB limit for .doc files
-                ClearScopeAfterProcessing = false  // Added - default to false (keep scope selected)
+                MaxParallelProcessing = Math.Min(Environment.ProcessorCount, 4),
+                EnablePdfCaching = true,
+                PdfCacheExpirationMinutes = 30,
+                
+                // Security settings
+                MaxFileSizeMB = 50,
+                EnableSecurityScanning = true,
+                
+                // Performance settings
+                MemoryUsageLimitMB = 500,
+                ConversionTimeoutSeconds = 30,
+                
+                // UI settings
+                Theme = "Light",
+                ShowAdvancedOptions = false,
+                
+                // Telemetry settings
+                EnableTelemetry = true,
+                TelemetryLevel = "Normal"
             };
         }
-        
-        public async Task SaveConfiguration()
+
+        // Implement interface method
+        public async Task SaveConfigurationAsync()
         {
-            // Use debounced save for better performance
-            await SaveConfigurationDebounced();
+            await SaveConfiguration();
         }
-        
-        /// <summary>
-        /// Saves configuration with debouncing to prevent excessive file writes
-        /// </summary>
-        private async Task SaveConfigurationDebounced()
+
+        public async Task<bool> SaveConfiguration()
         {
-            _saveScheduled = true;
+            if (_disposed) return false;
             
-            // Cancel any existing timer
-            _saveTimer?.Dispose();
-            
-            // Schedule save after 500ms of inactivity
-            _saveTimer = new Timer(async _ => 
-            {
-                if (_saveScheduled)
-                {
-                    _saveScheduled = false;
-                    await SaveConfigurationImmediate();
-                }
-            }, null, 500, Timeout.Infinite);
-        }
-        
-        /// <summary>
-        /// Forces an immediate save of configuration
-        /// </summary>
-        private async Task SaveConfigurationImmediate()
-        {
             await _saveSemaphore.WaitAsync();
             try
             {
-                var options = new JsonSerializerOptions
+                AppConfiguration configToSave;
+                _configLock.EnterReadLock();
+                try
                 {
-                    WriteIndented = true
-                };
+                    configToSave = _config;
+                }
+                finally
+                {
+                    _configLock.ExitReadLock();
+                }
                 
-                var json = JsonSerializer.Serialize(_config, options);
-                await File.WriteAllTextAsync(_configPath, json).ConfigureAwait(false);
+                var json = JsonSerializer.Serialize(configToSave, GetJsonOptions());
+                
+                // Write to temporary file first, then rename (atomic operation)
+                var tempPath = _configPath + ".tmp";
+                await File.WriteAllTextAsync(tempPath, json);
+                
+                // Atomic replace
+                if (File.Exists(_configPath))
+                    File.Delete(_configPath);
+                File.Move(tempPath, _configPath);
                 
                 _logger.Debug("Configuration saved to {Path}", _configPath);
+                return true;
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Failed to save configuration");
+                _logger.Error(ex, "Failed to save configuration to {Path}", _configPath);
+                return false;
             }
             finally
             {
                 _saveSemaphore.Release();
             }
         }
-        
-        // IConfigurationService interface implementation
-        public async Task SaveConfigurationAsync()
+
+        // Missing methods needed by MainViewModel
+        public void UpdateDefaultSaveLocation(string location)
         {
-            await SaveConfiguration();
+            if (string.IsNullOrWhiteSpace(location) || _disposed) return;
+            
+            _configLock.EnterWriteLock();
+            try
+            {
+                _config.DefaultSaveLocation = location;
+                
+                // Add to recent locations if it's a directory
+                if (Directory.Exists(location) && !_config.RecentLocations.Contains(location))
+                {
+                    _config.RecentLocations.Insert(0, location);
+                    if (_config.RecentLocations.Count > _config.MaxRecentLocations)
+                    {
+                        _config.RecentLocations.RemoveAt(_config.RecentLocations.Count - 1);
+                    }
+                }
+                
+                _logger.Information("Default save location updated to: {Location}", location);
+            }
+            finally
+            {
+                _configLock.ExitWriteLock();
+            }
+        }
+
+        public void UpdateWindowPosition(double left, double top, double width, double height, string state = "Normal")
+        {
+            if (_disposed) return;
+            
+            _configLock.EnterWriteLock();
+            try
+            {
+                _config.WindowLeft = left;
+                _config.WindowTop = top;
+                _config.WindowWidth = width;
+                _config.WindowHeight = height;
+                _config.WindowState = state ?? "Normal";
+                
+                _logger.Debug("Window position updated: {Left},{Top} {Width}x{Height} State:{State}", 
+                    left, top, width, height, state);
+            }
+            finally
+            {
+                _configLock.ExitWriteLock();
+            }
+        }
+
+        public void UpdateTheme(string theme)
+        {
+            if (string.IsNullOrWhiteSpace(theme) || _disposed) return;
+            
+            _configLock.EnterWriteLock();
+            try
+            {
+                _config.Theme = theme;
+                _logger.Information("Theme updated to: {Theme}", theme);
+            }
+            finally
+            {
+                _configLock.ExitWriteLock();
+            }
+        }
+
+        public AppConfiguration GetDefaultConfiguration()
+        {
+            return CreateDefaultConfiguration();
         }
         
-        public void UpdateConfiguration(Action<AppConfiguration> updateAction)
+        private void ScheduleSaveConfiguration()
         {
-            updateAction(_config);
-            _ = SaveConfiguration();
+            if (_disposed) return;
+            
+            lock (_timerLock)
+            {
+                if (_saveScheduled) return;
+                
+                _saveScheduled = true;
+                
+                // Dispose existing timer if it exists
+                _saveTimer?.Dispose();
+                
+                // Create new timer for debounced save (save after 2 seconds of inactivity)
+                _saveTimer = new Timer(async _ =>
+                {
+                    lock (_timerLock)
+                    {
+                        _saveScheduled = false;
+                    }
+                    
+                    try
+                    {
+                        await SaveConfiguration();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error during scheduled configuration save");
+                    }
+                }, null, TimeSpan.FromSeconds(2), Timeout.InfiniteTimeSpan);
+            }
         }
         
         public void AddRecentLocation(string location)
         {
+            if (string.IsNullOrWhiteSpace(location) || !Directory.Exists(location))
+                return;
+            
+            UpdateConfiguration(config =>
+            {
+                // Remove if already exists
+                config.RecentLocations.Remove(location);
+                
+                // Add to beginning
+                config.RecentLocations.Insert(0, location);
+                
+                // Trim to max size
+                if (config.RecentLocations.Count > config.MaxRecentLocations)
+                {
+                    config.RecentLocations = config.RecentLocations
+                        .Take(config.MaxRecentLocations)
+                        .ToList();
+                }
+            });
+        }
+        
+        public void RemoveRecentLocation(string location)
+        {
             if (string.IsNullOrWhiteSpace(location))
                 return;
-                
-            // Remove if already exists
-            _config.RecentLocations.Remove(location);
             
-            // Add to beginning
-            _config.RecentLocations.Insert(0, location);
-            
-            // Keep only max number of locations
-            while (_config.RecentLocations.Count > _config.MaxRecentLocations)
+            UpdateConfiguration(config =>
             {
-                _config.RecentLocations.RemoveAt(_config.RecentLocations.Count - 1);
+                config.RecentLocations.Remove(location);
+            });
+        }
+        
+        public void ClearRecentLocations()
+        {
+            UpdateConfiguration(config =>
+            {
+                config.RecentLocations.Clear();
+            });
+        }
+        
+        /// <summary>
+        /// Forces immediate save of configuration
+        /// </summary>
+        public async Task<bool> SaveConfigurationImmediately()
+        {
+            if (_disposed) return false;
+            
+            // Cancel any pending scheduled save
+            lock (_timerLock)
+            {
+                _saveTimer?.Dispose();
+                _saveTimer = null;
+                _saveScheduled = false;
             }
             
-            // Save changes
-            _ = SaveConfiguration();
+            return await SaveConfiguration();
         }
         
-        public void UpdateWindowPosition(double left, double top, double width, double height, string state)
+        public void Dispose()
         {
-            _config.WindowLeft = left;
-            _config.WindowTop = top;
-            _config.WindowWidth = width;
-            _config.WindowHeight = height;
-            _config.WindowState = state;
-        }
-        
-        public void UpdateTheme(string theme)
-        {
-            _config.Theme = theme;
-            _ = SaveConfiguration();
-        }
-        
-        public void UpdateDefaultSaveLocation(string location)
-        {
-            _config.DefaultSaveLocation = location;
-            AddRecentLocation(location);
-            _ = SaveConfiguration();
-        }
-        
-        public AppConfiguration GetDefaultConfiguration()
-        {
-            return CreateDefaultConfiguration();
+            if (_disposed) return;
+            
+            _logger.Information("Disposing configuration service");
+            _disposed = true;
+            
+            // Save final configuration synchronously
+            try
+            {
+                SaveConfiguration().GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to save configuration during disposal");
+            }
+            
+            // Dispose resources
+            lock (_timerLock)
+            {
+                _saveTimer?.Dispose();
+                _saveTimer = null;
+            }
+            
+            _configLock?.Dispose();
+            _saveSemaphore?.Dispose();
+            _loadSemaphore?.Dispose();
+            
+            _logger.Information("Configuration service disposed");
         }
     }
     
@@ -244,12 +561,12 @@ namespace DocHandler.Services
         public double WindowHeight { get; set; }
         public string WindowState { get; set; } = "Normal";
         public bool? OpenFolderAfterProcessing { get; set; } = true;
-        public bool SaveQuotesMode { get; set; } = true;  // Added - default to true
-        public bool ShowRecentScopes { get; set; } = false;  // Added - default to false (hidden by default)
-        public bool AutoScanCompanyNames { get; set; } = true;  // Added - default to true (enabled)
-        public bool ScanCompanyNamesForDocFiles { get; set; } = false;  // Added - default to false (disabled for .doc files)
-        public int DocFileSizeLimitMB { get; set; } = 10;  // Added - default to 10MB limit for .doc files
-        public bool ClearScopeAfterProcessing { get; set; } = false;  // Added - default to false (keep scope selected)
+        public bool SaveQuotesMode { get; set; } = true;
+        public bool ShowRecentScopes { get; set; } = false;
+        public bool AutoScanCompanyNames { get; set; } = true;
+        public bool ScanCompanyNamesForDocFiles { get; set; } = false;
+        public int DocFileSizeLimitMB { get; set; } = 10;
+        public bool ClearScopeAfterProcessing { get; set; } = false;
         
         // Queue Window State
         public double? QueueWindowLeft { get; set; }
@@ -278,5 +595,23 @@ namespace DocHandler.Services
         public bool EnableNetworkPathOptimization { get; set; } = true;
         public string LogLevel { get; set; } = "Information";
         public string LogFileLocation { get; set; } = "";
+        
+        // New properties for enhanced configuration
+        public bool ConvertOfficeToPdf { get; set; } = true;
+        public bool EnablePdfCache { get; set; } = true;
+        public int CacheExpirationMinutes { get; set; } = 30;
+        public bool EnableFileValidation { get; set; } = true;
+        public bool EnableCompanyDetection { get; set; } = true;
+        public bool EnableScopeDetection { get; set; } = true;
+        public bool AutoScanDocuments { get; set; } = false;
+        public List<string> AllowedFileExtensions { get; set; } = new() { ".docx", ".doc", ".xlsx", ".xls", ".pdf", ".txt", ".rtf" };
+        public int MaxFileSizeMB { get; set; } = 50;
+        public bool EnableSecurityScanning { get; set; } = true;
+        public int ProcessingTimeoutMinutes { get; set; } = 30;
+        public int MaxConcurrentConversions { get; set; } = Environment.ProcessorCount;
+        public string Language { get; set; } = "en-US";
+        public bool ShowAdvancedOptions { get; set; } = false;
+        public bool EnableTelemetry { get; set; } = true;
+        public string TelemetryLevel { get; set; } = "Normal";
     }
 }

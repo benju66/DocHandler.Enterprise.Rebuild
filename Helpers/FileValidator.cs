@@ -458,6 +458,94 @@ namespace DocHandler.Helpers
             return result;
         }
 
+        /// <summary>
+        /// Enhanced file path validation with security focus and path traversal prevention
+        /// </summary>
+        public static bool IsValidFilePath(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+                return false;
+
+            try
+            {
+                // Get the full normalized path to prevent path traversal
+                var fullPath = Path.GetFullPath(filePath);
+                
+                // Check if file exists
+                if (!File.Exists(fullPath))
+                    return false;
+
+                // Enhanced path traversal prevention
+                var allowedDirectories = GetAllowedDirectories();
+                if (!allowedDirectories.Any(dir => fullPath.StartsWith(dir, StringComparison.OrdinalIgnoreCase)))
+                {
+                    _logger.Warning("File path outside allowed directories: {Path}", fullPath);
+                    return false;
+                }
+
+                // Additional security checks
+                if (HasPathTraversalAttempt(filePath))
+                {
+                    _logger.Warning("Path traversal attempt detected: {Path}", filePath);
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "File path validation failed for: {Path}", filePath);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Gets the list of allowed directories for file operations
+        /// </summary>
+        private static List<string> GetAllowedDirectories()
+        {
+            var allowedDirs = new List<string>();
+
+            try
+            {
+                // Add common safe directories
+                allowedDirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments));
+                allowedDirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.Desktop));
+                allowedDirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory));
+                allowedDirs.Add(Path.GetTempPath());
+                
+                // Add application-specific directories
+                var appDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DocHandler");
+                if (Directory.Exists(appDataPath))
+                    allowedDirs.Add(appDataPath);
+
+                // Add current working directory and subdirectories
+                var currentDir = Directory.GetCurrentDirectory();
+                allowedDirs.Add(currentDir);
+
+                // Normalize all paths to full paths
+                return allowedDirs.Select(Path.GetFullPath).Distinct().ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to build allowed directories list");
+                // Return at least the current directory as fallback
+                return new List<string> { Directory.GetCurrentDirectory() };
+            }
+        }
+
+        /// <summary>
+        /// Enhanced file extension validation with whitelist approach
+        /// </summary>
+        public static bool HasValidExtension(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+                return false;
+
+            var extension = Path.GetExtension(filePath).ToLowerInvariant();
+            return AllowedExtensions.Contains(extension);
+        }
+
         #region Private Helper Methods
 
         /// <summary>

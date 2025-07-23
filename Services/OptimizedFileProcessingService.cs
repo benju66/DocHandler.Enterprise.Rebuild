@@ -274,7 +274,7 @@ namespace DocHandler.Services
                     var fileStopwatch = Stopwatch.StartNew();
                     
                     // CRITICAL MEMORY FIX: Use ReliableOfficeConverter for each task
-                    ConversionResult conversionResult;
+                    OfficeConversionResult conversionResult;
                     using (var converter = new ReliableOfficeConverter())
                     {
                         conversionResult = converter.ConvertWordToPdf(file, outputPath, singleUse: true);
@@ -419,13 +419,13 @@ namespace DocHandler.Services
         }
 
         // Single file conversion for Save Quotes Mode
-        public async Task<ConversionResult> ConvertSingleFile(string inputPath, string outputPath)
+        public async Task<OfficeConversionResult> ConvertSingleFile(string inputPath, string outputPath)
         {
             return await ConvertSingleFile(inputPath, outputPath, null);
         }
 
         // Synchronous single file conversion for STA thread pool usage
-        public ConversionResult ConvertSingleFileSync(string inputPath, string outputPath)
+        public OfficeConversionResult ConvertSingleFileSync(string inputPath, string outputPath)
         {
             var fileName = Path.GetFileName(inputPath);
             var extension = Path.GetExtension(inputPath).ToLowerInvariant();
@@ -437,12 +437,12 @@ namespace DocHandler.Services
             
             try
             {
-                ConversionResult result;
+                OfficeConversionResult result;
                 
                 if (extension == ".pdf")
                 {
                     File.Copy(inputPath, outputPath, true);
-                    result = new ConversionResult { Success = true, OutputPath = outputPath };
+                    result = new OfficeConversionResult { Success = true, OutputPath = outputPath };
                 }
                 else if (extension == ".doc" || extension == ".docx")
                 {
@@ -465,7 +465,7 @@ namespace DocHandler.Services
                 }
                 else
                 {
-                    result = new ConversionResult
+                    result = new OfficeConversionResult
                     {
                         Success = false,
                         ErrorMessage = $"Unsupported file type: {extension}"
@@ -477,7 +477,7 @@ namespace DocHandler.Services
             catch (Exception ex)
             {
                 _logger.Error(ex, "Failed to convert file synchronously: {InputPath}", inputPath);
-                return new ConversionResult
+                return new OfficeConversionResult
                 {
                     Success = false,
                     ErrorMessage = $"Conversion failed: {ex.Message}"
@@ -486,9 +486,9 @@ namespace DocHandler.Services
         }
         
         // Update ConvertSingleFile to report progress
-        public async Task<ConversionResult> ConvertSingleFile(
+                public async Task<OfficeConversionResult> ConvertSingleFile(
             string inputPath, 
-            string outputPath,
+            string outputPath, 
             ProgressCallback? progressCallback = null)
         {
             var fileName = Path.GetFileName(inputPath);
@@ -518,7 +518,7 @@ namespace DocHandler.Services
                         
                         progressCallback?.Invoke(fileName, 100, "Completed (cached)");
                         
-                        return new ConversionResult 
+                        return new OfficeConversionResult 
                         { 
                             Success = true, 
                             OutputPath = outputPath 
@@ -528,13 +528,13 @@ namespace DocHandler.Services
                 
                 progressCallback?.Invoke(fileName, 20, "Converting to PDF...");
                 
-                ConversionResult result;
+                OfficeConversionResult result;
                 
                 if (extension == ".pdf")
                 {
                     progressCallback?.Invoke(fileName, 50, "Copying PDF...");
                     File.Copy(inputPath, outputPath, true);
-                    result = new ConversionResult { Success = true, OutputPath = outputPath };
+                    result = new OfficeConversionResult { Success = true, OutputPath = outputPath };
                 }
                 else if (extension == ".doc" || extension == ".docx")
                 {
@@ -557,7 +557,7 @@ namespace DocHandler.Services
                 }
                 else
                 {
-                    result = new ConversionResult
+                    result = new OfficeConversionResult
                     {
                         Success = false,
                         ErrorMessage = $"Unsupported file type: {extension}"

@@ -52,6 +52,12 @@ namespace DocHandler.Services.Configuration
         public AdvancedSettings Advanced { get; set; } = new AdvancedSettings();
 
         /// <summary>
+        /// Telemetry and Application Insights settings
+        /// </summary>
+        [YamlMember(Alias = "Telemetry")]
+        public TelemetrySettings Telemetry { get; set; } = new TelemetrySettings();
+
+        /// <summary>
         /// Configuration metadata
         /// </summary>
         [YamlMember(Alias = "Metadata")]
@@ -278,5 +284,71 @@ namespace DocHandler.Services.Configuration
 
         [YamlMember(Alias = "MigrationSource")]
         public string? MigrationSource { get; set; }
+    }
+
+    /// <summary>
+    /// Telemetry and Application Insights configuration settings
+    /// </summary>
+    public class TelemetrySettings
+    {
+        /// <summary>
+        /// Enable Application Insights telemetry
+        /// </summary>
+        [YamlMember(Alias = "EnableApplicationInsights")]
+        public bool EnableApplicationInsights { get; set; } = false;
+
+        /// <summary>
+        /// Application Insights connection string
+        /// </summary>
+        [YamlMember(Alias = "ApplicationInsightsConnectionString")]
+        public string ApplicationInsightsConnectionString { get; set; } = "";
+
+        /// <summary>
+        /// Application Insights instrumentation key (legacy)
+        /// </summary>
+        [YamlMember(Alias = "ApplicationInsightsInstrumentationKey")]
+        public string ApplicationInsightsInstrumentationKey { get; set; } = "";
+
+        /// <summary>
+        /// Enable custom business metrics
+        /// </summary>
+        [YamlMember(Alias = "EnableBusinessMetrics")]
+        public bool EnableBusinessMetrics { get; set; } = true;
+
+        /// <summary>
+        /// Enable performance counters
+        /// </summary>
+        [YamlMember(Alias = "EnablePerformanceCounters")]
+        public bool EnablePerformanceCounters { get; set; } = true;
+
+        /// <summary>
+        /// Enable user interaction tracking
+        /// </summary>
+        [YamlMember(Alias = "EnableUserInteractionTracking")]
+        public bool EnableUserInteractionTracking { get; set; } = true;
+
+        /// <summary>
+        /// Enable dependency tracking
+        /// </summary>
+        [YamlMember(Alias = "EnableDependencyTracking")]
+        public bool EnableDependencyTracking { get; set; } = true;
+
+        /// <summary>
+        /// Telemetry sampling percentage (0-100)
+        /// </summary>
+        [YamlMember(Alias = "SamplingPercentage")]
+        public double SamplingPercentage { get; set; } = 100.0;
+
+        /// <summary>
+        /// Enable local debugging mode (logs to console)
+        /// </summary>
+        [YamlMember(Alias = "EnableLocalDebugging")]
+        public bool EnableLocalDebugging { get; set; } = true;
+
+        /// <summary>
+        /// Flush telemetry interval in seconds
+        /// </summary>
+        [YamlMember(Alias = "FlushIntervalSeconds")]
+        public int FlushIntervalSeconds { get; set; } = 30;
     }
 } 

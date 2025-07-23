@@ -402,7 +402,7 @@ namespace DocHandler
                         catch (Exception ex)
                         {
                             Log.Error(ex, "Conversion test failed on STA thread");
-                            return new ConversionResult
+                            return new OfficeConversionResult
                             {
                                 Success = false,
                                 ErrorMessage = $"STA conversion error: {ex.Message}"
@@ -461,7 +461,7 @@ namespace DocHandler
             }
         }
 
-        private static ConversionResult TestBasicWordConversion(string inputPath, string outputPath)
+        private static OfficeConversionResult TestBasicWordConversion(string inputPath, string outputPath)
         {
             Log.Information("Running basic Word conversion fallback test...");
             
@@ -473,7 +473,7 @@ namespace DocHandler
                 // Validate STA thread
                 if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
                 {
-                    return new ConversionResult
+                    return new OfficeConversionResult
                     {
                         Success = false,
                         ErrorMessage = "Basic conversion test requires STA thread"
@@ -484,7 +484,7 @@ namespace DocHandler
                 Type? wordType = Type.GetTypeFromProgID("Word.Application");
                 if (wordType == null)
                 {
-                    return new ConversionResult
+                    return new OfficeConversionResult
                     {
                         Success = false,
                         ErrorMessage = "Word.Application ProgID not found in fallback test"
@@ -494,7 +494,7 @@ namespace DocHandler
                 wordApp = Activator.CreateInstance(wordType);
                 if (wordApp == null)
                 {
-                    return new ConversionResult
+                    return new OfficeConversionResult
                     {
                         Success = false,
                         ErrorMessage = "Failed to create Word application in fallback test"
@@ -532,7 +532,7 @@ namespace DocHandler
                 }
                 catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
                 {
-                    return new ConversionResult
+                    return new OfficeConversionResult
                     {
                         Success = false,
                         ErrorMessage = "Cannot access Documents.Open method (DISP_E_UNKNOWNNAME) - Word installation may be corrupted"
@@ -545,7 +545,7 @@ namespace DocHandler
                     doc.SaveAs2(outputPath, FileFormat: 17); // 17 = wdFormatPDF
                     Log.Information("✓ Document saved as PDF successfully");
                     
-                    return new ConversionResult
+                    return new OfficeConversionResult
                     {
                         Success = true,
                         OutputPath = outputPath
@@ -553,7 +553,7 @@ namespace DocHandler
                 }
                 catch (COMException ex) when (ex.HResult == unchecked((int)0x80020006))
                 {
-                    return new ConversionResult
+                    return new OfficeConversionResult
                     {
                         Success = false,
                         ErrorMessage = "Cannot access SaveAs2 method (DISP_E_UNKNOWNNAME) - Word installation may be corrupted or missing PDF export feature"
@@ -562,7 +562,7 @@ namespace DocHandler
             }
             catch (Exception ex)
             {
-                return new ConversionResult
+                return new OfficeConversionResult
                 {
                     Success = false,
                     ErrorMessage = $"Fallback conversion failed: {ex.Message}"

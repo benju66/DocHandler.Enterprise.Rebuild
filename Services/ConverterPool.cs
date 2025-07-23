@@ -217,7 +217,7 @@ namespace DocHandler.Services
             _rented = true;
         }
         
-        public ConversionResult ConvertWordToPdf(string input, string output, Action<string> progressCallback = null)
+        public OfficeConversionResult ConvertWordToPdf(string input, string output, Action<string> progressCallback = null)
         {
             if (_disposed) throw new ObjectDisposedException($"PooledConverter[{Id}]");
             if (!_rented) throw new InvalidOperationException($"Converter {Id} is not rented");
@@ -235,7 +235,7 @@ namespace DocHandler.Services
             }
         }
         
-        public ConversionResult ConvertExcelToPdf(string input, string output, Action<string> progressCallback = null)
+        public OfficeConversionResult ConvertExcelToPdf(string input, string output, Action<string> progressCallback = null)
         {
             if (_disposed) throw new ObjectDisposedException($"PooledConverter[{Id}]");
             if (!_rented) throw new InvalidOperationException($"Converter {Id} is not rented");

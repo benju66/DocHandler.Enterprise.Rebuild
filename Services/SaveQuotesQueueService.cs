@@ -268,7 +268,7 @@ namespace DocHandler.Services
                     {
                         // Just copy PDF files
                         File.Copy(item.File.FilePath, outputPath, true);
-                        return new ConversionResult { Success = true, OutputPath = outputPath };
+                        return new OfficeConversionResult { Success = true, OutputPath = outputPath };
                     }
                     else if (extension == ".doc" || extension == ".docx")
                     {
@@ -282,7 +282,7 @@ namespace DocHandler.Services
                     }
                     else
                     {
-                        return new ConversionResult
+                        return new OfficeConversionResult
                         {
                             Success = false,
                             ErrorMessage = $"Unsupported file type: {extension}"

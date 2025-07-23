@@ -118,6 +118,43 @@ namespace DocHandler.Services
         private static readonly Regex MultipleSpacesRegex = new(@"\s+", RegexOptions.Compiled);
         private static readonly Regex NonWordCharactersRegex = new(@"[^\w\s.,&\-()]", RegexOptions.Compiled);
         
+        // PERFORMANCE OPTIMIZATION: Pre-compiled regex cache for company matching
+        private static readonly ConcurrentDictionary<string, Regex> RegexCache = new();
+        private static readonly int MaxCacheSize = 1000; // Prevent memory issues
+        
+        /// <summary>
+        /// Gets or creates a compiled regex for company name matching with caching
+        /// </summary>
+        private static Regex GetCachedRegex(string pattern, RegexOptions options = RegexOptions.IgnoreCase | RegexOptions.Compiled)
+        {
+            var cacheKey = $"{pattern}_{options}";
+            
+            return RegexCache.GetOrAdd(cacheKey, key =>
+            {
+                // Prevent cache from growing too large
+                if (RegexCache.Count > MaxCacheSize)
+                {
+                    // Remove oldest 10% of entries
+                    var keysToRemove = RegexCache.Keys.Take(MaxCacheSize / 10).ToList();
+                    foreach (var keyToRemove in keysToRemove)
+                    {
+                        RegexCache.TryRemove(keyToRemove, out _);
+                    }
+                }
+                
+                try
+                {
+                    return new Regex(pattern, options);
+                }
+                catch (ArgumentException ex)
+                {
+                    // If regex compilation fails, log and return a safe fallback
+                    Log.ForContext<CompanyNameService>().Warning(ex, "Failed to compile regex pattern: {Pattern}", pattern);
+                    return new Regex(Regex.Escape(pattern), RegexOptions.IgnoreCase | RegexOptions.Compiled);
+                }
+            });
+        }
+        
         public List<CompanyInfo> Companies 
         {
             get
@@ -199,12 +236,12 @@ namespace DocHandler.Services
         {
             if (_dataLoaded) return;
             
-            await _dataLoadSemaphore.WaitAsync();
+            await _dataLoadSemaphore.WaitAsync().ConfigureAwait(false);
             try
             {
                 if (!_dataLoaded)
                 {
-                    _data = await LoadCompanyNamesAsync();
+                    _data = await LoadCompanyNamesAsync().ConfigureAwait(false);
                     _dataLoaded = true;
                 }
             }
@@ -605,10 +642,10 @@ namespace DocHandler.Services
         {
             if (string.IsNullOrWhiteSpace(text)) return text;
             
-            // Remove common PDF artifacts and normalize text
-            text = Regex.Replace(text, @"[\x00-\x1F\x7F-\x9F]", " "); // Control characters
-            text = Regex.Replace(text, @"\s+", " "); // Multiple spaces
-            text = Regex.Replace(text, @"[^\w\s.,&\-()]", " "); // Keep only useful punctuation
+            // Remove common PDF artifacts and normalize text using cached compiled regexes
+            text = ControlCharactersRegex.Replace(text, " "); // Control characters
+            text = MultipleSpacesRegex.Replace(text, " "); // Multiple spaces
+            text = NonWordCharactersRegex.Replace(text, " "); // Keep only useful punctuation
             
             return text.Trim().ToLowerInvariant();
         }
@@ -677,7 +714,8 @@ namespace DocHandler.Services
             try
             {
                 var pattern = $@"\b{Regex.Escape(companyName)}\b";
-                var match = Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase);
+                var regex = GetCachedRegex(pattern);
+                var match = regex.IsMatch(text);
                 return new MatchResult
                 {
                     Score = match ? 1.0 : 0.0,
@@ -724,7 +762,8 @@ namespace DocHandler.Services
             
             foreach (var pattern in contextPatterns)
             {
-                if (Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase))
+                var regex = GetCachedRegex(pattern);
+                if (regex.IsMatch(text))
                 {
                     return new MatchResult
                     {
@@ -827,7 +866,8 @@ namespace DocHandler.Services
                 
                 // First try exact word boundary match
                 string pattern = $@"\b{Regex.Escape(normalizedCompanyName)}\b";
-                if (Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase))
+                var regex = GetCachedRegex(pattern);
+                if (regex.IsMatch(text))
                 {
                     return true;
                 }
@@ -911,7 +951,7 @@ namespace DocHandler.Services
                     
                     // Convert to temporary PDF as fallback
                     var tempPdf = Path.Combine(Path.GetTempPath(), $"DocHandler_{Guid.NewGuid()}.pdf");
-                    ConversionResult conversionResult;
+                    OfficeConversionResult conversionResult;
                     
                     if (extension == ".docx" || extension == ".doc")
                     {

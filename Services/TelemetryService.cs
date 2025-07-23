@@ -6,7 +6,11 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Text.Json;
+using Microsoft.ApplicationInsights;
+using Microsoft.ApplicationInsights.DataContracts;
+using Microsoft.ApplicationInsights.Extensibility;
 using Serilog;
+using DocHandler.Services.Configuration;
 
 namespace DocHandler.Services
 {
@@ -19,6 +23,9 @@ namespace DocHandler.Services
         private readonly Dictionary<string, object> _sessionMetrics = new Dictionary<string, object>();
         private readonly string _telemetryFilePath;
         private readonly PerformanceMonitor _performanceMonitor;
+        private readonly TelemetryClient _applicationInsightsClient;
+        private readonly IHierarchicalConfigurationService _configService;
+        private readonly bool _applicationInsightsEnabled;
         
         // Configuration
         private const int MAX_PENDING_EVENTS = 100;
@@ -33,11 +40,19 @@ namespace DocHandler.Services
         private int _successfulOperations;
         private int _failedOperations;
         
-        public TelemetryService(PerformanceMonitor performanceMonitor = null)
+        public TelemetryService(PerformanceMonitor performanceMonitor = null, 
+                               TelemetryClient applicationInsightsClient = null,
+                               IHierarchicalConfigurationService configService = null)
         {
             _performanceMonitor = performanceMonitor ?? new PerformanceMonitor();
             _sessionId = Guid.NewGuid();
             _sessionStartTime = DateTime.UtcNow;
+            _configService = configService;
+            _applicationInsightsClient = applicationInsightsClient;
+            
+            // Check if Application Insights is enabled
+            _applicationInsightsEnabled = _configService?.Config?.Telemetry?.EnableApplicationInsights == true && 
+                                         _applicationInsightsClient != null;
             
             // Setup telemetry file path
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -96,6 +111,12 @@ namespace DocHandler.Services
                 }
             }
             
+            // Send to Application Insights if enabled
+            if (_applicationInsightsEnabled)
+            {
+                SendEventToApplicationInsights(telemetryEvent);
+            }
+            
             _logger.Debug("Telemetry event tracked: {EventName}", eventName);
         }
         
@@ -135,6 +156,12 @@ namespace DocHandler.Services
             
             TrackEvent("OperationCompleted", properties, metrics);
             
+            // Send to Application Insights if enabled
+            if (_applicationInsightsEnabled)
+            {
+                SendOperationToApplicationInsights(operationName, duration, successful, details);
+            }
+            
             // Update session metrics
             UpdateSessionMetrics(operationName, duration, successful);
         }
@@ -163,6 +190,12 @@ namespace DocHandler.Services
             }
             
             TrackEvent("ExceptionOccurred", properties);
+            
+            // Send to Application Insights if enabled
+            if (_applicationInsightsEnabled)
+            {
+                SendExceptionToApplicationInsights(exception, context);
+            }
             
             _logger.Warning(exception, "Exception tracked in telemetry: {Context}", context);
         }
@@ -209,6 +242,212 @@ namespace DocHandler.Services
             };
             
             TrackEvent("FileProcessed", properties, metrics);
+        }
+
+        /// <summary>
+        /// Tracks WPF window events (open, close, resize, minimize, maximize)
+        /// </summary>
+        public void TrackWindowEvent(string windowName, string eventType, Dictionary<string, object> properties = null)
+        {
+            var eventProperties = new Dictionary<string, object>
+            {
+                ["WindowName"] = windowName,
+                ["EventType"] = eventType,
+                ["Timestamp"] = DateTime.UtcNow
+            };
+            
+            if (properties != null)
+            {
+                foreach (var prop in properties)
+                {
+                    eventProperties[prop.Key] = prop.Value;
+                }
+            }
+            
+            TrackEvent("WindowEvent", eventProperties);
+        }
+
+        /// <summary>
+        /// Tracks button clicks and UI control interactions
+        /// </summary>
+        public void TrackUIInteraction(string controlType, string controlName, string action, string context = null)
+        {
+            var properties = new Dictionary<string, object>
+            {
+                ["ControlType"] = controlType,
+                ["ControlName"] = controlName,
+                ["Action"] = action,
+                ["Context"] = context ?? "",
+                ["Timestamp"] = DateTime.UtcNow
+            };
+            
+            TrackEvent("UIInteraction", properties);
+        }
+
+        /// <summary>
+        /// Tracks mode switching in the application
+        /// </summary>
+        public void TrackModeSwitch(string fromMode, string toMode, TimeSpan switchDuration)
+        {
+            var properties = new Dictionary<string, object>
+            {
+                ["FromMode"] = fromMode,
+                ["ToMode"] = toMode,
+                ["SwitchDuration"] = switchDuration.TotalMilliseconds
+            };
+            
+            var metrics = new Dictionary<string, double>
+            {
+                ["SwitchTimeMs"] = switchDuration.TotalMilliseconds
+            };
+            
+            TrackEvent("ModeSwitch", properties, metrics);
+        }
+
+        /// <summary>
+        /// Tracks document conversion workflows with detailed metrics
+        /// </summary>
+        public void TrackDocumentConversion(string inputFormat, string outputFormat, int fileCount, 
+            TimeSpan totalTime, int successCount, int failureCount, long totalBytes)
+        {
+            var properties = new Dictionary<string, object>
+            {
+                ["InputFormat"] = inputFormat,
+                ["OutputFormat"] = outputFormat,
+                ["FileCount"] = fileCount,
+                ["SuccessCount"] = successCount,
+                ["FailureCount"] = failureCount,
+                ["TotalBytes"] = totalBytes,
+                ["SuccessRate"] = fileCount > 0 ? (double)successCount / fileCount * 100 : 0
+            };
+            
+            var metrics = new Dictionary<string, double>
+            {
+                ["FileCount"] = fileCount,
+                ["TotalTimeMs"] = totalTime.TotalMilliseconds,
+                ["SuccessCount"] = successCount,
+                ["FailureCount"] = failureCount,
+                ["TotalBytes"] = totalBytes,
+                ["AvgTimePerFileMs"] = fileCount > 0 ? totalTime.TotalMilliseconds / fileCount : 0,
+                ["SuccessRate"] = fileCount > 0 ? (double)successCount / fileCount * 100 : 0
+            };
+            
+            TrackEvent("DocumentConversion", properties, metrics);
+        }
+
+        /// <summary>
+        /// Tracks application performance metrics
+        /// </summary>
+        public void TrackPerformanceMetrics(double cpuUsage, long memoryUsage, int threadCount, int handleCount)
+        {
+            var metrics = new Dictionary<string, double>
+            {
+                ["CpuUsagePercent"] = cpuUsage,
+                ["MemoryUsageBytes"] = memoryUsage,
+                ["ThreadCount"] = threadCount,
+                ["HandleCount"] = handleCount,
+                ["MemoryUsageMB"] = memoryUsage / (1024.0 * 1024.0)
+            };
+            
+            var properties = new Dictionary<string, object>
+            {
+                ["CpuUsage"] = $"{cpuUsage:F2}%",
+                ["MemoryUsage"] = $"{memoryUsage / (1024.0 * 1024.0):F2} MB",
+                ["ThreadCount"] = threadCount,
+                ["HandleCount"] = handleCount
+            };
+            
+            TrackEvent("PerformanceMetrics", properties, metrics);
+        }
+
+        /// <summary>
+        /// Tracks queue processing statistics
+        /// </summary>
+        public void TrackQueueMetrics(string queueName, int queueSize, int processedCount, 
+            TimeSpan avgProcessingTime, int errorCount)
+        {
+            var properties = new Dictionary<string, object>
+            {
+                ["QueueName"] = queueName,
+                ["QueueSize"] = queueSize,
+                ["ProcessedCount"] = processedCount,
+                ["ErrorCount"] = errorCount,
+                ["ErrorRate"] = processedCount > 0 ? (double)errorCount / processedCount * 100 : 0
+            };
+            
+            var metrics = new Dictionary<string, double>
+            {
+                ["QueueSize"] = queueSize,
+                ["ProcessedCount"] = processedCount,
+                ["AvgProcessingTimeMs"] = avgProcessingTime.TotalMilliseconds,
+                ["ErrorCount"] = errorCount,
+                ["ErrorRate"] = processedCount > 0 ? (double)errorCount / processedCount * 100 : 0
+            };
+            
+            TrackEvent("QueueMetrics", properties, metrics);
+        }
+
+        /// <summary>
+        /// Tracks business workflow completion
+        /// </summary>
+        public void TrackWorkflowCompletion(string workflowName, string workflowType, TimeSpan duration, 
+            bool successful, Dictionary<string, object> workflowData = null)
+        {
+            var properties = new Dictionary<string, object>
+            {
+                ["WorkflowName"] = workflowName,
+                ["WorkflowType"] = workflowType,
+                ["Duration"] = duration.TotalMilliseconds,
+                ["Successful"] = successful,
+                ["CompletedAt"] = DateTime.UtcNow
+            };
+            
+            if (workflowData != null)
+            {
+                foreach (var data in workflowData)
+                {
+                    properties[$"Workflow_{data.Key}"] = data.Value;
+                }
+            }
+            
+            var metrics = new Dictionary<string, double>
+            {
+                ["DurationMs"] = duration.TotalMilliseconds,
+                ["Success"] = successful ? 1.0 : 0.0
+            };
+            
+            TrackEvent("WorkflowCompletion", properties, metrics);
+        }
+
+        /// <summary>
+        /// Tracks application startup metrics
+        /// </summary>
+        public void TrackApplicationStartup(TimeSpan startupTime, int servicesRegistered, 
+            string startupMode, Dictionary<string, object> startupContext = null)
+        {
+            var properties = new Dictionary<string, object>
+            {
+                ["StartupTime"] = startupTime.TotalMilliseconds,
+                ["ServicesRegistered"] = servicesRegistered,
+                ["StartupMode"] = startupMode,
+                ["StartupTimestamp"] = DateTime.UtcNow
+            };
+            
+            if (startupContext != null)
+            {
+                foreach (var context in startupContext)
+                {
+                    properties[$"Startup_{context.Key}"] = context.Value;
+                }
+            }
+            
+            var metrics = new Dictionary<string, double>
+            {
+                ["StartupTimeMs"] = startupTime.TotalMilliseconds,
+                ["ServicesRegistered"] = servicesRegistered
+            };
+            
+            TrackEvent("ApplicationStartup", properties, metrics);
         }
         
         /// <summary>
@@ -467,6 +706,97 @@ namespace DocHandler.Services
                 _logger.Error(ex, "Telemetry flush timer failed");
             }
         }
+
+        /// <summary>
+        /// Sends telemetry event to Application Insights
+        /// </summary>
+        private void SendEventToApplicationInsights(TelemetryEvent telemetryEvent)
+        {
+            try
+            {
+                if (_applicationInsightsClient == null) return;
+
+                // Create Application Insights event
+                var aiEvent = new EventTelemetry(telemetryEvent.EventName);
+                
+                // Add properties
+                foreach (var property in telemetryEvent.Properties)
+                {
+                    aiEvent.Properties[property.Key] = property.Value?.ToString() ?? "";
+                }
+                
+                // Add metrics
+                foreach (var metric in telemetryEvent.Metrics)
+                {
+                    aiEvent.Metrics[metric.Key] = metric.Value;
+                }
+                
+                // Add common context
+                aiEvent.Properties["SessionId"] = _sessionId.ToString();
+                aiEvent.Properties["Timestamp"] = telemetryEvent.Timestamp.ToString("O");
+                
+                // Track the event
+                _applicationInsightsClient.TrackEvent(aiEvent);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to send telemetry event to Application Insights: {EventName}", telemetryEvent.EventName);
+            }
+        }
+
+        /// <summary>
+        /// Sends operation telemetry to Application Insights
+        /// </summary>
+        private void SendOperationToApplicationInsights(string operationName, TimeSpan duration, bool successful, string details = null)
+        {
+            try
+            {
+                if (_applicationInsightsClient == null) return;
+
+                var dependency = new DependencyTelemetry
+                {
+                    Name = operationName,
+                    Duration = duration,
+                    Success = successful,
+                    Type = "Operation",
+                    Data = details
+                };
+                
+                dependency.Properties["SessionId"] = _sessionId.ToString();
+                
+                _applicationInsightsClient.TrackDependency(dependency);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to send operation telemetry to Application Insights: {OperationName}", operationName);
+            }
+        }
+
+        /// <summary>
+        /// Sends exception telemetry to Application Insights
+        /// </summary>
+        private void SendExceptionToApplicationInsights(Exception exception, string context = null)
+        {
+            try
+            {
+                if (_applicationInsightsClient == null) return;
+
+                var exceptionTelemetry = new ExceptionTelemetry(exception);
+                
+                if (!string.IsNullOrEmpty(context))
+                {
+                    exceptionTelemetry.Properties["Context"] = context;
+                }
+                
+                exceptionTelemetry.Properties["SessionId"] = _sessionId.ToString();
+                
+                _applicationInsightsClient.TrackException(exceptionTelemetry);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to send exception telemetry to Application Insights");
+            }
+        }
         
         public void Dispose()
         {
@@ -484,6 +814,14 @@ namespace DocHandler.Services
                 
                 // Flush remaining events
                 FlushTelemetry();
+                
+                // Flush Application Insights if enabled
+                if (_applicationInsightsEnabled)
+                {
+                    _applicationInsightsClient?.Flush();
+                    // Give Application Insights time to send data
+                    Task.Delay(2000).Wait();
+                }
                 
                 _flushTimer?.Dispose();
                 _performanceMonitor?.Dispose();

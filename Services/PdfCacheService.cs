@@ -4,7 +4,9 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Serilog;
-using System.Collections.Generic; // Added missing import
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
 
 namespace DocHandler.Services
 {
@@ -13,8 +15,13 @@ namespace DocHandler.Services
         private readonly ILogger _logger;
         private readonly ConcurrentDictionary<string, CachedPdf> _cache;
         private readonly Timer _cleanupTimer;
+        private readonly Timer _memoryMonitorTimer;
         private readonly TimeSpan _cacheExpiration = TimeSpan.FromMinutes(30);
         private readonly string _cacheDirectory;
+        private readonly long _maxCacheSizeBytes;
+        private readonly int _maxCacheEntries;
+        private readonly SemaphoreSlim _cleanupSemaphore = new(1, 1);
+        private long _currentCacheSizeBytes;
         private bool _disposed;
         
         public class CachedPdf
@@ -25,25 +32,61 @@ namespace DocHandler.Services
             public DateTime LastAccessed { get; set; }
             public long FileSize { get; set; }
             public string FileHash { get; set; } = "";
+            public int AccessCount { get; set; }
         }
         
-        public PdfCacheService()
+        public class CacheStatistics
+        {
+            public int TotalEntries { get; set; }
+            public long TotalSizeBytes { get; set; }
+            public int HitCount { get; set; }
+            public int MissCount { get; set; }
+            public double HitRatio => TotalRequests > 0 ? (double)HitCount / TotalRequests : 0;
+            public int TotalRequests => HitCount + MissCount;
+            public string FormattedSize => FormatBytes(TotalSizeBytes);
+            
+            private static string FormatBytes(long bytes)
+            {
+                if (bytes < 1024) return $"{bytes} B";
+                if (bytes < 1024 * 1024) return $"{bytes / 1024:F1} KB";
+                if (bytes < 1024 * 1024 * 1024) return $"{bytes / (1024 * 1024):F1} MB";
+                return $"{bytes / (1024 * 1024 * 1024):F1} GB";
+            }
+        }
+        
+        private int _hitCount;
+        private int _missCount;
+        
+        public PdfCacheService(long maxCacheSizeMB = 500, int maxCacheEntries = 1000)
         {
             _logger = Log.ForContext<PdfCacheService>();
             _cache = new ConcurrentDictionary<string, CachedPdf>();
+            _maxCacheSizeBytes = maxCacheSizeMB * 1024 * 1024;
+            _maxCacheEntries = maxCacheEntries;
             
-            // Create cache directory asynchronously to avoid blocking
+            // Create cache directory
             var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             _cacheDirectory = Path.Combine(appData, "DocHandler", "PdfCache");
             
-            // Create directory asynchronously
-            _ = Task.Run(() => Directory.CreateDirectory(_cacheDirectory));
+            try
+            {
+                Directory.CreateDirectory(_cacheDirectory);
+                _logger.Information("PDF cache service initialized at {Path} with max size {MaxSize}MB", 
+                    _cacheDirectory, maxCacheSizeMB);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to create cache directory");
+                throw;
+            }
             
-            // Start cleanup timer
+            // Start cleanup timer (every 5 minutes)
             _cleanupTimer = new Timer(CleanupExpiredCache, null, 
                 TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
             
-            _logger.Information("PDF cache service initialized at {Path}", _cacheDirectory);
+            // Start memory monitor timer (every minute)
+            _memoryMonitorTimer = new Timer(MonitorMemoryPressure, null,
+                TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
         }
         
         public async Task<string?> GetCachedPdfAsync(string originalPath, string fileHash)
@@ -54,28 +97,52 @@ namespace DocHandler.Services
             {
                 if (File.Exists(cached.CachedPath))
                 {
+                    // Update access statistics
                     cached.LastAccessed = DateTime.UtcNow;
+                    cached.AccessCount++;
+                    Interlocked.Increment(ref _hitCount);
+                    
                     _logger.Debug("PDF cache hit for {File}", Path.GetFileName(originalPath));
                     return cached.CachedPath;
                 }
                 else
                 {
-                    // Cache file missing, remove entry
-                    _cache.TryRemove(cacheKey, out _);
+                    // Cache file missing, remove entry and update size
+                    if (_cache.TryRemove(cacheKey, out var removed))
+                    {
+                        Interlocked.Add(ref _currentCacheSizeBytes, -removed.FileSize);
+                    }
                 }
             }
             
+            Interlocked.Increment(ref _missCount);
             return null;
         }
         
         public async Task<string> AddToCacheAsync(string originalPath, string pdfPath, string fileHash)
         {
+            if (_disposed) return pdfPath;
+            
             var cacheKey = GetCacheKey(originalPath, fileHash);
-            var cachedFileName = $"{fileHash}_{Path.GetFileNameWithoutExtension(originalPath)}.pdf";
+            var cachedFileName = $"{fileHash}_{Guid.NewGuid():N}_{Path.GetFileNameWithoutExtension(originalPath)}.pdf";
             var cachedPath = Path.Combine(_cacheDirectory, cachedFileName);
             
             try
             {
+                var fileInfo = new FileInfo(pdfPath);
+                var fileSize = fileInfo.Length;
+                
+                // Check if adding this file would exceed limits
+                if (fileSize > _maxCacheSizeBytes / 10) // Don't cache files larger than 10% of total cache
+                {
+                    _logger.Debug("File too large for cache: {File} ({Size} bytes)", 
+                        Path.GetFileName(originalPath), fileSize);
+                    return pdfPath;
+                }
+                
+                // Ensure we have space for the new file
+                await EnsureCacheSpaceAsync(fileSize);
+                
                 // Copy to cache
                 await Task.Run(() => File.Copy(pdfPath, cachedPath, true));
                 
@@ -85,86 +152,234 @@ namespace DocHandler.Services
                     CachedPath = cachedPath,
                     CreatedAt = DateTime.UtcNow,
                     LastAccessed = DateTime.UtcNow,
-                    FileSize = new FileInfo(cachedPath).Length,
-                    FileHash = fileHash
+                    FileSize = fileSize,
+                    FileHash = fileHash,
+                    AccessCount = 0
                 };
                 
                 _cache[cacheKey] = cached;
-                _logger.Debug("Added PDF to cache: {File}", Path.GetFileName(originalPath));
+                Interlocked.Add(ref _currentCacheSizeBytes, fileSize);
+                
+                _logger.Debug("Added PDF to cache: {File} ({Size} bytes)", 
+                    Path.GetFileName(originalPath), fileSize);
                 
                 return cachedPath;
             }
             catch (Exception ex)
             {
                 _logger.Warning(ex, "Failed to cache PDF for {File}", originalPath);
-                return pdfPath; // Return original if caching fails
+                
+                // Clean up partial file
+                try
+                {
+                    if (File.Exists(cachedPath))
+                        File.Delete(cachedPath);
+                }
+                catch { /* Ignore cleanup errors */ }
+                
+                return pdfPath;
             }
         }
         
-        private string GetCacheKey(string path, string hash)
+        private async Task EnsureCacheSpaceAsync(long requiredBytes)
         {
-            return $"{hash}_{Path.GetFileName(path).ToLowerInvariant()}";
-        }
-        
-        private void CleanupExpiredCache(object? state)
-        {
+            if (_disposed) return;
+            
+            // Quick check without lock
+            if (_currentCacheSizeBytes + requiredBytes <= _maxCacheSizeBytes && 
+                _cache.Count < _maxCacheEntries)
+            {
+                return;
+            }
+            
+            await _cleanupSemaphore.WaitAsync();
             try
             {
-                var now = DateTime.UtcNow;
-                var expiredKeys = new List<string>();
-                
-                foreach (var kvp in _cache)
+                // Double-check after acquiring lock
+                while ((_currentCacheSizeBytes + requiredBytes > _maxCacheSizeBytes || 
+                       _cache.Count >= _maxCacheEntries) && _cache.Count > 0)
                 {
-                    if (now - kvp.Value.LastAccessed > _cacheExpiration)
+                    await EvictLeastRecentlyUsedAsync();
+                }
+            }
+            finally
+            {
+                _cleanupSemaphore.Release();
+            }
+        }
+        
+        private async Task EvictLeastRecentlyUsedAsync()
+        {
+            if (_cache.IsEmpty) return;
+            
+            // Find LRU entry (least recently accessed with lowest access count as tiebreaker)
+            var lruEntry = _cache.Values
+                .OrderBy(x => x.LastAccessed)
+                .ThenBy(x => x.AccessCount)
+                .FirstOrDefault();
+            
+            if (lruEntry != null)
+            {
+                var cacheKey = GetCacheKey(lruEntry.OriginalPath, lruEntry.FileHash);
+                if (_cache.TryRemove(cacheKey, out var removed))
+                {
+                    try
                     {
-                        expiredKeys.Add(kvp.Key);
+                        await Task.Run(() =>
+                        {
+                            if (File.Exists(removed.CachedPath))
+                                File.Delete(removed.CachedPath);
+                        });
+                        
+                        Interlocked.Add(ref _currentCacheSizeBytes, -removed.FileSize);
+                        _logger.Debug("Evicted LRU cache entry: {File}", Path.GetFileName(removed.OriginalPath));
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Failed to delete evicted cache file: {Path}", removed.CachedPath);
                     }
                 }
+            }
+        }
+        
+        public CacheStatistics GetStatistics()
+        {
+            return new CacheStatistics
+            {
+                TotalEntries = _cache.Count,
+                TotalSizeBytes = _currentCacheSizeBytes,
+                HitCount = _hitCount,
+                MissCount = _missCount
+            };
+        }
+        
+        public async Task ClearCacheAsync()
+        {
+            await _cleanupSemaphore.WaitAsync();
+            try
+            {
+                _logger.Information("Clearing PDF cache");
                 
-                foreach (var key in expiredKeys)
+                var entries = _cache.Values.ToList();
+                _cache.Clear();
+                _currentCacheSizeBytes = 0;
+                
+                // Delete files in background
+                _ = Task.Run(async () =>
                 {
-                    if (_cache.TryRemove(key, out var cached))
+                    foreach (var entry in entries)
                     {
                         try
                         {
-                            File.Delete(cached.CachedPath);
-                            _logger.Debug("Removed expired cache: {File}", 
-                                Path.GetFileName(cached.OriginalPath));
+                            if (File.Exists(entry.CachedPath))
+                                File.Delete(entry.CachedPath);
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            _logger.Warning(ex, "Failed to delete cache file during clear: {Path}", entry.CachedPath);
+                        }
                     }
-                }
+                });
+            }
+            finally
+            {
+                _cleanupSemaphore.Release();
+            }
+        }
+        
+        private string GetCacheKey(string originalPath, string fileHash)
+        {
+            return $"{fileHash}_{Path.GetFileName(originalPath)}";
+        }
+        
+        private async void CleanupExpiredCache(object? state)
+        {
+            if (_disposed || !_cleanupSemaphore.Wait(100)) return;
+            
+            try
+            {
+                var expiredEntries = _cache.Values
+                    .Where(x => DateTime.UtcNow - x.LastAccessed > _cacheExpiration)
+                    .ToList();
                 
-                if (expiredKeys.Count > 0)
+                if (expiredEntries.Any())
                 {
-                    _logger.Information("Cleaned up {Count} expired cache entries", expiredKeys.Count);
+                    _logger.Debug("Cleaning up {Count} expired cache entries", expiredEntries.Count);
+                    
+                    foreach (var entry in expiredEntries)
+                    {
+                        var cacheKey = GetCacheKey(entry.OriginalPath, entry.FileHash);
+                        if (_cache.TryRemove(cacheKey, out var removed))
+                        {
+                            try
+                            {
+                                if (File.Exists(removed.CachedPath))
+                                    File.Delete(removed.CachedPath);
+                                
+                                Interlocked.Add(ref _currentCacheSizeBytes, -removed.FileSize);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.Warning(ex, "Failed to delete expired cache file: {Path}", removed.CachedPath);
+                            }
+                        }
+                    }
                 }
             }
             catch (Exception ex)
             {
-                _logger.Warning(ex, "Error during cache cleanup");
+                _logger.Error(ex, "Error during cache cleanup");
+            }
+            finally
+            {
+                _cleanupSemaphore.Release();
             }
         }
         
-        public void ClearCache()
+        private async void MonitorMemoryPressure(object? state)
         {
-            foreach (var cached in _cache.Values)
-            {
-                try { File.Delete(cached.CachedPath); } catch { }
-            }
-            _cache.Clear();
+            if (_disposed) return;
             
-            _logger.Information("PDF cache cleared");
+            try
+            {
+                var stats = GetStatistics();
+                
+                // Log statistics periodically
+                if (stats.TotalEntries > 0)
+                {
+                    _logger.Debug("Cache stats: {Entries} entries, {Size}, {HitRatio:P1} hit ratio", 
+                        stats.TotalEntries, stats.FormattedSize, stats.HitRatio);
+                }
+                
+                // Check for memory pressure
+                var memoryPressure = GC.GetTotalMemory(false);
+                if (memoryPressure > 500 * 1024 * 1024) // 500MB threshold
+                {
+                    _logger.Information("High memory pressure detected, reducing cache size");
+                    await EnsureCacheSpaceAsync(_maxCacheSizeBytes / 4); // Reduce to 75% of max
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Error during memory pressure monitoring");
+            }
         }
         
         public void Dispose()
         {
-            if (!_disposed)
-            {
-                _cleanupTimer?.Dispose();
-                ClearCache();
-                _disposed = true;
-            }
+            if (_disposed) return;
+            _disposed = true;
+            
+            _logger.Information("Disposing PDF cache service");
+            
+            _cleanupTimer?.Dispose();
+            _memoryMonitorTimer?.Dispose();
+            _cleanupSemaphore?.Dispose();
+            
+            // Final statistics
+            var stats = GetStatistics();
+            _logger.Information("Final cache statistics: {Entries} entries, {Size}, {HitRatio:P1} hit ratio", 
+                stats.TotalEntries, stats.FormattedSize, stats.HitRatio);
         }
     }
 } 

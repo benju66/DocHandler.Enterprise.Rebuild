@@ -14,7 +14,7 @@ namespace DocHandler.Services.Pipeline.SaveQuotes
     /// </summary>
     public class SaveQuotesPreProcessor : IPreProcessor
     {
-        private readonly ICompanyDetectionService _companyDetectionService;
+        private readonly IEnhancedCompanyDetectionService _companyDetectionService;
         private readonly IScopeManagementService _scopeManagementService;
         private readonly IConfigurationService _configService;
         private readonly ILogger _logger;
@@ -22,7 +22,7 @@ namespace DocHandler.Services.Pipeline.SaveQuotes
         public string StageName => "SaveQuotes Pre-Processing";
 
         public SaveQuotesPreProcessor(
-            ICompanyDetectionService companyDetectionService,
+            IEnhancedCompanyDetectionService companyDetectionService,
             IScopeManagementService scopeManagementService,
             IConfigurationService configService)
         {
@@ -99,23 +99,15 @@ namespace DocHandler.Services.Pipeline.SaveQuotes
                 _logger.Debug("Detecting company name for file: {FilePath}", file.FilePath);
 
                 // Use the company detection service to scan the file
-                var detectionRequest = new CompanyDetectionRequest
-                {
-                    FilePath = file.FilePath,
-                    FileExtension = Path.GetExtension(file.FilePath),
-                    ScanDocFiles = _configService.Config.ScanCompanyNamesForDocFiles,
-                    FileSizeLimitMB = _configService.Config.DocFileSizeLimitMB
-                };
+                var detectionResult = await _companyDetectionService.DetectCompanyAsync(file.FilePath);
 
-                var detectedCompany = await _companyDetectionService.DetectCompanyAsync(detectionRequest);
-
-                if (!string.IsNullOrWhiteSpace(detectedCompany))
+                if (detectionResult != null && !string.IsNullOrWhiteSpace(detectionResult.DetectedCompany))
                 {
-                    file.CompanyName = detectedCompany;
-                    result.ExtractedData["DetectedCompanyName"] = detectedCompany;
-                    result.Messages.Add($"Company name detected: {detectedCompany}");
+                    file.CompanyName = detectionResult.DetectedCompany;
+                    result.ExtractedData["DetectedCompanyName"] = detectionResult.DetectedCompany;
+                    result.Messages.Add($"Company name detected: {detectionResult.DetectedCompany}");
                     
-                    _logger.Information("Company name detected for {FilePath}: {CompanyName}", file.FilePath, detectedCompany);
+                    _logger.Information("Company name detected for {FilePath}: {CompanyName}", file.FilePath, detectionResult.DetectedCompany);
                 }
                 else
                 {
@@ -163,9 +155,9 @@ namespace DocHandler.Services.Pipeline.SaveQuotes
                     if (suggestedScopes.Any())
                     {
                         var topScope = suggestedScopes.First();
-                        file.ScopeOfWork = topScope;
-                        result.ExtractedData["AutoAssignedScope"] = topScope;
-                        result.Messages.Add($"Scope auto-assigned: {topScope}");
+                        file.ScopeOfWork = topScope.Name;
+                        result.ExtractedData["AutoAssignedScope"] = topScope.Name;
+                        result.Messages.Add($"Scope auto-assigned: {topScope.Name}");
                         
                         _logger.Debug("Scope auto-assigned for {FilePath}: {Scope}", file.FilePath, topScope);
                     }

@@ -375,20 +375,20 @@ namespace DocHandler.Services
             }
         }
         
-        public async Task<ConversionResult> ConvertWordToPdf(string inputPath, string outputPath)
+        public async Task<OfficeConversionResult> ConvertWordToPdf(string inputPath, string outputPath)
         {
             if (_disposed)
             {
-                return new ConversionResult
-                {
-                    Success = false,
-                    ErrorMessage = "Service has been disposed"
-                };
+                            return new OfficeConversionResult
+            {
+                Success = false,
+                ErrorMessage = "Service has been disposed"
+            };
             }
             
             if (!IsOfficeAvailable())
             {
-                return new ConversionResult
+                return new OfficeConversionResult
                 {
                     Success = false,
                     ErrorMessage = "Microsoft Office is not installed or accessible."
@@ -403,7 +403,7 @@ namespace DocHandler.Services
                     // CRITICAL FIX: Remove Task.Run - already on STA thread from caller
                     lock (_wordLock)
                     {
-                        var result = new ConversionResult();
+                        var result = new OfficeConversionResult();
                         dynamic doc = null;
                         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                     
@@ -470,7 +470,7 @@ namespace DocHandler.Services
             catch (InvalidOperationException circuitEx) when (circuitEx.Message.Contains("Circuit breaker is open"))
             {
                 _logger.Warning("Circuit breaker prevented Word conversion: {Message}", circuitEx.Message);
-                return new ConversionResult
+                return new OfficeConversionResult
                 {
                     Success = false,
                     ErrorMessage = "Word conversion service temporarily unavailable due to recent failures"

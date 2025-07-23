@@ -20,8 +20,9 @@ namespace DocHandler.Services
     // Office Conversion Service Interface
     public interface IOfficeConversionService : IDisposable
     {
-        Task<string?> ConvertToPdfAsync(string inputPath, string outputPath);
-        Task<bool> IsOfficeAvailableAsync();
+        bool IsOfficeInstalled();
+        Task<OfficeConversionResult> ConvertWordToPdf(string inputPath, string outputPath);
+        Task<OfficeConversionResult> ConvertExcelToPdf(string inputPath, string outputPath);
         void Cleanup();
     }
 
@@ -44,9 +45,9 @@ namespace DocHandler.Services
         string GetUniqueFileName(string directory, string fileName);
         string CreateTempFolder();
         string CreateOutputFolder(string basePath);
-        Task<ConversionResult> ConvertSingleFile(string inputPath, string outputPath);
-        ConversionResult ConvertSingleFileSync(string inputPath, string outputPath);
-        Task<ConversionResult> ConvertSingleFile(string inputPath, string outputPath, ProgressCallback? progressCallback = null);
+        Task<OfficeConversionResult> ConvertSingleFile(string inputPath, string outputPath);
+        OfficeConversionResult ConvertSingleFileSync(string inputPath, string outputPath);
+        Task<OfficeConversionResult> ConvertSingleFile(string inputPath, string outputPath, ProgressCallback? progressCallback = null);
         Task<bool> ProcessFileAsync(string inputPath, string outputPath, ProgressCallback? progressCallback = null);
     }
 
@@ -73,7 +74,7 @@ namespace DocHandler.Services
     // Session Aware Office Service Interface
     public interface ISessionAwareOfficeService : IDisposable
     {
-        Task<ConversionResult> ConvertWordToPdf(string inputPath, string outputPath);
+        Task<OfficeConversionResult> ConvertWordToPdf(string inputPath, string outputPath);
         void ForceCleanupIfIdle();
         bool IsOfficeInstalled();
     }
@@ -81,7 +82,7 @@ namespace DocHandler.Services
     // Session Aware Excel Service Interface
     public interface ISessionAwareExcelService : IDisposable
     {
-        Task<ConversionResult> ConvertSpreadsheetToPdf(string inputPath, string outputPath);
+        Task<OfficeConversionResult> ConvertSpreadsheetToPdf(string inputPath, string outputPath);
         void ForceCleanupIfIdle();
         void DisposeIfIdle();
     }

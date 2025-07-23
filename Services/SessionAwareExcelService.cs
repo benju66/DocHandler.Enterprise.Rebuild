@@ -110,15 +110,15 @@ namespace DocHandler.Services
             }
         }
         
-        public async Task<ConversionResult> ConvertSpreadsheetToPdf(string inputPath, string outputPath)
+        public async Task<OfficeConversionResult> ConvertSpreadsheetToPdf(string inputPath, string outputPath)
         {
             if (_disposed)
             {
-                return new ConversionResult
-                {
-                    Success = false,
-                    ErrorMessage = "Service has been disposed"
-                };
+                            return new OfficeConversionResult
+            {
+                Success = false,
+                ErrorMessage = "Service has been disposed"
+            };
             }
             
             // CRITICAL FIX: Remove Task.Run - already on STA thread from caller
@@ -135,7 +135,7 @@ namespace DocHandler.Services
                         EnsureExcelHealthy();
                     }
                     
-                    var result = new ConversionResult { Success = true };
+                    var result = new OfficeConversionResult { Success = true };
                     dynamic? workbook = null;
                     
                     try

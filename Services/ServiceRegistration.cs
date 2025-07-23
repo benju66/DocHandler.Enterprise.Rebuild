@@ -1,5 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.ApplicationInsights;
+using Microsoft.ApplicationInsights.Extensibility;
 using Serilog;
 using DocHandler.ViewModels;
 using DocHandler.Services.Pipeline;
@@ -12,6 +14,11 @@ namespace DocHandler.Services
     {
         public static IServiceCollection RegisterServices(this IServiceCollection services)
         {
+            return RegisterServices(services, null);
+        }
+
+        public static IServiceCollection RegisterServices(this IServiceCollection services, IHierarchicalConfigurationService? configService)
+        {
             // Core Infrastructure Services (Singleton - long-running resources)
             services.AddSingleton<IConfigurationService, ConfigurationService>();
             services.AddSingleton<IHierarchicalConfigurationService, HierarchicalConfigurationService>();
@@ -22,7 +29,76 @@ namespace DocHandler.Services
                 new PerformanceMonitor(
                     provider.GetService<IHierarchicalConfigurationService>(),
                     provider.GetService<IConfigurationChangeNotificationService>()));
-            services.AddSingleton<TelemetryService>();
+            // Application Insights and Telemetry
+            services.AddApplicationInsightsTelemetryWorkerService(options =>
+            {
+                if (configService?.Config?.Telemetry != null)
+                {
+                    var telemetryConfig = configService.Config.Telemetry;
+                    
+                    if (telemetryConfig.EnableApplicationInsights)
+                    {
+                        if (!string.IsNullOrEmpty(telemetryConfig.ApplicationInsightsConnectionString))
+                        {
+                            options.ConnectionString = telemetryConfig.ApplicationInsightsConnectionString;
+                        }
+                        else if (!string.IsNullOrEmpty(telemetryConfig.ApplicationInsightsInstrumentationKey))
+                        {
+                            options.InstrumentationKey = telemetryConfig.ApplicationInsightsInstrumentationKey;
+                        }
+                    }
+                }
+            });
+            
+            // Configure Application Insights telemetry configuration
+            services.Configure<TelemetryConfiguration>(telemetryConfig =>
+            {
+                if (configService?.Config?.Telemetry != null)
+                {
+                    var config = configService.Config.Telemetry;
+                    
+                    if (!config.EnableApplicationInsights)
+                    {
+                        telemetryConfig.DisableTelemetry = true;
+                    }
+                    
+                    // Set sampling percentage
+                    if (config.SamplingPercentage > 0 && config.SamplingPercentage < 100)
+                    {
+                        telemetryConfig.DefaultTelemetrySink.TelemetryProcessorChainBuilder
+                            .UseSampling(config.SamplingPercentage)
+                            .Build();
+                    }
+                }
+            });
+            services.AddSingleton<TelemetryService>(provider =>
+            {
+                var performanceMonitor = provider.GetService<PerformanceMonitor>();
+                var applicationInsightsClient = provider.GetService<TelemetryClient>();
+                var configService = provider.GetService<IHierarchicalConfigurationService>();
+                
+                return new TelemetryService(performanceMonitor, applicationInsightsClient, configService);
+            });
+            
+            // WPF-specific telemetry helper
+            services.AddSingleton<WpfTelemetryHelper>(provider =>
+            {
+                var telemetryService = provider.GetService<TelemetryService>();
+                var performanceMonitor = provider.GetService<PerformanceMonitor>();
+                
+                return new WpfTelemetryHelper(telemetryService, performanceMonitor);
+            });
+            
+            // Activity tracing for correlation IDs and workflow tracking
+            services.AddSingleton<ActivityTracingService>(provider =>
+            {
+                var telemetryService = provider.GetService<TelemetryService>();
+                var configService = provider.GetService<IHierarchicalConfigurationService>();
+                var applicationInsightsClient = provider.GetService<TelemetryClient>();
+                
+                return new ActivityTracingService(telemetryService, configService, applicationInsightsClient);
+            });
+            
             services.AddSingleton<PdfCacheService>();
             
             // Data Services (Singleton - shared data access)
@@ -34,6 +110,7 @@ namespace DocHandler.Services
             services.AddTransient<ISaveQuotesQueueService, SaveQuotesQueueService>();
             
             // Office Services (Transient - COM object management)
+            services.AddTransient<IOfficeConversionService, OfficeConversionService>();
             services.AddTransient<ISessionAwareOfficeService, SessionAwareOfficeService>();
             services.AddTransient<ISessionAwareExcelService, SessionAwareExcelService>();
             
@@ -50,10 +127,14 @@ namespace DocHandler.Services
             // Office Health Monitor (Singleton - health checking)
             services.AddSingleton<OfficeHealthMonitor>();
             
-            // Business Logic Services (Transient - stateful per operation)
-            services.AddTransient<IFileValidationService, FileValidationService>();
-            services.AddTransient<ICompanyDetectionService, CompanyDetectionService>();
-            services.AddTransient<IScopeManagementService, ScopeManagementService>();
+            // Business Services (Phase 2)
+            services.AddSingleton<IEnhancedFileValidationService, FileValidationService>();
+            services.AddSingleton<IFileValidationService>(provider => (IFileValidationService)provider.GetRequiredService<IEnhancedFileValidationService>());
+            services.AddSingleton<IEnhancedCompanyDetectionService, CompanyDetectionService>();
+            services.AddSingleton<ICompanyDetectionService>(provider => (ICompanyDetectionService)provider.GetRequiredService<IEnhancedCompanyDetectionService>());
+            services.AddSingleton<IDocumentWorkflowService, DocumentWorkflowService>();
+            services.AddSingleton<IScopeManagementService, ScopeManagementService>();
+            services.AddSingleton<IUIStateService, UIStateService>();
 
             // Mode UI Framework Services (Phase 2 Milestone 2 - Day 4)
             services.AddSingleton<IAdvancedModeUIProvider, ModeUIProvider>();

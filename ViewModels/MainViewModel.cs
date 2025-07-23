@@ -36,14 +36,16 @@ namespace DocHandler.ViewModels
         private readonly ILogger _logger;
         private readonly IOptimizedFileProcessingService _fileProcessingService;
         private readonly ConfigurationService _configService;
-        private readonly OfficeConversionService _officeConversionService;
+        private readonly IOfficeConversionService _officeConversionService;
         private readonly ICompanyNameService _companyNameService;
         private readonly IScopeOfWorkService _scopeOfWorkService;
         
         // Business Logic Services (Phase 2 Milestone 2)
         private readonly IFileValidationService _fileValidationService;
-        private readonly ICompanyDetectionService _companyDetectionService;
+        private readonly IEnhancedCompanyDetectionService _companyDetectionService;
         private readonly IScopeManagementService _scopeManagementService;
+        private readonly IDocumentWorkflowService _documentWorkflowService;
+        private readonly IUIStateService _uiStateService;
 
         // Advanced Mode UI Framework (Phase 2 Milestone 2 - Day 5)
         private readonly IAdvancedModeUIProvider _advancedModeUIProvider;
@@ -73,6 +75,10 @@ namespace DocHandler.ViewModels
         private volatile int _activeScanCount = 0;
         private readonly SemaphoreSlim _scanSemaphore = new SemaphoreSlim(1, 1);
         private CancellationTokenSource? _currentScanCancellation;
+        
+        // Add for proper lifecycle management
+        private readonly CancellationTokenSource _viewModelCts = new();
+        private CancellationTokenSource? _filterCts;
         
         public ConfigurationService ConfigService => _configService;
         
@@ -126,14 +132,14 @@ namespace DocHandler.ViewModels
                     
                     if (value)
                     {
-                        StatusMessage = "Save Quotes Mode: Drop quote documents";
+                        _ = _uiStateService.UpdateStatusAsync("Save Quotes Mode: Drop quote documents");
                         SessionSaveLocation = _configService.Config.DefaultSaveLocation;
                         
                         // Pre-warming removed - instances created on-demand for better memory management
                     }
                     else
                     {
-                        StatusMessage = "Drop files here to begin";
+                        _ = _uiStateService.UpdateStatusAsync("Drop files here to begin");
                         SelectedScope = null;
                         CompanyNameInput = "";
                         DetectedCompanyName = "";
@@ -288,6 +294,7 @@ namespace DocHandler.ViewModels
         public MainViewModel(
             IOptimizedFileProcessingService fileProcessingService,
             IConfigurationService configService,
+            IOfficeConversionService officeConversionService,
             ICompanyNameService companyNameService,
             IScopeOfWorkService scopeOfWorkService,
             ErrorRecoveryService errorRecoveryService,
@@ -298,8 +305,10 @@ namespace DocHandler.ViewModels
             IProcessManager processManager,
             OfficeHealthMonitor healthMonitor,
             IFileValidationService fileValidationService,
-            ICompanyDetectionService companyDetectionService,
+            IEnhancedCompanyDetectionService companyDetectionService,
             IScopeManagementService scopeManagementService,
+            IDocumentWorkflowService documentWorkflowService,
+            IUIStateService uiStateService,
             IAdvancedModeUIProvider advancedModeUIProvider,
             IDynamicMenuBuilder dynamicMenuBuilder,
             IAdvancedModeUIManager advancedModeUIManager,
@@ -328,20 +337,21 @@ namespace DocHandler.ViewModels
                 _fileValidationService = fileValidationService ?? throw new ArgumentNullException(nameof(fileValidationService));
                 _companyDetectionService = companyDetectionService ?? throw new ArgumentNullException(nameof(companyDetectionService));
                 _scopeManagementService = scopeManagementService ?? throw new ArgumentNullException(nameof(scopeManagementService));
+                _documentWorkflowService = documentWorkflowService ?? throw new ArgumentNullException(nameof(documentWorkflowService));
+                _uiStateService = uiStateService ?? throw new ArgumentNullException(nameof(uiStateService));
 
                 // Initialize advanced mode UI framework (Phase 2 Milestone 2 - Day 5)
                 _advancedModeUIProvider = advancedModeUIProvider ?? throw new ArgumentNullException(nameof(advancedModeUIProvider));
                 _dynamicMenuBuilder = dynamicMenuBuilder ?? throw new ArgumentNullException(nameof(dynamicMenuBuilder));
                 _advancedModeUIManager = advancedModeUIManager ?? throw new ArgumentNullException(nameof(advancedModeUIManager));
                 
-                // Office conversion service will be injected later when interfaces are created
-                _officeConversionService = new OfficeConversionService();
+                        _officeConversionService = officeConversionService;
                 
                 // CRITICAL MEMORY FIX: Don't use shared session services - create on demand only
                 _sessionOfficeService = null; // Always null - will create ReliableOfficeConverter on demand
                 _sessionExcelService = null; // Always null - will create ReliableOfficeConverter on demand
 
-                StatusMessage = "Ready";
+                _ = _uiStateService.UpdateStatusAsync("Ready");
                 
                 // Initialize from configuration
                 InitializeFromConfiguration();
@@ -369,23 +379,21 @@ namespace DocHandler.ViewModels
                 _logger.Error(configEx, "Configuration error during MainViewModel initialization");
                 
                 var errorInfo = _errorRecoveryService.CreateErrorInfo(configEx, "MainViewModel initialization");
-                MessageBox.Show(
-                    $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                _ = _uiStateService.ShowWarningAsync(
                     errorInfo.Title,
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
+                    $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}");
                 
                 // Try to initialize with default configuration
                 try
                 {
                     _configService = new ConfigurationService();
                     InitializeFromConfiguration();
-                    StatusMessage = "Initialized with default settings";
+                    _ = _uiStateService.UpdateStatusAsync("Initialized with default settings");
                 }
                 catch (Exception fallbackEx)
                 {
                     _logger.Fatal(fallbackEx, "Failed to initialize even with defaults");
-                    StatusMessage = "Initialization failed - limited functionality";
+                    _ = _uiStateService.UpdateStatusAsync("Initialization failed - limited functionality");
                 }
             }
             catch (ServiceException serviceEx)
@@ -393,11 +401,9 @@ namespace DocHandler.ViewModels
                 _logger.Error(serviceEx, "Service initialization error");
                 
                 var errorInfo = _errorRecoveryService.CreateErrorInfo(serviceEx, "Service initialization");
-                MessageBox.Show(
-                    $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                _ = _uiStateService.ShowWarningAsync(
                     errorInfo.Title,
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
+                    $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}");
                 
                 // Initialize minimal services
                 InitializeMinimalServices();
@@ -408,11 +414,9 @@ namespace DocHandler.ViewModels
                 
                 // Use error recovery service for unknown exceptions
                 var errorInfo = _errorRecoveryService.CreateErrorInfo(ex, "MainViewModel initialization");
-                MessageBox.Show(
-                    $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
+                _ = _uiStateService.ShowErrorAsync(
                     errorInfo.Title,
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error);
+                    $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}");
                 
                 // Try minimal initialization
                 InitializeMinimalServices();
@@ -482,7 +486,7 @@ namespace DocHandler.ViewModels
                     loadTasks.Add(_scopeOfWorkService.LoadDataAsync());
                 }
                 
-                await Task.WhenAll(loadTasks);
+                await Task.WhenAll(loadTasks).ConfigureAwait(false);
                 
                 _logger.Information("Service data loaded successfully");
                 
@@ -510,7 +514,7 @@ namespace DocHandler.ViewModels
                 });
 
                 // Initialize Advanced Mode UI Framework (Phase 2 Milestone 2 - Day 5)
-                await InitializeAdvancedModeUIAsync();
+                await InitializeAdvancedModeUIAsync().ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -682,17 +686,15 @@ namespace DocHandler.ViewModels
 
         private void OnMemoryPressureDetected(object? sender, MemoryPressureEventArgs e)
         {
-            Application.Current.Dispatcher.InvokeAsync(() =>
+            Application.Current.Dispatcher.InvokeAsync(async () =>
             {
                 if (e.IsCritical)
                 {
                     _logger.Warning("Critical memory pressure: {CurrentMB}MB", e.CurrentMemoryMB);
                     
-                    MessageBox.Show(
-                        $"Memory usage is critically high ({e.CurrentMemoryMB}MB). Consider closing other applications.",
+                    await _uiStateService.ShowWarningAsync(
                         "Memory Warning",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning);
+                        $"Memory usage is critically high ({e.CurrentMemoryMB}MB). Consider closing other applications.");
                 }
             });
         }
@@ -714,16 +716,16 @@ namespace DocHandler.ViewModels
                 _logger.Information("Skipping company name scan for .doc file (disabled in settings): {Path}", filePath);
                 
                 // Show brief status message
-                await Application.Current.Dispatcher.InvokeAsync(() =>
+                await Application.Current.Dispatcher.InvokeAsync(async () =>
                 {
-                    StatusMessage = "Skipping company scan for .doc file";
+                    await _uiStateService.UpdateStatusAsync("Skipping company scan for .doc file");
                     
                     // Clear message after 2 seconds
                     var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-                    timer.Tick += (s, args) =>
+                    timer.Tick += async (s, args) =>
                     {
                         timer.Stop();
-                        StatusMessage = "";
+                        await _uiStateService.UpdateStatusAsync("");
                         UpdateUI();
                     };
                     timer.Start();
@@ -776,25 +778,25 @@ namespace DocHandler.ViewModels
                 var progress = new Progress<int>(percentage =>
                 {
                     // Use InvokeAsync instead of BeginInvoke for consistency
-                    _ = Application.Current.Dispatcher.InvokeAsync(() =>
+                    _ = Application.Current.Dispatcher.InvokeAsync(async () =>
                     {
                         try
                         {
                             if (percentage <= 30)
                             {
-                                StatusMessage = "Scanning document...";
+                                await _uiStateService.UpdateStatusAsync("Scanning document...");
                             }
                             else if (percentage <= 60)
                             {
-                                StatusMessage = "Extracting text...";
+                                await _uiStateService.UpdateStatusAsync("Extracting text...");
                             }
                             else if (percentage <= 90)
                             {
-                                StatusMessage = "Detecting company name...";
+                                await _uiStateService.UpdateStatusAsync("Detecting company name...");
                             }
                             else
                             {
-                                StatusMessage = "Finalizing detection...";
+                                await _uiStateService.UpdateStatusAsync("Finalizing detection...");
                             }
                         }
                         catch (Exception ex)
@@ -851,35 +853,35 @@ namespace DocHandler.ViewModels
             {
                 _logger.Warning("Company detection cancelled/timed out for: {Path}", filePath);
                 // Show user-friendly message for timeout on UI thread
-                await Application.Current.Dispatcher.InvokeAsync(() =>
+                await Application.Current.Dispatcher.InvokeAsync(async () =>
                 {
                     if (string.IsNullOrWhiteSpace(CompanyNameInput))
                     {
                         DetectedCompanyName = "";
                     }
-                    StatusMessage = "Company detection timed out";
+                    await _uiStateService.UpdateStatusAsync("Company detection timed out");
                 });
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Company detection failed for: {Path}", filePath);
                 // Clear any partial detection on error on UI thread
-                await Application.Current.Dispatcher.InvokeAsync(() =>
+                await Application.Current.Dispatcher.InvokeAsync(async () =>
                 {
                     if (string.IsNullOrWhiteSpace(CompanyNameInput))
                     {
                         DetectedCompanyName = "";
                     }
-                    StatusMessage = "Company detection failed";
+                    await _uiStateService.UpdateStatusAsync("Company detection failed");
                 });
             }
             finally
             {
                 // Update UI on UI thread
-                await Application.Current.Dispatcher.InvokeAsync(() =>
+                await Application.Current.Dispatcher.InvokeAsync(async () =>
                 {
                     IsDetectingCompany = false;
-                    StatusMessage = "";
+                    await _uiStateService.UpdateStatusAsync("");
                     _logger.Debug("Company name detection completed. DetectedCompanyName: '{DetectedName}'", 
                         DetectedCompanyName ?? "null");
                     UpdateUI(); // Ensure UI updates after detection completes
@@ -951,8 +953,9 @@ namespace DocHandler.ViewModels
                     });
                     
                     // Use the new company detection service
-                    var request = new CompanyDetectionRequest(filePath, progress, cancellationToken);
-                    var detectedCompany = await _companyDetectionService.ScanForCompanyNameAsync(request);
+                    var request = new CompanyDetectionRequest { FilePath = filePath };
+                    var companyResult = await _companyDetectionService.DetectCompanyAsync(request.FilePath);
+                    var detectedCompany = companyResult?.DetectedCompany;
                     
                     if (cancellationToken.IsCancellationRequested)
                         return;
@@ -1084,7 +1087,7 @@ namespace DocHandler.ViewModels
                 ScopesOfWork.Clear();
                 foreach (var scope in scopes)
                 {
-                    ScopesOfWork.Add(scope);
+                                            ScopesOfWork.Add(scope);
                 }
                 
                 // Initialize filtered list with all scopes
@@ -1096,32 +1099,71 @@ namespace DocHandler.ViewModels
             }
         }
 
-        private async void LoadRecentScopes()
+        private async Task LoadRecentScopesAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                // Use the new scope management service (Phase 2 Milestone 2)
-                var recentScopes = await _scopeManagementService.GetRecentScopesAsync();
+                // Combine our disposal token with the provided one
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(_viewModelCts.Token, cancellationToken);
+                var token = cts.Token;
                 
-                RecentScopes.Clear();
-                foreach (var scope in recentScopes)
+                // Use the new scope management service
+                var recentScopes = await _scopeManagementService.GetRecentScopesAsync().ConfigureAwait(false);
+                
+                // Check for disposal/cancellation before UI updates
+                if (_disposed || token.IsCancellationRequested) return;
+                
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
-                    RecentScopes.Add(scope);
-                }
+                    RecentScopes.Clear();
+                    foreach (var scope in recentScopes)
+                    {
+                        if (token.IsCancellationRequested) break;
+                        RecentScopes.Add(scope.Name);
+                    }
+                }, DispatcherPriority.DataBind, token);
                 
                 _logger.Debug("Loaded {Count} recent scopes using new service", recentScopes.Count);
+            }
+            catch (OperationCanceledException) when (_viewModelCts.Token.IsCancellationRequested)
+            {
+                _logger.Debug("LoadRecentScopes cancelled due to disposal");
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Failed to load recent scopes using new service");
                 
-                // Fallback to using the service directly
-                RecentScopes.Clear();
-                foreach (var scope in _scopeOfWorkService.RecentScopes.Take(10))
+                if (_disposed || cancellationToken.IsCancellationRequested) return;
+                
+                try
                 {
-                    RecentScopes.Add(scope);
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        RecentScopes.Clear();
+                        var fallbackScopes = _scopeOfWorkService.RecentScopes.Take(10).ToList();
+                        foreach (var scope in fallbackScopes)
+                        {
+                            RecentScopes.Add(scope);
+                        }
+                    }, DispatcherPriority.DataBind);
+                }
+                catch (Exception fallbackEx)
+                {
+                    _logger.Error(fallbackEx, "Fallback scope loading also failed");
                 }
             }
+        }
+
+        // Keep the sync wrapper for backward compatibility
+        private void LoadRecentScopes()
+        {
+            _ = LoadRecentScopesAsync().ContinueWith(task =>
+            {
+                if (task.IsFaulted)
+                {
+                    _logger.Error(task.Exception, "Background scope loading failed");
+                }
+            }, TaskScheduler.Default);
         }
 
         // Enhanced fuzzy search implementation using ScopeManagementService (Phase 2 Milestone 2)
@@ -1129,11 +1171,28 @@ namespace DocHandler.ViewModels
         {
             try
             {
+                // Cancel any previous search
+                _filterCts?.Cancel();
+                _filterCts = new CancellationTokenSource();
+                var token = _filterCts.Token;
+                
                 // Capture search term immediately
                 var searchTerm = ScopeSearchText?.Trim() ?? "";
                 
+                // Debounce: wait 300ms for user to stop typing
+                try
+                {
+                    await Task.Delay(300, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return; // User typed again, cancel this search
+                }
+                
                 // Use the new scope management service for searching
-                var filteredScopes = await _scopeManagementService.FilterScopesAsync(searchTerm);
+                var filteredScopes = await _scopeManagementService.FilterScopesAsync(searchTerm).ConfigureAwait(false);
+                
+                if (token.IsCancellationRequested) return;
                 
                 // Update UI with filtered results
                 await Application.Current.Dispatcher.InvokeAsync(() =>
@@ -1144,7 +1203,7 @@ namespace DocHandler.ViewModels
                     FilteredScopesOfWork.Clear();
                     foreach (var scope in filteredScopes)
                     {
-                        FilteredScopesOfWork.Add(scope);
+                        FilteredScopesOfWork.Add(scope.Name);
                     }
                     
                     // Preserve selection if it's in the filtered results
@@ -1437,56 +1496,20 @@ namespace DocHandler.ViewModels
         
         public void UpdateUI()
         {
-            // Ensure this method is always called on the UI thread
-            if (!Application.Current.Dispatcher.CheckAccess())
+            // Delegate complex UI state logic to UIStateService
+            var context = new UIStateContext
             {
-                Application.Current.Dispatcher.InvokeAsync(() => UpdateUI());
-                return;
-            }
-            
-            if (SaveQuotesMode)
-            {
-                // Need both a scope and either typed or detected company name
-                var hasCompanyName = !string.IsNullOrWhiteSpace(CompanyNameInput) || 
-                                   !string.IsNullOrWhiteSpace(DetectedCompanyName);
-                
-                // Only enable processing if all files are valid
-                var allFilesValid = PendingFiles.All(f => f.ValidationStatus == ValidationStatus.Valid);
-                
-                CanProcess = PendingFiles.Count > 0 && 
-                            allFilesValid &&
-                            !IsProcessing && 
-                            !string.IsNullOrEmpty(SelectedScope) && 
-                            hasCompanyName;
-                
-                ProcessButtonText = PendingFiles.Count > 1 ? "Process All Quotes" : "Process Quote";
-                
-                if (PendingFiles.Count == 0)
-                {
-                    StatusMessage = "Save Quotes Mode: Drop quote documents";
-                }
-                else
-                {
-                    StatusMessage = $"{PendingFiles.Count} quote(s) ready to process";
-                }
-            }
-            else
-            {
-                // Only enable processing if all files are valid
-                var allFilesValid = PendingFiles.All(f => f.ValidationStatus == ValidationStatus.Valid);
-                
-                CanProcess = PendingFiles.Count > 0 && allFilesValid && !IsProcessing;
-                ProcessButtonText = PendingFiles.Count > 1 ? "Merge and Save" : "Process Files";
-                
-                if (PendingFiles.Count == 0)
-                {
-                    StatusMessage = "Drop files here to begin";
-                }
-                else
-                {
-                    StatusMessage = $"{PendingFiles.Count} file(s) ready to process";
-                }
-            }
+                SaveQuotesMode = SaveQuotesMode,
+                PendingFileCount = PendingFiles.Count,
+                AllFilesValid = PendingFiles.All(f => f.ValidationStatus == ValidationStatus.Valid),
+                IsProcessing = IsProcessing,
+                SelectedScope = SelectedScope,
+                CompanyNameInput = CompanyNameInput,
+                DetectedCompanyName = DetectedCompanyName
+            };
+
+            // Use UIStateService for complex state management
+            _ = Task.Run(async () => await _uiStateService.RefreshUIStateAsync(context));
         }
         
         public void AddFiles(string[] filePaths)
@@ -1697,341 +1720,128 @@ namespace DocHandler.ViewModels
                     return;
                 }
 
-                // Validate and prepare files
-                var validFiles = await PrepareFilesForProcessing();
+                // Validate and prepare files using DocumentWorkflowService
+                var pendingValidation = PendingFiles.Where(f => 
+                    f.ValidationStatus == ValidationStatus.Pending || 
+                    f.ValidationStatus == ValidationStatus.Validating).ToList();
+                    
+                if (pendingValidation.Any())
+                {
+                    MessageBox.Show("Please wait for file validation to complete.", 
+                        "Validation in Progress", 
+                        MessageBoxButton.OK, 
+                        MessageBoxImage.Information);
+                    return;
+                }
+                
+                // Remove any invalid files on UI thread
+                var invalidFiles = PendingFiles.Where(f => 
+                    f.ValidationStatus == ValidationStatus.Invalid).ToList();
+                    
+                if (invalidFiles.Any())
+                {
+                    var message = $"The following files are invalid and will be skipped:\n\n" +
+                        string.Join("\n", invalidFiles.Select(f => $"• {f.FileName}: {f.ValidationError}"));
+                        
+                    MessageBox.Show(message, "Invalid Files", 
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                        
+                    foreach (var invalid in invalidFiles)
+                    {
+                        PendingFiles.Remove(invalid);
+                    }
+                }
+                
+                // Get valid files
+                var validFiles = PendingFiles.Where(f => 
+                    f.ValidationStatus == ValidationStatus.Valid).ToList();
+
                 if (!validFiles.Any())
                 {
-                    return; // Error handling done in PrepareFilesForProcessing
+                    await _uiStateService.UpdateStatusAsync("No valid files to process");
+                    return;
                 }
 
-                // Set processing state
-                IsProcessing = true;
-                StatusMessage = validFiles.Count > 1 ? "Merging and processing files..." : "Processing file...";
+                // Set processing state using UIStateService
+                await _uiStateService.SetProcessingAsync(true);
+                await _uiStateService.UpdateStatusAsync(validFiles.Count > 1 ? "Merging and processing files..." : "Processing file...");
 
-                // Process files using the existing logic
-                var filePaths = validFiles.Select(f => f.FilePath).ToList();
-                await ProcessFilesBackground(filePaths, validFiles.Count, OpenFolderAfterProcessing);
+                // Use DocumentWorkflowService for batch processing
+                var requests = validFiles.Select(f => new DocumentProcessingRequest
+                {
+                    FilePath = f.FilePath,
+                    OutputPath = _configService.Config.DefaultSaveLocation,
+                    Options = new Dictionary<string, object>
+                    {
+                        ["ConvertOfficeToPdf"] = ConvertOfficeToPdf,
+                        ["OpenFolderAfterProcessing"] = OpenFolderAfterProcessing
+                    }
+                }).ToList();
+
+                var progress = new Progress<BatchProgress>(p =>
+                {
+                    Application.Current.Dispatcher.InvokeAsync(async () =>
+                    {
+                        await _uiStateService.UpdateProgressAsync(p.PercentComplete, $"Processing {p.CurrentItem}... ({p.CompletedItems}/{p.TotalItems})");
+                    });
+                });
+
+                var batchResult = await _documentWorkflowService.ProcessDocumentsAsync(
+                    requests, 
+                    new BatchProcessingOptions { MaxConcurrency = 3 }, 
+                    progress);
+
+                                // Handle results
+                await Application.Current.Dispatcher.InvokeAsync(async () =>
+                {
+                    if (batchResult.SuccessfulFiles > 0)
+                    {
+                        await _uiStateService.UpdateStatusAsync($"Processing completed: {batchResult.SuccessfulFiles}/{batchResult.TotalFiles} files successful");
+                        
+                        if (batchResult.SuccessfulFiles == batchResult.TotalFiles)
+                        {
+                            PendingFiles.Clear();
+                            // Success animation could be added here in future
+                        }
+                    }
+                    else
+                    {
+                                                    await _uiStateService.UpdateStatusAsync("Processing failed - check logs for details");
+                    }
+
+                    if (batchResult.FailedFiles > 0)
+                    {
+                        var failedFiles = batchResult.Results.Where(r => !r.Success).ToList();
+                        var errorMessage = $"{batchResult.FailedFiles} files failed to process:\n\n" +
+                            string.Join("\n", failedFiles.Select(f => $"• {Path.GetFileName(f.FilePath)}: {f.ErrorMessage}"));
+                        
+                                                await _uiStateService.ShowWarningAsync("Processing Errors", errorMessage);
+                    }
+                });
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Unexpected error in ProcessFiles command");
                 
-                await Application.Current.Dispatcher.InvokeAsync(() =>
+                                await Application.Current.Dispatcher.InvokeAsync(async () =>
                 {
-                    StatusMessage = "Processing failed";
-                    MessageBox.Show($"An unexpected error occurred: {ex.Message}", 
-                        "Error", 
-                        MessageBoxButton.OK, 
-                        MessageBoxImage.Error);
+                    await _uiStateService.UpdateStatusAsync("Processing failed");
+                    await _uiStateService.ShowErrorAsync("Error", $"An unexpected error occurred: {ex.Message}");
                 });
             }
-            finally
-            {
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    IsProcessing = false;
-                    ProgressValue = 0;
-                    UpdateUI();
-                });
-            }
-        }
-
-        /// <summary>
-        /// Prepares files for processing by validating them and handling UI updates (Phase 2 Milestone 2)
-        /// </summary>
-        private async Task<List<FileItem>> PrepareFilesForProcessing()
-        {
-            // Quick validation on UI thread
-            var pendingValidation = PendingFiles.Where(f => 
-                f.ValidationStatus == ValidationStatus.Pending || 
-                f.ValidationStatus == ValidationStatus.Validating).ToList();
-                
-            if (pendingValidation.Any())
-            {
-                MessageBox.Show("Please wait for file validation to complete.", 
-                    "Validation in Progress", 
-                    MessageBoxButton.OK, 
-                    MessageBoxImage.Information);
-                return new List<FileItem>();
-            }
-            
-            // Remove any invalid files on UI thread
-            var invalidFiles = PendingFiles.Where(f => 
-                f.ValidationStatus == ValidationStatus.Invalid).ToList();
-                
-            if (invalidFiles.Any())
-            {
-                var message = $"The following files are invalid and will be skipped:\n\n" +
-                    string.Join("\n", invalidFiles.Select(f => $"• {f.FileName}: {f.ValidationError}"));
-                    
-                MessageBox.Show(message, "Invalid Files", 
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
-                    
-                foreach (var invalid in invalidFiles)
-                {
-                    PendingFiles.Remove(invalid);
-                }
-            }
-            
-            // Get valid files
-            var validFiles = PendingFiles.Where(f => 
-                f.ValidationStatus == ValidationStatus.Valid).ToList();
-
-            if (!validFiles.Any())
-            {
-                StatusMessage = "No valid files to process";
-                return new List<FileItem>();
-            }
-
-            return validFiles;
-        }
-
-        private async Task ProcessFilesBackground(List<string> filePaths, int fileCount, bool openFolderAfterProcessing)
-        {
-            try
-            {
-                // Check if file processing service is available
-                if (_fileProcessingService == null)
-                {
-                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                                finally
                     {
-                        StatusMessage = "File processing service is not available";
-                        MessageBox.Show(
-                            "The file processing service could not be initialized. Please check the logs for more information.",
-                            "Service Unavailable",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Error);
-                    });
-                    return;
-                }
-                
-                var outputDir = _configService.Config.DefaultSaveLocation;
-
-                // Create output folder with timestamp
-                outputDir = _fileProcessingService.CreateOutputFolder(outputDir);
-
-                var result = await _fileProcessingService.ProcessFiles(filePaths, outputDir, ConvertOfficeToPdf).ConfigureAwait(false);
-
-                if (result.Success)
-                {
-                    // Update UI on UI thread
-                    await Application.Current.Dispatcher.InvokeAsync(() =>
-                    {
-                        if (result.IsMerged)
+                        await Application.Current.Dispatcher.InvokeAsync(async () =>
                         {
-                            StatusMessage = $"Successfully merged {filePaths.Count} files into {Path.GetFileName(result.SuccessfulFiles.First())}";
-                        }
-                        else
-                        {
-                            StatusMessage = $"Successfully processed {result.SuccessfulFiles.Count} file(s)";
-                        }
-
-                        // Clear the file list after successful processing
-                        PendingFiles.Clear();
-                    });
-
-                    if (result.IsMerged)
-                    {
-                        _logger.Information("Files merged successfully");
-                    }
-                    else
-                    {
-                        _logger.Information("Files processed successfully");
-                    }
-                    
-                    // Clean up any temp files
-                    await CleanupTempFiles().ConfigureAwait(false);
-
-                    // Update configuration with recent location
-                    _configService.AddRecentLocation(outputDir);
-
-                    // Open the output folder if preference is set
-                    if (openFolderAfterProcessing)
-                    {
-                        try
-                        {
-                            Process.Start(new ProcessStartInfo
-                            {
-                                FileName = outputDir,
-                                UseShellExecute = true,
-                                Verb = "open"
-                            });
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.Warning(ex, "Failed to open output folder");
-                        }
-                    }
-                }
-                else
-                {
-                    var errorMessage = !string.IsNullOrEmpty(result.ErrorMessage) 
-                        ? result.ErrorMessage 
-                        : "Processing failed";
-                    
-                    // Update UI on UI thread
-                    await Application.Current.Dispatcher.InvokeAsync(() =>
-                    {
-                        StatusMessage = $"Error: {errorMessage}";
-                    });
-                    
-                    _logger.Error("File processing failed: {Error}", errorMessage);
-
-                    if (result.FailedFiles.Any())
-                    {
-                        var failedFilesList = string.Join("\n", result.FailedFiles.Select(f => 
-                            $"• {Path.GetFileName(f.FilePath)}: {f.Error}"));
-                        
-                        await Application.Current.Dispatcher.InvokeAsync(() =>
-                        {
-                            MessageBox.Show(
-                                $"The following files could not be processed:\n\n{failedFilesList}",
-                                "Processing Errors",
-                                MessageBoxButton.OK,
-                                MessageBoxImage.Warning);
+                            await _uiStateService.SetProcessingAsync(false);
+                            await _uiStateService.ResetProgressAsync();
+                            UpdateUI();
                         });
                     }
-                }
-            }
-            catch (OfficeOperationException officeEx)
-            {
-                _logger.Error(officeEx, "Office operation failed during file processing");
-                
-                // Attempt automatic recovery
-                var recoveryResult = await _errorRecoveryService.HandleExceptionAsync(officeEx, "File processing");
-                if (recoveryResult.Success && officeEx.IsRecoverable)
-                {
-                    _logger.Information("Office operation recovered, retrying processing...");
-                    
-                    await Application.Current.Dispatcher.InvokeAsync(() =>
-                    {
-                        StatusMessage = "Recovering from Office error, retrying...";
-                    });
-                    
-                    // Retry the processing after a brief delay
-                    await Task.Delay(2000);
-                    await ProcessFilesBackground(filePaths, fileCount, openFolderAfterProcessing);
-                    return;
-                }
-                
-                var errorInfo = _errorRecoveryService.CreateErrorInfo(officeEx, "File processing");
-                
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    StatusMessage = "Office operation failed";
-                    MessageBox.Show(
-                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
-                        errorInfo.Title,
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Error);
-                });
-            }
-            catch (FileValidationException fileEx)
-            {
-                _logger.Error(fileEx, "File validation error during processing");
-                var errorInfo = _errorRecoveryService.CreateErrorInfo(fileEx, "File processing");
-                
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    StatusMessage = "File validation failed";
-                    MessageBox.Show(
-                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
-                        errorInfo.Title,
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning);
-                });
-            }
-            catch (SecurityViolationException secEx)
-            {
-                _logger.Fatal(secEx, "Security violation during file processing");
-                var errorInfo = _errorRecoveryService.CreateErrorInfo(secEx, "File processing");
-                
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    StatusMessage = "Security violation - operation blocked";
-                    MessageBox.Show(
-                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
-                        errorInfo.Title,
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Error);
-                });
-            }
-            catch (FileProcessingException procEx)
-            {
-                _logger.Error(procEx, "File processing error");
-                var errorInfo = _errorRecoveryService.CreateErrorInfo(procEx, "File processing");
-                
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    StatusMessage = "File processing failed";
-                    MessageBox.Show(
-                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
-                        errorInfo.Title,
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning);
-                });
-            }
-            catch (UnauthorizedAccessException accessEx)
-            {
-                _logger.Error(accessEx, "Access denied during file processing");
-                var errorInfo = _errorRecoveryService.CreateErrorInfo(accessEx, "File processing");
-                
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    StatusMessage = "Access denied";
-                    MessageBox.Show(
-                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
-                        errorInfo.Title,
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning);
-                });
-            }
-            catch (IOException ioEx)
-            {
-                _logger.Error(ioEx, "I/O error during file processing");
-                var errorInfo = _errorRecoveryService.CreateErrorInfo(ioEx, "File processing");
-                
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    StatusMessage = "File access error";
-                    MessageBox.Show(
-                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
-                        errorInfo.Title,
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning);
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Unexpected error during file processing");
-                
-                // Use error recovery service for unknown exceptions
-                var errorInfo = _errorRecoveryService.CreateErrorInfo(ex, "File processing");
-                
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    StatusMessage = "Processing failed";
-                    MessageBox.Show(
-                        $"{errorInfo.Message}\n\n{errorInfo.RecoveryGuidance}",
-                        errorInfo.Title,
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Error);
-                });
-            }
-            finally
-            {
-                // Ensure all UI updates happen on the UI thread
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    IsProcessing = false;
-                    ProgressValue = 0;
-                    UpdateUI();
-                });
-            }
         }
         
         [RelayCommand]
-        private void ClearFiles()
+        private async Task ClearFiles()
         {
             PendingFiles.Clear();
             CleanupTempFiles();
@@ -2040,7 +1850,7 @@ namespace DocHandler.ViewModels
             CompanyNameInput = "";
             DetectedCompanyName = "";
             
-            StatusMessage = "Files cleared";
+            await _uiStateService.UpdateStatusAsync("Files cleared");
             UpdateUI();
         }
         
@@ -2290,7 +2100,7 @@ namespace DocHandler.ViewModels
         {
             try
             {
-                StatusMessage = "Running queue diagnostic...";
+                await _uiStateService.UpdateStatusAsync("Running queue diagnostic...");
                 
                 var diagnosticResult = await Task.Run(async () => 
                 {
@@ -2301,14 +2111,14 @@ namespace DocHandler.ViewModels
                 MessageBox.Show(diagnosticResult, "Queue Processing Diagnostic Results", 
                     MessageBoxButton.OK, MessageBoxImage.Information);
                 
-                StatusMessage = "Diagnostic completed";
+                await _uiStateService.UpdateStatusAsync("Diagnostic completed");
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Error during queue diagnostic");
                 MessageBox.Show($"Diagnostic failed: {ex.Message}", "Diagnostic Error", 
                     MessageBoxButton.OK, MessageBoxImage.Error);
-                StatusMessage = "Diagnostic failed";
+                await _uiStateService.UpdateStatusAsync("Diagnostic failed");
             }
         }
 
@@ -2450,7 +2260,7 @@ namespace DocHandler.ViewModels
             }
             
             IsDetectingCompany = true;
-            StatusMessage = "Testing company detection...";
+                            await _uiStateService.UpdateStatusAsync("Testing company detection...");
             
             try
             {
@@ -2693,21 +2503,21 @@ namespace DocHandler.ViewModels
 
         private void OnQueueItemCompleted(object? sender, SaveQuoteCompletedEventArgs e)
         {
-            Application.Current.Dispatcher.Invoke(() =>
+            Application.Current.Dispatcher.Invoke(async () =>
             {
                 if (e.Success)
                 {
-                    QueueStatusMessage = "Successfully saved!";
+                    await _uiStateService.UpdateQueueStatusAsync("Successfully saved!");
                     
                     // Reset message after 1 second
                     var timer = new DispatcherTimer 
                     { 
                         Interval = TimeSpan.FromSeconds(1) 
                     };
-                    timer.Tick += (s, args) =>
+                    timer.Tick += async (s, args) =>
                     {
                         timer.Stop();
-                        UpdateQueueStatusMessage();
+                        await UpdateQueueStatusMessage();
                     };
                     timer.Start();
                 }
@@ -2784,19 +2594,19 @@ namespace DocHandler.ViewModels
             });
         }
 
-        private void UpdateQueueStatusMessage()
+        private async Task UpdateQueueStatusMessage()
         {
             if (IsQueueProcessing)
             {
-                QueueStatusMessage = "Processing queue...";
+                await _uiStateService.UpdateQueueStatusAsync("Processing queue...");
             }
             else if (QueueTotalCount > 0)
             {
-                QueueStatusMessage = $"{QueueTotalCount} item(s) in queue";
+                await _uiStateService.UpdateQueueStatusAsync($"{QueueTotalCount} item(s) in queue");
             }
             else
             {
-                QueueStatusMessage = "Drop quote documents";
+                await _uiStateService.UpdateQueueStatusAsync("Drop quote documents");
             }
         }
 
@@ -2825,17 +2635,49 @@ namespace DocHandler.ViewModels
                     return;
                 }
 
-                // Validate and prepare files
-                var validFiles = await PrepareFilesForProcessing();
+                // Validate and prepare files inline (PrepareFilesForProcessing method was removed)  
+                var pendingValidation = PendingFiles.Where(f => 
+                    f.ValidationStatus == ValidationStatus.Pending || 
+                    f.ValidationStatus == ValidationStatus.Validating).ToList();
+                    
+                if (pendingValidation.Any())
+                {
+                    MessageBox.Show("Please wait for file validation to complete.", 
+                        "Validation in Progress", 
+                        MessageBoxButton.OK, 
+                        MessageBoxImage.Information);
+                    return;
+                }
+                
+                var invalidFiles = PendingFiles.Where(f => 
+                    f.ValidationStatus == ValidationStatus.Invalid).ToList();
+                    
+                if (invalidFiles.Any())
+                {
+                    var message = $"The following files are invalid and will be skipped:\n\n" +
+                        string.Join("\n", invalidFiles.Select(f => $"• {f.FileName}: {f.ValidationError}"));
+                        
+                    MessageBox.Show(message, "Invalid Files", 
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                        
+                    foreach (var invalid in invalidFiles)
+                    {
+                        PendingFiles.Remove(invalid);
+                    }
+                }
+                
+                var validFiles = PendingFiles.Where(f => 
+                    f.ValidationStatus == ValidationStatus.Valid).ToList();
+
                 if (!validFiles.Any())
                 {
-                    StatusMessage = "No valid quote documents to process";
+                    await _uiStateService.UpdateStatusAsync("No valid quote documents to process");
                     return;
                 }
 
-                // Set processing state
-                IsProcessing = true;
-                StatusMessage = "Adding quotes to processing queue...";
+                                // Set processing state using UIStateService
+                await _uiStateService.SetProcessingAsync(true);
+                await _uiStateService.UpdateStatusAsync("Adding quotes to processing queue...");
 
                 // Create processing request for Save Quotes
                 var parameters = new Dictionary<string, object>
@@ -2863,7 +2705,7 @@ namespace DocHandler.ViewModels
                 PendingFiles.Clear();
                 CompanyNameInput = "";
                 DetectedCompanyName = "";
-                StatusMessage = "Quotes added to processing queue";
+                await _uiStateService.UpdateStatusAsync("Quotes added to processing queue");
                 
                 // Clear scope if setting is enabled
                 if (_configService.Config.ClearScopeAfterProcessing)
@@ -2877,9 +2719,9 @@ namespace DocHandler.ViewModels
             {
                 _logger.Error(ex, "Unexpected error in ProcessSaveQuotes");
                 
-                await Application.Current.Dispatcher.InvokeAsync(() =>
+                await Application.Current.Dispatcher.InvokeAsync(async () =>
                 {
-                    StatusMessage = "Save Quotes processing failed";
+                    await _uiStateService.UpdateStatusAsync("Save Quotes processing failed");
                     MessageBox.Show($"An unexpected error occurred: {ex.Message}", 
                         "Error", 
                         MessageBoxButton.OK, 
@@ -2888,9 +2730,9 @@ namespace DocHandler.ViewModels
             }
             finally
             {
-                await Application.Current.Dispatcher.InvokeAsync(() =>
+                                await Application.Current.Dispatcher.InvokeAsync(async () =>
                 {
-                    IsProcessing = false;
+                    await _uiStateService.SetProcessingAsync(false);
                     UpdateUI();
                 });
             }
@@ -2908,9 +2750,9 @@ namespace DocHandler.ViewModels
                 }
                 catch (Exception ex)
                 {
-                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    await Application.Current.Dispatcher.InvokeAsync(async () =>
                     {
-                        StatusMessage = "Queue service initialization failed";
+                        await _uiStateService.UpdateStatusAsync("Queue service initialization failed");
                         MessageBox.Show(
                             $"The queue service could not be initialized:\n\n{ex.Message}",
                             "Service Unavailable",
@@ -2934,12 +2776,12 @@ namespace DocHandler.ViewModels
                 }
                 
                 // Clear pending files from the UI
-                await Application.Current.Dispatcher.InvokeAsync(() =>
+                await Application.Current.Dispatcher.InvokeAsync(async () =>
                 {
                     PendingFiles.Clear();
                     CompanyNameInput = "";
                     DetectedCompanyName = "";
-                    StatusMessage = $"Added {fileCount} quote(s) to queue";
+                    await _uiStateService.UpdateStatusAsync($"Added {fileCount} quote(s) to queue");
                     
                     // Clear scope if setting is enabled
                     if (_configService.Config.ClearScopeAfterProcessing)
@@ -2962,10 +2804,10 @@ namespace DocHandler.ViewModels
                         {
                             _logger.Error(ex, "Failed to start queue processing");
                             
-                            await Application.Current.Dispatcher.InvokeAsync(() =>
-                            {
-                                StatusMessage = "Queue processing failed";
-                                MessageBox.Show(
+                                                    await Application.Current.Dispatcher.InvokeAsync(async () =>
+                        {
+                            await _uiStateService.UpdateStatusAsync("Queue processing failed");
+                            MessageBox.Show(
                                     $"Failed to start queue processing:\n\n{ex.Message}",
                                     "Queue Error",
                                     MessageBoxButton.OK,
@@ -2979,9 +2821,9 @@ namespace DocHandler.ViewModels
             {
                 _logger.Error(ex, "Unexpected error during save quotes processing");
                 
-                await Application.Current.Dispatcher.InvokeAsync(() =>
+                await Application.Current.Dispatcher.InvokeAsync(async () =>
                 {
-                    StatusMessage = $"Error: {ex.Message}";
+                    await _uiStateService.UpdateStatusAsync($"Error: {ex.Message}");
                     MessageBox.Show(
                         $"An unexpected error occurred:\n\n{ex.Message}",
                         "Error",
@@ -3595,8 +3437,36 @@ namespace DocHandler.ViewModels
             {
                 if (disposing)
                 {
+                    // Cancel all operations first
+                    try
+                    {
+                        _viewModelCts?.Cancel();
+                        _filterCts?.Cancel();
+                        _currentScanCancellation?.Cancel();
+                        
+                        // Wait a bit for operations to cancel
+                        Task.Delay(100).Wait();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Error cancelling operations during disposal");
+                    }
+                    
                     // Unsubscribe from all events to prevent memory leaks
                     UnsubscribeFromEvents();
+                    
+                    // Dispose cancellation tokens
+                    try
+                    {
+                        _viewModelCts?.Dispose();
+                        _filterCts?.Dispose();
+                        _currentScanCancellation?.Dispose();
+                        _scanSemaphore?.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warning(ex, "Error disposing cancellation tokens");
+                    }
                     
                     // Call the existing cleanup method
                     Cleanup();
@@ -3653,7 +3523,7 @@ namespace DocHandler.ViewModels
             try
             {
                 await _advancedModeUIManager.SwitchToModeAsync("default");
-                StatusMessage = "Switched to Standard Processing mode";
+                await _uiStateService.UpdateStatusAsync("Switched to Standard Processing mode");
             }
             catch (Exception ex)
             {
@@ -3668,7 +3538,7 @@ namespace DocHandler.ViewModels
             try
             {
                 await _advancedModeUIManager.SwitchToModeAsync("SaveQuotes");
-                StatusMessage = "Switched to Save Quotes mode";
+                await _uiStateService.UpdateStatusAsync("Switched to Save Quotes mode");
             }
             catch (Exception ex)
             {
@@ -3701,7 +3571,7 @@ namespace DocHandler.ViewModels
         {
             try
             {
-                StatusMessage = "Running memory leak test...";
+                await _uiStateService.UpdateStatusAsync("Running memory leak test...");
                 
                 var testResult = await Task.Run(async () => 
                 {
@@ -3712,7 +3582,7 @@ namespace DocHandler.ViewModels
                 MessageBox.Show(testResult, "Memory Leak Test Results", 
                     MessageBoxButton.OK, MessageBoxImage.Information);
                 
-                StatusMessage = "Memory leak test completed";
+                await _uiStateService.UpdateStatusAsync("Memory leak test completed");
             }
             catch (Exception ex)
             {
@@ -3739,7 +3609,7 @@ namespace DocHandler.ViewModels
                 MessageBox.Show(testResult, "Thread Safety Test Results", 
                     MessageBoxButton.OK, MessageBoxImage.Information);
                 
-                StatusMessage = "Thread safety test completed";
+                await _uiStateService.UpdateStatusAsync("Thread safety test completed");
             }
             catch (Exception ex)
             {

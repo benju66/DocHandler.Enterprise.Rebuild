@@ -32,14 +32,14 @@ namespace DocHandler.Services
         /// <summary>
         /// Convert Word document to PDF with optional single-use mode
         /// </summary>
-        public ConversionResult ConvertWordToPdf(string inputPath, string outputPath, bool singleUse = false)
+        public OfficeConversionResult ConvertWordToPdf(string inputPath, string outputPath, bool singleUse = false)
         {
             if (_disposed)
                 throw new ObjectDisposedException(nameof(ReliableOfficeConverter));
 
             lock (_lock)
             {
-                var result = new ConversionResult();
+                var result = new OfficeConversionResult();
 
                 try
                 {
@@ -167,14 +167,14 @@ namespace DocHandler.Services
         /// <summary>
         /// Convert Excel spreadsheet to PDF with optional single-use mode
         /// </summary>
-        public ConversionResult ConvertExcelToPdf(string inputPath, string outputPath, bool singleUse = false)
+        public OfficeConversionResult ConvertExcelToPdf(string inputPath, string outputPath, bool singleUse = false)
         {
             if (_disposed)
                 throw new ObjectDisposedException(nameof(ReliableOfficeConverter));
 
             lock (_lock)
             {
-                var result = new ConversionResult();
+                var result = new OfficeConversionResult();
 
                 try
                 {

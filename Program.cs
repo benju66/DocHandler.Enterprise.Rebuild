@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using DocHandler.Services;
+using DocHandler.Services.Configuration;
 using Serilog;
 
 namespace DocHandler
@@ -118,8 +119,13 @@ namespace DocHandler
                     Console.WriteLine("Creating service collection...");
                     var services = new ServiceCollection();
                     
-                    Console.WriteLine("Registering services...");
-                    services.RegisterServices();
+                    Console.WriteLine("Initializing configuration service...");
+                    // Create configuration service first to configure Application Insights
+                    var configService = new DocHandler.Services.Configuration.HierarchicalConfigurationService();
+                    services.AddSingleton<DocHandler.Services.Configuration.IHierarchicalConfigurationService>(configService);
+                    
+                    Console.WriteLine("Registering services with Application Insights configuration...");
+                    services.RegisterServices(configService);
                     
                     Console.WriteLine("Building service provider...");
                     var serviceProvider = services.BuildServiceProvider();
